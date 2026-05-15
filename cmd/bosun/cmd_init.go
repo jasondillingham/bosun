@@ -154,6 +154,13 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 		}
 		made = append(made, created{name: name, branch: branch, path: path})
 
+		// Always exclude BOSUN_BRIEF.md from the worktree's index, even when
+		// no brief is written this run — that way a brief authored later
+		// stays out of commits without bosun having to remember.
+		if err := rc.git.AppendWorktreeExclude(rc.ctx, path, "BOSUN_BRIEF.md"); err != nil {
+			fmt.Fprintf(os.Stderr, "bosun: warning: update %s exclude: %v\n", name, err)
+		}
+
 		if b := brief.LookupBrief(briefs, i); b != nil {
 			if err := brief.WriteToWorktree(path, *b); err != nil {
 				return internalErr("write brief for "+name, err)

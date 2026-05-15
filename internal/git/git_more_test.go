@@ -2,6 +2,7 @@ package git
 
 import (
 	"context"
+	"os"
 	"testing"
 )
 
@@ -16,6 +17,20 @@ func TestRepoRoot(t *testing.T) {
 	}
 	if got != "/some/repo" {
 		t.Fatalf("RepoRoot = %q, want /some/repo", got)
+	}
+}
+
+func TestMainWorktreePath(t *testing.T) {
+	c, _ := newFakeClient(t, runMatcher{
+		args:   []string{"rev-parse", "--path-format=absolute", "--git-common-dir"},
+		stdout: "/repo/.git\n",
+	})
+	got, err := c.MainWorktreePath(context.Background(), "/anywhere")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "/repo" {
+		t.Fatalf("MainWorktreePath = %q, want /repo", got)
 	}
 }
 
@@ -92,6 +107,26 @@ func TestLogN(t *testing.T) {
 	}
 	if got != "abc One\ndef Two\n" {
 		t.Fatalf("LogN = %q", got)
+	}
+}
+
+func TestAppendWorktreeExclude(t *testing.T) {
+	dir := t.TempDir()
+	infoPath := dir + "/info/exclude"
+
+	c, _ := newFakeClient(t, runMatcher{
+		args:   []string{"rev-parse", "--git-path", "info/exclude"},
+		stdout: infoPath + "\n",
+	})
+	if err := c.AppendWorktreeExclude(context.Background(), dir, "BOSUN_BRIEF.md"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(infoPath)
+	if err != nil {
+		t.Fatalf("exclude not written: %v", err)
+	}
+	if string(data) != "BOSUN_BRIEF.md\n" {
+		t.Fatalf("exclude content = %q, want %q", string(data), "BOSUN_BRIEF.md\n")
 	}
 }
 

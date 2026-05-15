@@ -21,7 +21,10 @@ type runCtx struct {
 	state    *state.Store
 }
 
-// loadCtx finds the repo root, reads optional config, and returns a runCtx.
+// loadCtx finds the main worktree root, reads optional config, and returns a runCtx.
+// The runCtx's repoRoot is always the *main* worktree, even when bosun is invoked
+// from inside a linked worktree — claims and state must live in one canonical
+// place that every session can reach.
 func loadCtx() (*runCtx, error) {
 	ctx := context.Background()
 	c := git.New()
@@ -29,7 +32,7 @@ func loadCtx() (*runCtx, error) {
 	if err != nil {
 		return nil, internalErr("getwd", err)
 	}
-	root, err := c.RepoRoot(ctx, cwd)
+	root, err := c.MainWorktreePath(ctx, cwd)
 	if err != nil {
 		return nil, userErr("not inside a git repository (cwd=%s)", cwd)
 	}

@@ -2,7 +2,7 @@ BINARY := bosun
 PKG := github.com/jasondillingham/bosun/cmd/bosun
 DIST := dist
 
-.PHONY: build test test-race test-cover vet tidy cross clean install help
+.PHONY: build test test-race test-cover vet tidy cross clean install demo help
 
 help:
 	@echo "Bosun — make targets:"
@@ -14,6 +14,8 @@ help:
 	@echo "  cross       Cross-compile to dist/ for darwin/linux/windows × amd64/arm64"
 	@echo "  install     go install the binary into \$$GOPATH/bin"
 	@echo "  clean       Remove dist/ + ./$(BINARY)"
+	@echo "  demo        Run the interactive end-to-end demo in a sandbox"
+	@echo "  demo-fast   Run the demo without pausing between steps"
 
 build:
 	go build -o $(BINARY) ./cmd/bosun
@@ -49,3 +51,9 @@ cross:
 
 clean:
 	rm -rf $(DIST) ./$(BINARY)
+
+demo: build
+	@./examples/demo.sh
+
+demo-fast: build
+	@./examples/demo.sh --no-wait

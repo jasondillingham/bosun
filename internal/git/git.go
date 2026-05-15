@@ -8,7 +8,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -60,13 +62,30 @@ func (c *Client) run(ctx context.Context, dir string, args ...string) (string, e
 	return out, nil
 }
 
-// RepoRoot returns the absolute path to the repository's main worktree.
+// RepoRoot returns the absolute path to the *current* worktree (linked or main).
+// Use MainWorktreePath when you need to read bosun's .bosun/ state, which
+// always lives in the main worktree regardless of where the command was run.
 func (c *Client) RepoRoot(ctx context.Context, dir string) (string, error) {
 	out, err := c.run(ctx, dir, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(out), nil
+}
+
+// MainWorktreePath returns the absolute path of the *main* (primary) worktree
+// of the repository, regardless of whether dir is inside the main worktree or
+// a linked one. This is the worktree whose .bosun/ directory holds the
+// canonical claims/state for the repo.
+func (c *Client) MainWorktreePath(ctx context.Context, dir string) (string, error) {
+	out, err := c.run(ctx, dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		return "", err
+	}
+	commonDir := strings.TrimSpace(out)
+	// commonDir is the absolute path to the shared .git dir, e.g.
+	// "/repo/.git" — the main worktree is its parent.
+	return filepath.Dir(commonDir), nil
 }
 
 // CurrentBranch returns the abbreviated HEAD ref name (or empty for detached HEAD).
@@ -326,4 +345,31 @@ func (c *Client) Commit(ctx context.Context, dir, message string) error {
 func (c *Client) MergeAbort(ctx context.Context, dir string) error {
 	_, err := c.run(ctx, dir, "merge", "--abort")
 	return err
+}
+
+// AppendWorktreeExclude appends a line to the worktree's .git/info/exclude
+// file. That file is local to the worktree (or its sharing group) and is
+// never committed — perfect for marking files like BOSUN_BRIEF.md that
+// bosun writes into the worktree but doesn't want the session to commit.
+func (c *Client) AppendWorktreeExclude(ctx context.Context, dir, line string) error {
+	out, err := c.run(ctx, dir, "rev-parse", "--git-path", "info/exclude")
+	if err != nil {
+		return err
+	}
+	excludePath := strings.TrimSpace(out)
+	if !filepath.IsAbs(excludePath) {
+		excludePath = filepath.Join(dir, excludePath)
+	}
+	if err := os.MkdirAll(filepath.Dir(excludePath), 0o755); err != nil {
+		return fmt.Errorf("mkdir exclude: %w", err)
+	}
+	f, err := os.OpenFile(excludePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("open exclude: %w", err)
+	}
+	defer f.Close()
+	if _, err := fmt.Fprintln(f, line); err != nil {
+		return fmt.Errorf("write exclude: %w", err)
+	}
+	return nil
 }

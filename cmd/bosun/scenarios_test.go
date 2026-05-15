@@ -83,6 +83,25 @@ func TestScenario_InitBriefIsExcludedFromIndex(t *testing.T) {
 	}
 }
 
+func TestScenario_InitBriefAutoGitignoresPlanFile(t *testing.T) {
+	// v0.1 dogfood finding: a plan.md at the repo root sat untracked and
+	// felt wrong. bosun init --brief should auto-add it to .gitignore.
+	s := newScenario(t)
+	s.WriteFile("dogfood-plan.md", "## session-1\nbody\n")
+	s.Bosun("init", "1", "--brief", "dogfood-plan.md")
+
+	gi := readFile(t, filepath.Join(s.repo, ".gitignore"))
+	if !strings.Contains(gi, "dogfood-plan.md") {
+		t.Fatalf(".gitignore should mention dogfood-plan.md after init --brief:\n%s", gi)
+	}
+
+	// And it should no longer show as untracked.
+	out := s.GitIn(s.repo, "status", "--porcelain")
+	if strings.Contains(out, "dogfood-plan.md") {
+		t.Fatalf("dogfood-plan.md should be ignored, but git status shows it:\n%s", out)
+	}
+}
+
 // --- status / list / show ---
 
 func TestScenario_StatusEmpty(t *testing.T) {

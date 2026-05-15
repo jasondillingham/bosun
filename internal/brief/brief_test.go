@@ -77,6 +77,37 @@ func TestWriteToWorktree(t *testing.T) {
 	}
 }
 
+func TestWriteToWorktree_IncludesWorkflowPreamble(t *testing.T) {
+	// Regression test for the v0.1 dogfood finding: agents finished
+	// implementation but skipped commit + claim + done. The preamble
+	// makes the lifecycle explicit in the brief.
+	wt := t.TempDir()
+	b := Brief{Session: 3, Body: "implement X"}
+	if err := WriteToWorktree(wt, b); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(wt, "BOSUN_BRIEF.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+
+	// Preamble must mention every lifecycle step.
+	for _, want := range []string{
+		"How to work this session",
+		"make check",
+		"git add . && git commit",
+		"bosun claim session-3",
+		"bosun done session-3",
+		"## Your assignment",
+		"implement X",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("brief missing %q\n--- full content ---\n%s", want, content)
+		}
+	}
+}
+
 func TestArchivePlan(t *testing.T) {
 	dir := t.TempDir()
 	plan := filepath.Join(dir, "plan.md")

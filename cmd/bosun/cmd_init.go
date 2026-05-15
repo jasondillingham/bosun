@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/jasondillingham/bosun/internal/brief"
 	"github.com/jasondillingham/bosun/internal/launcher"
@@ -173,6 +174,13 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 			// Non-fatal: archiving is a nice-to-have.
 			fmt.Fprintf(os.Stderr, "bosun: warning: archive plan: %v\n", err)
 		}
+		// If the plan file lives inside the main repo (the common case — operator
+		// wrote `plan.md` at the root), add it to .gitignore so `git status`
+		// doesn't surface it as untracked. v0.1 dogfood finding: dogfood-plan.md
+		// sat at the root and felt "wrong" to leave there.
+		if err := ensurePlanIgnored(rc.repoRoot, opts.brief); err != nil {
+			fmt.Fprintf(os.Stderr, "bosun: warning: ignore plan file: %v\n", err)
+		}
 	}
 
 	// Ensure .bosun/ is in .gitignore so we don't accidentally commit it.
@@ -213,6 +221,24 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 	return nil
 }
 
+// canonicalAbs returns an absolute path with symlinks resolved. On macOS,
+// /var is a symlink to /private/var, so `t.TempDir()` paths and paths
+// reported by git can have different prefixes for the same directory.
+// Without resolving, filepath.Rel computes a path full of `..` traversals
+// and downstream checks misclassify the file as "outside the repo." If
+// the path doesn't exist yet, fall back to the absolute (un-resolved)
+// form rather than failing.
+func canonicalAbs(p string) (string, error) {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "", err
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return resolved, nil
+	}
+	return abs, nil
+}
+
 // ensureBosunIgnored appends `.bosun/` to .gitignore if it's not already there.
 func ensureBosunIgnored(repoRoot string) error {
 	gi := filepath.Join(repoRoot, ".gitignore")
@@ -228,6 +254,48 @@ func ensureBosunIgnored(repoRoot string) error {
 		content += "\n"
 	}
 	content += ".bosun/\n"
+	return os.WriteFile(gi, []byte(content), 0o644)
+}
+
+// ensurePlanIgnored appends planPath (repo-relative) to .gitignore if the plan
+// file lives inside repoRoot. Plans outside the repo (absolute or symlinked
+// elsewhere) and plans already under .bosun/ (covered by ensureBosunIgnored)
+// are no-ops.
+func ensurePlanIgnored(repoRoot, planPath string) error {
+	absPlan, err := canonicalAbs(planPath)
+	if err != nil {
+		return err
+	}
+	absRoot, err := canonicalAbs(repoRoot)
+	if err != nil {
+		return err
+	}
+	rel, err := filepath.Rel(absRoot, absPlan)
+	if err != nil {
+		return err
+	}
+	if strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+		// Plan lives outside the repo; nothing to ignore here.
+		return nil
+	}
+	relSlash := filepath.ToSlash(rel)
+	if strings.HasPrefix(relSlash, ".bosun/") {
+		// Already covered by the .bosun/ ignore.
+		return nil
+	}
+	gi := filepath.Join(repoRoot, ".gitignore")
+	data, err := os.ReadFile(gi)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	content := string(data)
+	if containsLine(content, relSlash) || containsLine(content, "/"+relSlash) {
+		return nil
+	}
+	if len(content) > 0 && content[len(content)-1] != '\n' {
+		content += "\n"
+	}
+	content += relSlash + "\n"
 	return os.WriteFile(gi, []byte(content), 0o644)
 }
 

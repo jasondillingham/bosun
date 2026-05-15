@@ -58,11 +58,31 @@ func parseContent(s string) []Brief {
 	return briefs
 }
 
-// WriteToWorktree writes the brief body as BOSUN_BRIEF.md into worktreePath.
+// WorkflowPreamble is the standard "how to work this session" block prepended
+// to every BOSUN_BRIEF.md. Without it, agents tend to implement the work
+// but skip the bosun lifecycle (commit + claim + done) — observed in the
+// v0.1 dogfood session where 3 of 4 sessions "finished" but never committed.
+//
+// The {N} placeholder is substituted with the session number at write time.
+const WorkflowPreamble = "## How to work this session\n\n" +
+	"1. Read this brief in full — your assignment is in **Your assignment** below.\n" +
+	"2. Implement the work. Keep changes minimal; don't refactor adjacent code.\n" +
+	"3. Run `make check` from the worktree root to validate (vet + race tests + demo).\n" +
+	"4. Stage and commit: `git add . && git commit -m \"...\"` — descriptive message.\n" +
+	"5. Declare what you touched: `bosun claim session-{N} <paths...>` (run from this worktree).\n" +
+	"6. Mark ready to merge: `bosun done session-{N} -m \"summary\"`.\n\n" +
+	"Steps 3–6 are not optional — bosun won't squash-merge your work until you've\n" +
+	"committed AND marked the session done. The operator monitors progress via\n" +
+	"`bosun status` so the **DONE** signal is how they know you're finished.\n\n" +
+	"---\n\n"
+
+// WriteToWorktree writes the brief body as BOSUN_BRIEF.md into worktreePath,
+// prefixed by the standard workflow preamble.
 func WriteToWorktree(worktreePath string, b Brief) error {
 	target := filepath.Join(worktreePath, "BOSUN_BRIEF.md")
 	header := fmt.Sprintf("# Bosun brief — session-%d\n\n", b.Session)
-	content := header + b.Body + "\n"
+	preamble := strings.ReplaceAll(WorkflowPreamble, "{N}", fmt.Sprintf("%d", b.Session))
+	content := header + preamble + "## Your assignment\n\n" + b.Body + "\n"
 	return os.WriteFile(target, []byte(content), 0o644)
 }
 

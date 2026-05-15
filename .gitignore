@@ -1,0 +1,22 @@
+# Binary
+/bosun
+/bosun.exe
+/dist/
+
+# Local config (runtime version)
+/.bosun/config.json
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# Editor noise
+.vscode/
+.idea/
+*.swp
+*~
+
+# Go build cache (just in case)
+*.test
+*.out
+coverage.txt

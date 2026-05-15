@@ -227,13 +227,15 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 				SessionName:   c.name,
 				Command:       "claude",
 				InitialPrompt: prompt,
-				Env:           env,
+				// First session creates a window; subsequent ones land as
+				// tabs in the same window. Cleaner than 4 scattered windows.
+				OpenAsTab: i > 0,
+				Env:       env,
 			})
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "  %s: launch failed: %v\n", c.name, err)
 				continue
 			}
-			_ = i
 			fmt.Fprintf(os.Stdout, "  %-10s via %s\n", c.name, strategy)
 		}
 	}

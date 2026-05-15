@@ -133,6 +133,64 @@ func TestShellInvocation_EscapesSingleQuotes(t *testing.T) {
 	}
 }
 
+func TestGhosttyArgs_NewWindow(t *testing.T) {
+	args := ghosttyArgs(Options{
+		WorktreePath: "/wt/session-1",
+		SessionName:  "session-1",
+		Command:      "claude",
+	})
+	// No +new-tab — first session opens a new window.
+	for _, a := range args {
+		if a == "+new-tab" {
+			t.Fatalf("expected no +new-tab for window launch, got: %v", args)
+		}
+	}
+	if args[0] != "-e" {
+		t.Fatalf("expected first arg to be -e, got %q", args[0])
+	}
+}
+
+func TestGhosttyArgs_NewTab(t *testing.T) {
+	args := ghosttyArgs(Options{
+		WorktreePath: "/wt/session-2",
+		SessionName:  "session-2",
+		Command:      "claude",
+		OpenAsTab:    true,
+	})
+	if args[0] != "+new-tab" {
+		t.Fatalf("expected +new-tab as first arg, got: %v", args)
+	}
+	if args[1] != "-e" {
+		t.Fatalf("expected -e after +new-tab, got %q", args[1])
+	}
+}
+
+func TestGhosttyArgs_TabCarriesPromptAndCWD(t *testing.T) {
+	args := ghosttyArgs(Options{
+		WorktreePath:  "/wt/session-2",
+		Command:       "claude",
+		InitialPrompt: "hello",
+		OpenAsTab:     true,
+	})
+	// Find the bash -lc payload — must include both the cd and the quoted prompt.
+	var payload string
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == "-lc" {
+			payload = args[i+1]
+			break
+		}
+	}
+	if payload == "" {
+		t.Fatalf("did not find bash -lc payload in args: %v", args)
+	}
+	if !strings.Contains(payload, "cd '/wt/session-2'") {
+		t.Errorf("payload missing cd: %s", payload)
+	}
+	if !strings.Contains(payload, "claude 'hello'") {
+		t.Errorf("payload missing prompted claude invocation: %s", payload)
+	}
+}
+
 func TestHasGhostty_OnPath(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("PATH stub uses POSIX shebang")

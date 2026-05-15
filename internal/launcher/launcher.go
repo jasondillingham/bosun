@@ -31,6 +31,7 @@ type Options struct {
 	SessionName   string            // e.g. "session-1" (for window titles)
 	Command       string            // command to run (default: "claude")
 	InitialPrompt string            // optional initial message to pass to the launched agent
+	OpenAsTab     bool              // open as a new tab in the existing terminal instead of a new window (Ghostty only for now)
 	Env           map[string]string // extra env vars to set (e.g. GOCACHE)
 	Out           io.Writer         // where to print fallback commands; defaults to os.Stdout
 }
@@ -177,10 +178,24 @@ func launchTerminal(opts Options) error {
 }
 
 func launchTerminalGhostty(opts Options, bin string) error {
+	return spawnDetached(exec.Command(bin, ghosttyArgs(opts)...))
+}
+
+// ghosttyArgs builds the argv for the Ghostty CLI. Extracted so tests can
+// assert the shape (especially the +new-tab action) without spawning a
+// real Ghostty.
+func ghosttyArgs(opts Options) []string {
 	envPrefix := buildShellEnvPrefix(opts.Env)
 	inner := fmt.Sprintf("cd %s && %s%s; exec bash",
 		shellQuote(opts.WorktreePath), envPrefix, shellInvocation(opts))
-	return spawnDetached(exec.Command(bin, "-e", "bash", "-lc", inner))
+	args := make([]string, 0, 5)
+	if opts.OpenAsTab {
+		// Ghostty's `+new-tab` action attaches to the existing/focused
+		// window; the first launch (no flag) creates the parent window.
+		args = append(args, "+new-tab")
+	}
+	args = append(args, "-e", "bash", "-lc", inner)
+	return args
 }
 
 // spawnDetached starts cmd without blocking on its exit. Used for terminal

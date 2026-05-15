@@ -427,6 +427,87 @@ func TestScenario_RemoveAfterMergeNoForce(t *testing.T) {
 	s.AssertBranchMissing("bosun/session-1")
 }
 
+// --- cleanup ---
+
+func TestScenario_CleanupRemovesDoneAndEmptySkipsWorking(t *testing.T) {
+	s := newScenario(t)
+	s.Bosun("init", "3")
+
+	// session-1: commit + mark DONE.
+	wt1 := s.WorktreePath(1)
+	s.WriteFileIn(wt1, "a.txt", "x\n")
+	s.CommitIn(wt1, "session-1 work")
+	s.Bosun("done", "session-1")
+
+	// session-2: commit, leave WORKING.
+	wt2 := s.WorktreePath(2)
+	s.WriteFileIn(wt2, "b.txt", "y\n")
+	s.CommitIn(wt2, "session-2 work")
+
+	// session-3: leave empty (no commits, no changes).
+
+	out := s.Bosun("cleanup")
+	s.AssertContainsAll(out,
+		"session-1: removed",
+		"session-3: removed",
+		"session-2: skipped",
+		"removed 2, skipped 1",
+	)
+
+	s.AssertWorktreeMissing(1)
+	s.AssertBranchMissing("bosun/session-1")
+	s.AssertWorktreeExists(2)
+	s.AssertBranchExists("bosun/session-2")
+	s.AssertWorktreeMissing(3)
+	s.AssertBranchMissing("bosun/session-3")
+}
+
+func TestScenario_CleanupDryRunChangesNothing(t *testing.T) {
+	s := newScenario(t)
+	s.Bosun("init", "2")
+
+	wt1 := s.WorktreePath(1)
+	s.WriteFileIn(wt1, "a.txt", "x\n")
+	s.CommitIn(wt1, "work")
+	s.Bosun("done", "session-1")
+
+	out := s.Bosun("cleanup", "--dry-run")
+	s.AssertContainsAll(out, "would remove", "session-1", "dry-run")
+
+	// Nothing actually removed.
+	s.AssertWorktreeExists(1)
+	s.AssertBranchExists("bosun/session-1")
+	s.AssertWorktreeExists(2)
+}
+
+func TestScenario_CleanupForceRemovesDirtyAndAhead(t *testing.T) {
+	s := newScenario(t)
+	s.Bosun("init", "2")
+
+	// session-1: dirty (uncommitted change).
+	wt1 := s.WorktreePath(1)
+	s.WriteFileIn(wt1, "README.md", "# dirty\n")
+
+	// session-2: committed, not marked DONE (would be skipped without --force).
+	wt2 := s.WorktreePath(2)
+	s.WriteFileIn(wt2, "b.txt", "y\n")
+	s.CommitIn(wt2, "ahead but not done")
+
+	// Without --force, both should be skipped.
+	out := s.Bosun("cleanup")
+	s.AssertContainsAll(out, "session-1: skipped", "session-2: skipped")
+	s.AssertWorktreeExists(1)
+	s.AssertWorktreeExists(2)
+
+	// With --force, both go.
+	out = s.Bosun("cleanup", "--force")
+	s.AssertContainsAll(out, "session-1: removed", "session-2: removed")
+	s.AssertWorktreeMissing(1)
+	s.AssertBranchMissing("bosun/session-1")
+	s.AssertWorktreeMissing(2)
+	s.AssertBranchMissing("bosun/session-2")
+}
+
 // --- helpers (test-local) ---
 
 func readFile(t *testing.T, path string) string {

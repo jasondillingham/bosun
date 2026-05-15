@@ -53,7 +53,12 @@ type cleanupPlan struct {
 	reason string
 }
 
-func planCleanup(sessions []session.Session, opts cleanupOpts) []cleanupPlan {
+// squashCheck reports whether all of branch's commits ahead of base are
+// already on base by patch-id (i.e. squash-merged). Returning (true, nil)
+// means the branch's content is on main even though git still shows it ahead.
+type squashCheck func(branch string) (bool, error)
+
+func planCleanup(sessions []session.Session, opts cleanupOpts, isSquashed squashCheck) ([]cleanupPlan, error) {
 	plans := make([]cleanupPlan, 0, len(sessions))
 	for i := range sessions {
 		s := &sessions[i]
@@ -61,14 +66,31 @@ func planCleanup(sessions []session.Session, opts cleanupOpts) []cleanupPlan {
 		case s.State == session.StateDone:
 			plans = append(plans, cleanupPlan{s: s, action: cleanupRemove, reason: "DONE"})
 		case s.State == session.StateWorking && s.Ahead == 0 && s.Dirty == 0:
-			plans = append(plans, cleanupPlan{s: s, action: cleanupRemove, reason: "empty (no commits, no changes)"})
+			plans = append(plans, cleanupPlan{s: s, action: cleanupRemove, reason: "empty"})
+		case s.State == session.StateWorking && s.Ahead > 0 && s.Dirty == 0:
+			// After `bosun merge` squashes the session, the branch tip still
+			// reports `ahead=1` even though its content is on main. Treat
+			// patch-equivalent branches as removable without --force.
+			squashed, err := isSquashed(s.Branch)
+			if err != nil {
+				return nil, fmt.Errorf("check unmerged patches for %s: %w", s.Branch, err)
+			}
+			if squashed {
+				plans = append(plans, cleanupPlan{s: s, action: cleanupRemove, reason: "squash-merged"})
+				continue
+			}
+			if opts.force {
+				plans = append(plans, cleanupPlan{s: s, action: cleanupRemove, reason: "force-remove, " + describeWork(s)})
+				continue
+			}
+			plans = append(plans, cleanupPlan{s: s, action: cleanupSkip, reason: describeWork(s)})
 		case opts.force:
-			plans = append(plans, cleanupPlan{s: s, action: cleanupRemove, reason: "force-remove (" + describeWork(s) + ")"})
+			plans = append(plans, cleanupPlan{s: s, action: cleanupRemove, reason: "force-remove, " + describeWork(s)})
 		default:
 			plans = append(plans, cleanupPlan{s: s, action: cleanupSkip, reason: describeWork(s)})
 		}
 	}
-	return plans
+	return plans, nil
 }
 
 func describeWork(s *session.Session) string {
@@ -104,7 +126,16 @@ func runCleanup(cmd *cobra.Command, opts cleanupOpts) error {
 		return nil
 	}
 
-	plans := planCleanup(sessions, opts)
+	plans, err := planCleanup(sessions, opts, func(branch string) (bool, error) {
+		unmerged, err := rc.git.UnmergedPatches(rc.ctx, rc.repoRoot, rc.cfg.BaseBranch, branch)
+		if err != nil {
+			return false, err
+		}
+		return unmerged == 0, nil
+	})
+	if err != nil {
+		return gitErr("plan cleanup", err)
+	}
 
 	removed, skipped := 0, 0
 	for _, p := range plans {
@@ -115,7 +146,7 @@ func runCleanup(cmd *cobra.Command, opts cleanupOpts) error {
 		}
 		if opts.dryRun {
 			removed++
-			printf("  ▸ %s: would remove — %s\n", p.s.Name, p.reason)
+			printf("  ▸ %s: would remove (%s)\n", p.s.Name, p.reason)
 			continue
 		}
 		// Worktree force needed if it has uncommitted changes or the user passed --force.
@@ -133,7 +164,7 @@ func runCleanup(cmd *cobra.Command, opts cleanupOpts) error {
 		_ = rc.claims.Clear(p.s.Name)
 		_ = rc.state.Clear(p.s.Name)
 		removed++
-		printf("  ✓ %s: removed — %s\n", p.s.Name, p.reason)
+		printf("  ✓ %s: removed (%s)\n", p.s.Name, p.reason)
 	}
 
 	if opts.dryRun {

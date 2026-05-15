@@ -521,6 +521,26 @@ func TestScenario_CleanupDryRunChangesNothing(t *testing.T) {
 	s.AssertWorktreeExists(2)
 }
 
+func TestScenario_CleanupAfterMergeRemovesSquashed(t *testing.T) {
+	// Regression: after `bosun merge` squash-merges a session, the branch
+	// still reports `ahead=1` because the squashed commit is patch-id-
+	// equivalent but not literally on main. `bosun cleanup` should detect
+	// that via `git cherry` and remove the session without --force.
+	s := newScenario(t)
+	s.Bosun("init", "1")
+
+	wt1 := s.WorktreePath(1)
+	s.WriteFileIn(wt1, "feature.txt", "x\n")
+	s.CommitIn(wt1, "feature work")
+	s.Bosun("done", "session-1")
+	s.Bosun("merge")
+
+	out := s.Bosun("cleanup")
+	s.AssertContainsAll(out, "session-1: removed", "squash-merged")
+	s.AssertWorktreeMissing(1)
+	s.AssertBranchMissing("bosun/session-1")
+}
+
 func TestScenario_CleanupForceRemovesDirtyAndAhead(t *testing.T) {
 	s := newScenario(t)
 	s.Bosun("init", "2")

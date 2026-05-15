@@ -2,7 +2,9 @@ package launcher
 
 import (
 	"bytes"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -80,5 +82,28 @@ func TestLaunch_MissingPath(t *testing.T) {
 	_, err := Launch(Options{Strategy: StrategyPrint})
 	if err == nil {
 		t.Fatal("expected error for empty WorktreePath")
+	}
+}
+
+func TestHasGhostty_OnPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("PATH stub uses POSIX shebang")
+	}
+	dir := t.TempDir()
+	stub := filepath.Join(dir, "ghostty")
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	bin, ok := hasGhostty()
+	if !ok {
+		t.Fatal("hasGhostty() = false, want true with stub on PATH")
+	}
+	// Resolve through symlinks (macOS /tmp → /private/tmp) before comparing.
+	resolvedBin, _ := filepath.EvalSymlinks(bin)
+	resolvedStub, _ := filepath.EvalSymlinks(stub)
+	if resolvedBin != resolvedStub {
+		t.Errorf("hasGhostty() = %q, want %q", resolvedBin, resolvedStub)
 	}
 }

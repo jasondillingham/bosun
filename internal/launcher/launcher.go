@@ -91,6 +91,10 @@ func hasTmux() bool {
 }
 
 func hasTerminal() bool {
+	// Ghostty is cross-OS; if present anywhere, count this OS as having a terminal.
+	if _, ok := hasGhostty(); ok {
+		return true
+	}
 	switch runtime.GOOS {
 	case "darwin":
 		_, err := exec.LookPath("osascript")
@@ -110,6 +114,23 @@ func hasTerminal() bool {
 
 var linuxTerminals = []string{"x-terminal-emulator", "gnome-terminal", "konsole", "xterm"}
 
+// hasGhostty reports whether the Ghostty terminal can be invoked. Checks
+// PATH first, then falls back to the standard macOS app-bundle location
+// so users who installed via the .app download (and didn't symlink the
+// CLI) still get a working --launch.
+func hasGhostty() (string, bool) {
+	if p, err := exec.LookPath("ghostty"); err == nil {
+		return p, true
+	}
+	if runtime.GOOS == "darwin" {
+		candidate := "/Applications/Ghostty.app/Contents/MacOS/ghostty"
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, true
+		}
+	}
+	return "", false
+}
+
 func launchTmux(opts Options) error {
 	envPairs := buildEnvPairs(opts.Env)
 	args := []string{"new-window", "-c", opts.WorktreePath, "-n", opts.SessionName}
@@ -122,6 +143,12 @@ func launchTmux(opts Options) error {
 }
 
 func launchTerminal(opts Options) error {
+	// Prefer Ghostty when available. It's cross-OS, modern, and likely
+	// what the operator is already using if it's on PATH — keeping the
+	// new windows in the same terminal app is the consistent UX.
+	if bin, ok := hasGhostty(); ok {
+		return launchTerminalGhostty(opts, bin)
+	}
 	switch runtime.GOOS {
 	case "darwin":
 		return launchTerminalDarwin(opts)
@@ -131,6 +158,14 @@ func launchTerminal(opts Options) error {
 		return launchTerminalWindows(opts)
 	}
 	return fmt.Errorf("no terminal strategy for %s", runtime.GOOS)
+}
+
+func launchTerminalGhostty(opts Options, bin string) error {
+	envPrefix := buildShellEnvPrefix(opts.Env)
+	inner := fmt.Sprintf("cd %s && %s%s; exec bash",
+		shellQuote(opts.WorktreePath), envPrefix, opts.Command)
+	cmd := exec.Command(bin, "-e", "bash", "-lc", inner)
+	return cmd.Run()
 }
 
 func launchTerminalDarwin(opts Options) error {

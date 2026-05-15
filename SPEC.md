@@ -1,9 +1,10 @@
-# Bosun v0.1 — Implementation Spec (scale-first)
+# Bosun v0.1.0 — Spec (as shipped)
 
-**Status:** Draft, ready for implementation.
+**Status:** Shipped 2026-05-15. This document describes what v0.1.0 actually does. The original draft (scale-first rescope) is preserved by git history; this version reflects the additions surfaced during the dogfood iteration loop.
 **Author:** Jason Dillingham
 **Target language:** Go 1.23+
 **Target OSes:** macOS (Intel + Apple Silicon), Linux (x86_64 + arm64), Windows (x86_64 + arm64)
+**See also:** [`RELEASES.md`](./RELEASES.md) for the v0.1.0 changelog and [`docs/v0.2-roadmap.md`](./docs/v0.2-roadmap.md) for what's next.
 
 ---
 
@@ -36,39 +37,58 @@ When you scale parallel coding-agent sessions from 3-4 up to "as many as the pro
 A Go CLI binary called `bosun` that exposes these subcommands:
 
 ```
-bosun init [N] [--brief plan.md] [--launch] [--isolate-cache]
-                            Create N worktrees + N branches; optionally drop briefs
-                            and spawn agent sessions; optionally isolate build caches
+bosun init [N] [--brief plan.md] [--launch] [--initial-prompt "..."]
+              [--isolate-cache] [--force] [--from <branch>]
+                            Create N worktrees + N branches; optionally drop briefs,
+                            spawn agent sessions (with an auto-prompt pointing at the
+                            brief), and isolate build caches.
 bosun status [--with-overlaps] [--json] [--no-color]
-                            Print a table of session states (+ overlap detection)
-bosun show <session>        Inspect one session's recent activity
+             [--watch [--interval N]]
+                            Print a one-line summary + table of session states. With
+                            --watch, re-render every N seconds (default 2) until
+                            interrupted (Ctrl-C). Includes claim-overlap detection.
+bosun show <session>        Inspect one session's brief, claims, state, and recent
+                            activity (last 10 commits + git status).
 bosun claim <session> <paths...>
-                            Session declares the paths it's currently editing
-bosun done <session> [--message "..."]
-                            Session signals it is ready to merge
-bosun merge [<session>...] [--ready-only] [--no-squash] [--message "..."]
-                            Squash-merge sessions back to base (default: ready-only)
+                            Session declares the paths it's currently editing.
+                            Idempotent; advisory (surfaces via --with-overlaps).
+bosun done <session> [--message "..."] [--force] [--stuck]
+                            Session signals it is ready to merge (or STUCK with
+                            --stuck). Refuses dirty or no-commits-ahead unless --force.
+bosun merge [<session>...] [--all] [--no-squash] [--message "..."]
+                            Squash-merge DONE sessions back to base. With --all,
+                            attempt every session regardless of state. Skips sessions
+                            whose content is already patch-id-equivalent to base (e.g.
+                            after a prior squash).
 bosun remove <session> [--force]
-                            Tear down a session's worktree cleanly
-bosun list [--ready]        Print just session names (for shell scripting)
+                            Tear down a session's worktree + branch. Auto-allows
+                            removal without --force when the session's commits are
+                            already on base by patch-id.
+bosun cleanup [--dry-run] [--force]
+                            Batch-remove DONE, empty, or already-merged sessions in
+                            one shot. --dry-run previews; --force also removes dirty
+                            or unmerged sessions.
+bosun list [--ready]        Print just session names (for shell scripting).
 ```
 
-That's the complete v0.1 command surface. Nothing more, nothing less.
+That's the complete v0.1.0 command surface.
 
-## v0.1 scope (what's NOT in)
+## v0.1.0 scope (what's NOT in)
 
-The following are explicitly deferred. The implementer should NOT add them to v0.1:
+These remain deferred to later versions. See [`docs/v0.2-roadmap.md`](./docs/v0.2-roadmap.md) for the planned next steps.
 
-- ❌ MCP server interface — v0.2 (filesystem claims/state replace it for now)
-- ❌ Real-time push/notification of session state — v0.2
+- ❌ MCP server interface — **v0.2** (filesystem claims/state cover this for now)
+- ❌ Bubbletea TUI control center — **v0.2** (originally planned for v0.3; dogfood feedback pulled it forward)
+- ❌ Real-time push/notification of session state between sessions — v0.2
 - ❌ Predictive conflict analysis (knowing what a session *will* touch before it touches it) — v0.2
 - ❌ Web dashboard — v0.3
 - ❌ Auto-detection of "is an agent process actually running in this worktree?" — v0.3
 - ❌ Hooks (pre-init, post-merge, etc.) — v0.4
-- ❌ Custom session names beyond `session-N` — v0.2 (numbered only in v0.1)
-- ❌ Watch mode (`bosun status --watch`) — v0.2 (snapshot only in v0.1)
-- ❌ Any TUI beyond plain text — v0.3
+- ❌ Custom session names beyond `session-N` — v0.2 (numbered only in v0.1.0)
 - ❌ Dependency-aware work dispatch ("session-2 depends on session-1") — encode in the plan markdown if you need it
+- ❌ Tab support for non-Ghostty terminals (Terminal.app, iTerm2, gnome-terminal, Windows Terminal) — v0.2 polish
+
+**Note:** Watch mode (`bosun status --watch`) and the `cleanup` command were both deferred in the original draft but pulled forward during dogfood as friction at scale.
 
 ## Worktree + branch layout
 
@@ -100,7 +120,7 @@ bosun/session-4
 
 ## State layout
 
-Bosun keeps a small amount of state in the main repo under `.bosun/` (gitignored):
+### In the main repo (gitignored under `.bosun/`)
 
 ```
 .bosun/
@@ -117,7 +137,20 @@ Bosun keeps a small amount of state in the main repo under `.bosun/` (gitignored
     └── plan.last.md            ← last plan.md used by `bosun init --brief`
 ```
 
-Everything *outside* this directory comes from git — the `.bosun/` dir holds the small amount of inter-session coordination state that doesn't fit naturally into git's model.
+`bosun init` auto-adds `.bosun/` to the main repo's `.gitignore`, and if `--brief <path>` is used and the plan file lives inside the repo, it's added to `.gitignore` too. macOS symlink mismatch between cwd-relative paths and git-canonicalized paths is handled via `EvalSymlinks` before comparison.
+
+### In each session worktree (excluded via `.git/info/exclude`, never committed)
+
+```
+<worktree>/
+├── BOSUN_BRIEF.md              ← per-session brief with a workflow preamble
+└── .claude/
+    └── CLAUDE.md               ← pointer so Claude Code auto-loads the brief
+```
+
+`BOSUN_BRIEF.md` leads with a "How to work this session" preamble that walks the agent through the bosun lifecycle (read → implement → `make check` → commit → claim → done) before the per-session assignment. `.claude/CLAUDE.md` is a small auto-loader so any Claude Code session opened in the worktree starts by reading the brief, even when `--launch --initial-prompt` wasn't used.
+
+Both files are written into the worktree but appended to that worktree's `.git/info/exclude` at init time, so `git add .` from the agent never picks them up — preventing the brief-conflict pattern that surfaced in round-1 dogfood.
 
 ### Optional config file at `.bosun/config.json`
 
@@ -308,11 +341,36 @@ The original plan file is copied to `.bosun/briefs/plan.last.md` for reference.
 
 | Strategy | Detection | Action |
 |---|---|---|
-| `tmux` | `tmux` on PATH **and** `$TMUX` set (we're inside a tmux session) | `tmux new-window -c <worktree>` running `claude` |
-| `terminal` | macOS / Linux / Windows | macOS: `osascript` opens a new Terminal window cd'd to the worktree; Linux: try `x-terminal-emulator -e`, `gnome-terminal`, `konsole` in order; Windows: `cmd /c start wt -d <worktree>` or fallback to `cmd /c start cmd /K cd /D <worktree>` |
+| `tmux` | `tmux` on PATH **and** `$TMUX` set (we're inside a tmux session) | `tmux new-window -c <worktree>` running `claude` (with the prompt as a separate argv element when `--initial-prompt` is set) |
+| `terminal` | Per-OS detection (see below) | Spawns a new terminal window/tab cd'd to the worktree, running `claude '<prompt>'` |
 | `print` | always works | Print copy-pasteable shell commands; user runs them manually |
 
+### Terminal-strategy detection order
+
+1. **Ghostty** — `exec.LookPath("ghostty")` OR `/Applications/Ghostty.app/Contents/MacOS/ghostty` on macOS. Preferred when available because it's cross-OS and the most likely terminal a bosun operator is already running.
+2. **macOS:** `osascript` → Terminal.app
+3. **Linux:** `x-terminal-emulator`, `gnome-terminal`, `konsole`, `xterm` (in that order)
+4. **Windows:** `cmd /c start cmd /K`
+
+### Tabs vs windows
+
+When the chosen terminal is Ghostty, the first session opens a new window and every subsequent session opens as a tab in that window (`ghostty +new-tab -e bash -lc "..."`). This is wired automatically by `bosun init` — no flag needed. Non-Ghostty terminals still spawn a separate window per session in v0.1.0; tab support for Terminal.app / iTerm2 / gnome-terminal / Windows Terminal is v0.2 polish.
+
+### Spawning model
+
+All terminal-spawning paths use `exec.Cmd.Start()` and reap the child in a background goroutine — never `Run()`, which would block until the spawned terminal exits and hang `bosun init` after the first session. `tmux new-window` exits immediately, so the tmux path keeps `Run()`.
+
 `auto` (default) tries `tmux` → `terminal` → `print`.
+
+### Initial prompt
+
+`--initial-prompt "..."` is passed to the spawned `claude` as a positional argument so it becomes the agent's first message. When `--launch --brief` is set with no explicit `--initial-prompt`, bosun defaults to:
+
+> `Read BOSUN_BRIEF.md in this directory — it's your assignment. Read it in full, then follow the workflow it describes.`
+
+Single quotes in the prompt are POSIX-shell-escaped (`'\''`); double quotes are cmd.exe-escaped (`""`) on Windows.
+
+### Isolate-cache
 
 When `--isolate-cache` is set, the launcher exports these env vars in the spawned process:
 
@@ -320,7 +378,7 @@ When `--isolate-cache` is set, the launcher exports these env vars in the spawne
 - `GOMODCACHE=<worktree>/.cache/go-mod`
 - `npm_config_cache=<worktree>/.cache/npm`
 - `PYTHONPYCACHEPREFIX=<worktree>/.cache/pycache`
-- `CARGO_TARGET_DIR=<worktree>/target` (left as a project decision — flagged but applied)
+- `CARGO_TARGET_DIR=<worktree>/target`
 
 Per-cache dirs are created on first launch. This trades disk space for parallel-safety.
 
@@ -396,9 +454,11 @@ bosun/
 - **Launcher fallbacks:** Always end at `print` so the command never hard-fails on an exotic OS.
 - **CI matrix:** GitHub Actions matrix runs on `ubuntu-latest`, `macos-latest`, `windows-latest`.
 
-## Acceptance criteria for v0.1
+## Acceptance criteria for v0.1.0
 
-A v0.1 release is ready when **all** of these are true:
+All 20 original criteria pass, plus the dogfood-driven extensions added during the v0.1.x iteration loop.
+
+### Original 20
 
 1. ✅ `bosun init 4` in a fresh git repo creates 4 worktrees + 4 branches as specified
 2. ✅ `bosun init 4 --brief plan.md` writes a per-session `BOSUN_BRIEF.md` in each worktree
@@ -420,6 +480,21 @@ A v0.1 release is ready when **all** of these are true:
 18. ✅ Integration test exercises init → claim → commit → done → merge end-to-end against a temp git repo
 19. ✅ README explains the use case in ≤ 30 lines
 20. ✅ `bosun --help` prints clean usage text for each subcommand
+
+### Added during dogfood (v0.1.x)
+
+21. ✅ `bosun status --watch` re-renders the table on an interval; clean exit on SIGINT
+22. ✅ `bosun status` prints a one-line summary above the table (state counts, total ahead, overlap count)
+23. ✅ `bosun cleanup` batch-removes DONE / empty / squash-merged sessions; `--dry-run` and `--force` flags work
+24. ✅ `bosun remove` auto-allows removal of post-squash-merge sessions via `git cherry` patch-id detection
+25. ✅ `bosun merge` skips sessions whose content is already on base by patch-id (no retry-loop conflicts)
+26. ✅ `bosun init --launch --initial-prompt "..."` passes through; defaults to "Read BOSUN_BRIEF.md..." when `--brief` is set
+27. ✅ Ghostty is detected and preferred; first session opens a window, subsequent sessions open as tabs
+28. ✅ `BOSUN_BRIEF.md` is excluded from the worktree's git index so `git add .` doesn't commit it
+29. ✅ `.claude/CLAUDE.md` is auto-written so Claude Code sessions in the worktree load the brief without an external prompt
+30. ✅ `bosun init --brief <path>` auto-adds the plan file to `.gitignore` when it lives inside the repo
+31. ✅ Commands invoked from inside a linked worktree resolve to the main repo's `.bosun/` state correctly
+32. ✅ Launcher uses `Start()` + background reap; `bosun init --launch` doesn't hang on terminals that don't fork
 
 ## Testing approach
 
@@ -448,12 +523,23 @@ The implementer should resolve these and document decisions in the PR:
 
 8. **Launcher on Linux without a desktop terminal — does it just fall back to `print`?** Recommendation: yes. Headless Linux users (CI, containers) get the print strategy.
 
-## Future versions (NOT in v0.1 — for context)
+## Future versions
 
-- **v0.2:** MCP server interface. Replaces `.bosun/claims/` and `.bosun/state/` with structured tool calls (`bosun_claim`, `bosun_release`, `bosun_done`, `bosun_check`). Workflow shape stays identical — sessions just talk through tool calls instead of touching files.
-- **v0.3:** Web dashboard for live monitoring. Same data as `bosun status` but live-updating.
+See [`docs/v0.2-roadmap.md`](./docs/v0.2-roadmap.md) for the planned next step. At a glance:
+
+- **v0.2 (next):** Bubbletea TUI control center + MCP server. The TUI replaces `bosun status --watch` with a persistent operator dashboard; the MCP server replaces `.bosun/claims/` and `.bosun/state/` with structured tool calls so sessions coordinate directly. Workflow shape stays identical.
+- **v0.3:** Web dashboard for live monitoring. Same data as `bosun status` but live-updating over HTTP.
 - **v0.4:** Hooks (pre-init, post-merge), session profiles, named sessions, dependency-aware dispatch.
 
-## Author's note
+## Author's note (post-ship)
 
-This spec is the handoff document. The implementer should treat it as authoritative for scope and stop when the acceptance criteria are met — *not* extend into v0.2+ work. Scope discipline is the most important skill for getting v0.1 shipped cleanly. The filesystem coordination primitives in v0.1 are deliberately simple so they can be replaced wholesale by the v0.2 MCP server without breaking the operator workflow.
+v0.1.0 shipped via a tight dogfood loop: implement → use bosun on bosun itself → catch friction → fix → use again. Three rounds, ~30 commits between the initial scaffold and tag. Highlights of what the loop surfaced (none of which were in the original spec):
+
+- Agents don't read `BOSUN_BRIEF.md` on their own → workflow preamble + `.claude/CLAUDE.md` auto-loader
+- Agents finish the work but skip commit + claim + done → preamble makes the lifecycle explicit, `--initial-prompt` auto-kicks
+- Post-merge sessions cluttered status as "ahead but not DONE" → patch-id detection in `remove` + `cleanup` + `merge`
+- Four scattered Ghostty windows is bad UX → first session opens a window, rest open as tabs
+- `git merge --squash` writes conflict markers to stdout → error wrapper now includes both streams
+- macOS `/var` ↔ `/private/var` symlink mismatch → `canonicalAbs` resolves both before computing relative paths
+
+The filesystem coordination primitives in v0.1.0 are deliberately simple so they can be replaced wholesale by the v0.2 MCP server without breaking the operator workflow.

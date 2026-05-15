@@ -98,6 +98,22 @@ func runMerge(cmd *cobra.Command, args []string, opts mergeOpts) error {
 			continue
 		}
 
+		// If the branch's commits are all patch-id-equivalent to commits
+		// already on base (e.g. an operator hand-resolved a prior conflict
+		// and committed), don't try to squash again — that would just
+		// re-conflict. Treat it as merged and clear state/claims so it
+		// stops cluttering `bosun status`.
+		unmerged, err := rc.git.UnmergedPatches(rc.ctx, rc.repoRoot, rc.cfg.BaseBranch, s.Branch)
+		if err != nil {
+			return gitErr("check unmerged patches for "+s.Branch, err)
+		}
+		if unmerged == 0 {
+			_ = rc.state.Clear(s.Name)
+			_ = rc.claims.Clear(s.Name)
+			results = append(results, result{name: s.Name, status: "skipped", reason: "already merged"})
+			continue
+		}
+
 		commitMsg := opts.message
 		if commitMsg == "" {
 			commitMsg = fmt.Sprintf("merge: %s", s.Branch)
@@ -120,6 +136,21 @@ func runMerge(cmd *cobra.Command, args []string, opts mergeOpts) error {
 					break
 				}
 				return gitErr("merge --squash "+s.Branch, err)
+			}
+			// `git merge --squash` may leave the index empty when the
+			// branch's tree already matches base (e.g. the operator
+			// previously hand-resolved the content). Patch-ids differ
+			// so UnmergedPatches doesn't catch this, but the merge
+			// staged nothing — treat it as already-merged.
+			staged, err := rc.git.DirtyCount(rc.ctx, rc.repoRoot)
+			if err != nil {
+				return gitErr("check staged after squash", err)
+			}
+			if staged == 0 {
+				_ = rc.state.Clear(s.Name)
+				_ = rc.claims.Clear(s.Name)
+				results = append(results, result{name: s.Name, status: "skipped", reason: "already merged"})
+				continue
 			}
 			if err := rc.git.Commit(rc.ctx, rc.repoRoot, commitMsg); err != nil {
 				return gitErr("commit merged squash", err)

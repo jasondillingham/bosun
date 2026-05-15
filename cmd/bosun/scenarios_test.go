@@ -390,6 +390,56 @@ func TestScenario_MergeRealConflictReportsAndStops(t *testing.T) {
 	s.GitIn(s.repo, "reset", "--hard", "HEAD")
 }
 
+func TestScenario_MergeAfterManualConflictResolveSkipsAlreadyMerged(t *testing.T) {
+	// Round 3 finding: when `bosun merge` hits a conflict and the operator
+	// resolves it manually + commits, re-running `bosun merge` would try to
+	// squash the same session again and re-conflict. After the fix, bosun
+	// detects via `git cherry` that the branch's content is already on base
+	// and reports "already merged" (or otherwise skipped cleanly), and
+	// clears the session's state/claims so it stops showing as WORKING.
+	s := newScenario(t)
+	s.Bosun("init", "2")
+
+	// Two sessions edit the same line of README.md differently — guaranteed
+	// conflict at squash time.
+	wt1 := s.WorktreePath(1)
+	s.WriteFileIn(wt1, "README.md", "# version one\n")
+	s.CommitIn(wt1, "session-1 edit")
+	s.Bosun("done", "session-1")
+
+	wt2 := s.WorktreePath(2)
+	s.WriteFileIn(wt2, "README.md", "# version two\n")
+	s.CommitIn(wt2, "session-2 edit")
+	s.Bosun("done", "session-2")
+
+	// First merge run: session-1 lands clean, session-2 conflicts and stops.
+	out := s.Bosun("merge")
+	s.AssertContainsAll(out, "session-1: merged", "session-2: conflict")
+
+	// Operator resolves manually: pick session-2's content, stage, commit.
+	s.WriteFile("README.md", "# version two\n")
+	s.GitIn(s.repo, "add", "README.md")
+	s.GitIn(s.repo, "commit", "-q", "-m", "manual resolve session-2")
+
+	// Second merge run: session-2 must NOT re-conflict — its content is
+	// already on main. It should be reported as already merged / skipped.
+	out2, err := s.BosunErr("merge")
+	if err != nil {
+		t.Fatalf("second merge should not error after manual resolve: %v\n%s", err, out2)
+	}
+	if strings.Contains(strings.ToLower(out2), "conflict") {
+		t.Fatalf("second merge should not report conflict, got:\n%s", out2)
+	}
+	s.AssertContains(out2, "already merged")
+
+	// And session-2's state/claims should be cleared — it should no longer
+	// appear in `bosun list --ready`.
+	ready := s.Bosun("list", "--ready")
+	if strings.Contains(ready, "session-2") {
+		t.Fatalf("session-2 should be cleared from ready list after detection as already merged:\n%s", ready)
+	}
+}
+
 func TestScenario_MergeNoSquashCreatesMergeCommit(t *testing.T) {
 	s := newScenario(t)
 	s.Bosun("init", "1")

@@ -136,6 +136,34 @@ func TestAppendWorktreeExclude(t *testing.T) {
 	}
 }
 
+func TestUnmergedPatches(t *testing.T) {
+	cases := []struct {
+		name   string
+		stdout string
+		want   int
+	}{
+		{"all merged", "- abc Squash subject\n- def Another\n", 0},
+		{"mixed", "+ abc Real ahead\n- def Squashed\n+ ghi Also ahead\n", 2},
+		{"empty", "", 0},
+		{"only unmerged", "+ aaa One\n+ bbb Two\n", 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, _ := newFakeClient(t, runMatcher{
+				args:   []string{"cherry", "main", "bosun/session-1"},
+				stdout: tc.stdout,
+			})
+			got, err := c.UnmergedPatches(context.Background(), "/repo", "main", "bosun/session-1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("UnmergedPatches = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestListWorktrees_Roundtrip(t *testing.T) {
 	c, _ := newFakeClient(t, runMatcher{
 		args:   []string{"worktree", "list", "--porcelain"},

@@ -48,19 +48,34 @@ func runRemove(cmd *cobra.Command, sessionArg string, force bool) error {
 		return userErr("%s not found", name)
 	}
 
+	// destructive controls whether we let git's own safety checks (`branch -d`,
+	// `worktree remove` without --force) gate the operation. We bypass them when
+	// the user passed --force, OR when patch-id analysis says the branch's
+	// content is already on base (e.g. after `bosun merge` squashed it).
+	destructive := force
 	if !force {
 		if s.Dirty > 0 {
 			return userErr("%s has %d uncommitted change(s); commit or stash, or pass --force", name, s.Dirty)
 		}
 		if s.Ahead > 0 {
-			return userErr("%s has %d commit(s) ahead of %s that aren't merged; pass --force to discard", name, s.Ahead, rc.cfg.BaseBranch)
+			unmerged, err := rc.git.UnmergedPatches(rc.ctx, rc.repoRoot, rc.cfg.BaseBranch, s.Branch)
+			if err != nil {
+				return gitErr("check unmerged patches for "+s.Branch, err)
+			}
+			if unmerged > 0 {
+				return userErr("%s has %d commit(s) ahead of %s that aren't merged; pass --force to discard", name, unmerged, rc.cfg.BaseBranch)
+			}
+			// All ahead-commits are patch-equivalent to base — squash-merged.
+			// git itself won't accept `branch -d` here because the tip SHA isn't
+			// reachable from base, so escalate to force for the git calls only.
+			destructive = true
 		}
 	}
 
-	if err := rc.git.RemoveWorktree(rc.ctx, rc.repoRoot, s.Path, force); err != nil {
+	if err := rc.git.RemoveWorktree(rc.ctx, rc.repoRoot, s.Path, destructive); err != nil {
 		return gitErr("remove worktree "+s.Path, err)
 	}
-	if err := rc.git.DeleteBranch(rc.ctx, rc.repoRoot, s.Branch, force); err != nil {
+	if err := rc.git.DeleteBranch(rc.ctx, rc.repoRoot, s.Branch, destructive); err != nil {
 		return gitErr("delete branch "+s.Branch, err)
 	}
 	_ = rc.claims.Clear(name)

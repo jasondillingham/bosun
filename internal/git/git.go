@@ -219,6 +219,26 @@ func (c *Client) RevListCount(ctx context.Context, dir, base string) (int, error
 	return n, nil
 }
 
+// UnmergedPatches counts commits on `branch` whose patch-id is not already
+// present on `base`. It parses `git cherry <base> <branch>` output: each line
+// is prefixed with `+` (unmerged) or `-` (patch-equivalent commit on base).
+// A squash-merged session typically reports `-` for its commit, so this is
+// the right signal for "is this branch's content already on main?" — whereas
+// RevListCount would still report 1 ahead.
+func (c *Client) UnmergedPatches(ctx context.Context, dir, base, branch string) (int, error) {
+	out, err := c.run(ctx, dir, "cherry", base, branch)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "+ ") || line == "+" {
+			n++
+		}
+	}
+	return n, nil
+}
+
 // PorcelainStatusLine is one parsed line of `git status --porcelain`.
 type PorcelainStatusLine struct {
 	XY   string // first two chars, e.g. " M", "??", "A "

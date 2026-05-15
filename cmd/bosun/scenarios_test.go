@@ -344,6 +344,25 @@ func TestScenario_RemoveRefusesAheadWithoutForce(t *testing.T) {
 	s.AssertBranchMissing("bosun/session-1")
 }
 
+func TestScenario_RemoveAfterMergeNoForce(t *testing.T) {
+	// Regression: after `bosun merge` squash-merges a session, the session's
+	// branch still reports `ahead=1` (squashed commit is patch-id-equivalent
+	// but not literally on main). `bosun remove` should detect that via
+	// `git cherry` and proceed without requiring --force.
+	s := newScenario(t)
+	s.Bosun("init", "1")
+
+	wt1 := s.WorktreePath(1)
+	s.WriteFileIn(wt1, "feature.txt", "x\n")
+	s.CommitIn(wt1, "feature work")
+	s.Bosun("done", "session-1")
+	s.Bosun("merge")
+
+	s.Bosun("remove", "session-1")
+	s.AssertWorktreeMissing(1)
+	s.AssertBranchMissing("bosun/session-1")
+}
+
 // --- helpers (test-local) ---
 
 func readFile(t *testing.T, path string) string {

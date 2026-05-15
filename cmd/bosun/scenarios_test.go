@@ -68,6 +68,34 @@ Migrate storage.
 	}
 }
 
+func TestScenario_InitWithBriefWritesSessionPointer(t *testing.T) {
+	// Round 2 dogfood finding: agents who weren't launched via --initial-prompt
+	// missed BOSUN_BRIEF.md entirely. Claude Code auto-loads .claude/CLAUDE.md,
+	// so bosun writes a pointer there directing the agent to the brief.
+	s := newScenario(t)
+	s.WriteFile("plan.md", "## session-1\nrefactor things\n\n## session-2\nmigrate storage\n")
+	s.Bosun("init", "2", "--brief", "plan.md")
+
+	for i := 1; i <= 2; i++ {
+		path := filepath.Join(s.WorktreePath(i), ".claude", "CLAUDE.md")
+		data := readFile(t, path)
+		if !strings.Contains(data, "BOSUN_BRIEF.md") {
+			t.Errorf(".claude/CLAUDE.md for session-%d should reference BOSUN_BRIEF.md:\n%s", i, data)
+		}
+		if !strings.Contains(data, "session-"+itoa(i)) {
+			t.Errorf(".claude/CLAUDE.md for session-%d should name the session:\n%s", i, data)
+		}
+	}
+
+	// And like BOSUN_BRIEF.md, it must be excluded from the index so agents
+	// running `git add .` don't accidentally commit it.
+	wt1 := s.WorktreePath(1)
+	out := s.GitIn(wt1, "status", "--porcelain")
+	if strings.Contains(out, ".claude/CLAUDE.md") {
+		t.Fatalf(".claude/CLAUDE.md is in git status — should be excluded:\n%s", out)
+	}
+}
+
 func TestScenario_InitBriefIsExcludedFromIndex(t *testing.T) {
 	// Regression test: BOSUN_BRIEF.md must be in .git/info/exclude so an
 	// agent running `git add .` doesn't commit it and trigger merge

@@ -108,6 +108,23 @@ func TestWriteToWorktree_IncludesWorkflowPreamble(t *testing.T) {
 	}
 }
 
+func TestWriteSessionPointer(t *testing.T) {
+	wt := t.TempDir()
+	if err := WriteSessionPointer(wt, 4); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(wt, ".claude", "CLAUDE.md"))
+	if err != nil {
+		t.Fatalf("read .claude/CLAUDE.md: %v", err)
+	}
+	content := string(data)
+	for _, want := range []string{"session-4", "BOSUN_BRIEF.md", "bosun-managed"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("pointer missing %q\n--- full content ---\n%s", want, content)
+		}
+	}
+}
+
 func TestArchivePlan(t *testing.T) {
 	dir := t.TempDir()
 	plan := filepath.Join(dir, "plan.md")

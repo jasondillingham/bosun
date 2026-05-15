@@ -86,6 +86,22 @@ func WriteToWorktree(worktreePath string, b Brief) error {
 	return os.WriteFile(target, []byte(content), 0o644)
 }
 
+// WriteSessionPointer writes .claude/CLAUDE.md inside worktreePath. Claude
+// Code reads that file automatically at session start, so it acts as an
+// auto-loader that points the agent at BOSUN_BRIEF.md even when --launch
+// wasn't used and no --initial-prompt was passed.
+func WriteSessionPointer(worktreePath string, session int) error {
+	dir := filepath.Join(worktreePath, ".claude")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", dir, err)
+	}
+	content := fmt.Sprintf("**You're in a bosun-managed worktree (session-%d).**\n\n"+
+		"Your assignment is in `BOSUN_BRIEF.md` at the worktree root. Read it\n"+
+		"first. The brief explains the bosun lifecycle (commit → claim → done)\n"+
+		"you should follow when ready to hand off.\n", session)
+	return os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte(content), 0o644)
+}
+
 // ArchivePlan copies the original plan file into .bosun/briefs/plan.last.md
 // for later reference.
 func ArchivePlan(repoRoot, planPath string) error {

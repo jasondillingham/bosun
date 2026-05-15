@@ -2,7 +2,7 @@ BINARY := bosun
 PKG := github.com/jasondillingham/bosun/cmd/bosun
 DIST := dist
 
-.PHONY: build test test-race vet tidy cross clean install help
+.PHONY: build test test-race test-cover vet tidy cross clean install help
 
 help:
 	@echo "Bosun — make targets:"
@@ -23,6 +23,10 @@ test:
 
 test-race:
 	go test -race ./... -count=1
+
+test-cover:
+	go test -race -coverprofile=coverage.out -covermode=atomic ./internal/... -count=1
+	@go tool cover -func=coverage.out | tail -1
 
 vet:
 	go vet ./...

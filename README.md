@@ -50,12 +50,18 @@ Or build from source — see `Makefile`.
 ## Commands
 
 ```
-bosun init [N]              Create N parallel worktrees + branches
-bosun status                Print a table of session states
-bosun show <session>        Inspect one session's recent activity
-bosun merge [<session>...]  Squash-merge sessions back to main
+bosun init [N] [--brief plan.md] [--launch] [--isolate-cache]
+                            Create N worktrees + branches; optionally drop
+                            per-session briefs and spawn agent sessions
+bosun status [--with-overlaps]
+                            Print a table of session states + path collisions
+bosun show <session>        Inspect one session's brief, claims, recent commits
+bosun claim <session> <paths...>
+                            Session declares paths it's editing (advisory)
+bosun done <session>        Session signals it is ready to merge
+bosun merge [<session>...]  Squash-merge DONE sessions back to base
 bosun remove <session>      Tear down a session cleanly
-bosun list                  Print just session names (for shell scripting)
+bosun list [--ready]        Print session names (--ready for DONE only)
 ```
 
 ## Requirements
@@ -71,8 +77,8 @@ Runs on macOS, Linux, and Windows (x86_64 + arm64 binaries available).
 
 ## Roadmap
 
-- **v0.1** *(current)* — init, status, show, merge, remove, list. Stateless. Stdlib + Cobra.
-- **v0.2** — MCP server interface so sessions can announce activity and check for conflicts via tool calls.
+- **v0.1** *(current)* — init/status/show/claim/done/merge/remove/list. Filesystem-based coordination (claims + state). Optional brief fan-out + session launcher. Stdlib + Cobra.
+- **v0.2** — MCP server replaces `.bosun/claims/` and `.bosun/state/` with structured tool calls. Same workflow shape.
 - **v0.3** — Web dashboard for live monitoring.
 
 ## License

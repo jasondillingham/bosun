@@ -132,6 +132,52 @@ func TestScenario_StatusEmpty(t *testing.T) {
 	s.AssertContains(out, "no sessions")
 }
 
+func TestScenario_StatusSummaryReflectsState(t *testing.T) {
+	// `bosun status` should print a one-line summary above the table that
+	// counts states, sums AHEAD across sessions, and (with --with-overlaps)
+	// counts unique overlap rows.
+	s := newScenario(t)
+	s.Bosun("init", "3")
+
+	// session-1: commit + DONE (ahead=1).
+	wt1 := s.WorktreePath(1)
+	s.WriteFileIn(wt1, "shared.go", "package x\n")
+	s.CommitIn(wt1, "session-1 work")
+	s.Bosun("done", "session-1")
+
+	// session-2: commit, leave WORKING (ahead=1).
+	wt2 := s.WorktreePath(2)
+	s.WriteFileIn(wt2, "b.txt", "y\n")
+	s.CommitIn(wt2, "session-2 work")
+
+	// session-3: leave empty WORKING (ahead=0).
+
+	// Overlapping claim between session-1 and session-2 on shared.go.
+	s.Bosun("claim", "session-1", "shared.go")
+	s.Bosun("claim", "session-2", "shared.go")
+
+	out := s.Bosun("status", "--with-overlaps")
+	// First line should be the summary.
+	firstLine := strings.SplitN(out, "\n", 2)[0]
+	for _, want := range []string{
+		"3 sessions",
+		"1 DONE",
+		"2 WORKING",
+		"2 commits ahead total",
+		"1 overlap",
+	} {
+		if !strings.Contains(firstLine, want) {
+			t.Errorf("summary missing %q in first line:\n%s", want, firstLine)
+		}
+	}
+
+	// JSON output must NOT include the human summary line.
+	jsonOut := s.Bosun("status", "--json")
+	if strings.Contains(jsonOut, "ahead total") {
+		t.Errorf("JSON output unexpectedly contains summary phrasing:\n%s", jsonOut)
+	}
+}
+
 func TestScenario_StatusJSONSchemaStable(t *testing.T) {
 	s := newScenario(t)
 	s.Bosun("init", "3")

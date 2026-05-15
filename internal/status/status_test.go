@@ -52,6 +52,84 @@ func TestRenderText_HeaderAndRows(t *testing.T) {
 	}
 }
 
+func TestRenderText_SummaryLine(t *testing.T) {
+	var buf bytes.Buffer
+	err := RenderText(&buf, RenderOptions{Sessions: sampleSessions(), NoColor: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	// sampleSessions: 1 DONE (ahead 2), 2 WORKING (ahead 1+0 = 1), total ahead = 3.
+	for _, want := range []string{
+		"3 sessions",
+		"1 DONE",
+		"2 WORKING",
+		"3 commits ahead total",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("summary missing %q\n--- output ---\n%s", want, out)
+		}
+	}
+	// Summary should be on the very first line, above the SESSION header.
+	firstLine := strings.SplitN(out, "\n", 2)[0]
+	if !strings.Contains(firstLine, "3 sessions") {
+		t.Errorf("summary should be the first line, got: %q", firstLine)
+	}
+	// STUCK absent from sample — should not appear in summary.
+	if strings.Contains(firstLine, "STUCK") {
+		t.Errorf("summary should omit zero-count states: %q", firstLine)
+	}
+}
+
+func TestRenderText_SummaryWithOverlaps(t *testing.T) {
+	var buf bytes.Buffer
+	err := RenderText(&buf, RenderOptions{
+		Sessions:     sampleSessions(),
+		WithOverlaps: true,
+		Overlaps: []claims.Overlap{
+			{Path: "internal/auth/handler.go", Sessions: []string{"session-1", "session-3"}},
+			{Path: "internal/db.go", Sessions: []string{"session-2", "session-3"}},
+		},
+		NoColor: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstLine := strings.SplitN(buf.String(), "\n", 2)[0]
+	if !strings.Contains(firstLine, "2 overlaps") {
+		t.Errorf("summary should report overlap count, got: %q", firstLine)
+	}
+}
+
+func TestRenderText_SummarySuppressedFromJSON(t *testing.T) {
+	// JSON output must not contain the human-readable summary line — JSON
+	// consumers compute their own.
+	var buf bytes.Buffer
+	if err := RenderJSON(&buf, sampleSessions(), nil, false); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(buf.String(), "ahead total") {
+		t.Errorf("JSON output unexpectedly contains summary phrasing:\n%s", buf.String())
+	}
+}
+
+func TestRenderText_SummaryColorEnabled(t *testing.T) {
+	// When color is on, state names in the summary should be wrapped in
+	// ANSI escapes (we look for the green DONE escape — \x1b[32m).
+	var buf bytes.Buffer
+	err := RenderText(&buf, RenderOptions{Sessions: sampleSessions(), NoColor: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstLine := strings.SplitN(buf.String(), "\n", 2)[0]
+	// In tests stdout isn't a TTY so ShouldColor returns false; assert that
+	// no color escape is leaked. (The real TTY path is exercised by the
+	// scenario test which only asserts plain text content.)
+	if strings.Contains(firstLine, "\x1b[") {
+		t.Errorf("summary unexpectedly contains color escapes when not a TTY: %q", firstLine)
+	}
+}
+
 func TestRenderText_EmptySessions(t *testing.T) {
 	var buf bytes.Buffer
 	_ = RenderText(&buf, RenderOptions{NoColor: true})

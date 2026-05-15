@@ -29,6 +29,8 @@ func RenderText(w io.Writer, opts RenderOptions) error {
 		return nil
 	}
 
+	writeSummary(w, opts, useColor)
+
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "SESSION\tBRANCH\tSTATE\tAHEAD\tDIRTY\tCLAIMED\tLAST_COMMIT")
 	for _, s := range opts.Sessions {
@@ -50,6 +52,56 @@ func RenderText(w io.Writer, opts RenderOptions) error {
 		writeOverlaps(w, opts.Overlaps)
 	}
 	return nil
+}
+
+// writeSummary prints a one-line summary above the status table:
+//   3 sessions — 1 DONE, 2 WORKING · 5 commits ahead total · 1 overlap
+//
+// State counts are colored when color is enabled. Only non-zero state
+// buckets are listed (DONE, WORKING, STUCK order). Overlap count is only
+// included when WithOverlaps is set.
+func writeSummary(w io.Writer, opts RenderOptions, useColor bool) {
+	var doneN, workingN, stuckN, totalAhead int
+	for _, s := range opts.Sessions {
+		switch s.State {
+		case session.StateDone:
+			doneN++
+		case session.StateWorking:
+			workingN++
+		case session.StateStuck:
+			stuckN++
+		}
+		totalAhead += s.Ahead
+	}
+
+	var stateParts []string
+	if doneN > 0 {
+		stateParts = append(stateParts, fmt.Sprintf("%d %s", doneN, colorState(session.StateDone, useColor)))
+	}
+	if workingN > 0 {
+		stateParts = append(stateParts, fmt.Sprintf("%d %s", workingN, colorState(session.StateWorking, useColor)))
+	}
+	if stuckN > 0 {
+		stateParts = append(stateParts, fmt.Sprintf("%d %s", stuckN, colorState(session.StateStuck, useColor)))
+	}
+
+	line := fmt.Sprintf("%d %s", len(opts.Sessions), pluralize("session", len(opts.Sessions)))
+	if len(stateParts) > 0 {
+		line += " — " + strings.Join(stateParts, ", ")
+	}
+	line += " · " + fmt.Sprintf("%d %s ahead total", totalAhead, pluralize("commit", totalAhead))
+	if opts.WithOverlaps {
+		n := len(opts.Overlaps)
+		line += " · " + fmt.Sprintf("%d %s", n, pluralize("overlap", n))
+	}
+	fmt.Fprintln(w, line)
+}
+
+func pluralize(word string, n int) string {
+	if n == 1 {
+		return word
+	}
+	return word + "s"
 }
 
 func colorState(st session.State, color bool) string {

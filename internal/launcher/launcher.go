@@ -180,8 +180,25 @@ func launchTerminalGhostty(opts Options, bin string) error {
 	envPrefix := buildShellEnvPrefix(opts.Env)
 	inner := fmt.Sprintf("cd %s && %s%s; exec bash",
 		shellQuote(opts.WorktreePath), envPrefix, shellInvocation(opts))
-	cmd := exec.Command(bin, "-e", "bash", "-lc", inner)
-	return cmd.Run()
+	return spawnDetached(exec.Command(bin, "-e", "bash", "-lc", inner))
+}
+
+// spawnDetached starts cmd without blocking on its exit. Used for terminal
+// launches where the child window must outlive the bosun process. We reap
+// the child in a goroutine so it doesn't sit as a zombie if bosun is still
+// alive when it exits; once bosun exits, the OS reparents the child to
+// init/launchd which handles reaping.
+//
+// Returns the error from Start() so genuinely-failed launches (binary not
+// on PATH, permission denied, etc.) still surface to the caller. Errors
+// that happen after the fork (e.g. the spawned shell prints a not-found)
+// are not visible here — that's a trade-off for not blocking.
+func spawnDetached(cmd *exec.Cmd) error {
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	go func() { _ = cmd.Wait() }()
+	return nil
 }
 
 func launchTerminalDarwin(opts Options) error {
@@ -191,8 +208,7 @@ func launchTerminalDarwin(opts Options) error {
 		`tell application "Terminal" to do script "cd %s && %s%s"`,
 		shellQuote(opts.WorktreePath), envPrefix, shellInvocation(opts),
 	)
-	cmd := exec.Command("osascript", "-e", script)
-	return cmd.Run()
+	return spawnDetached(exec.Command("osascript", "-e", script))
 }
 
 func launchTerminalLinux(opts Options) error {
@@ -210,7 +226,7 @@ func launchTerminalLinux(opts Options) error {
 		default:
 			cmd = exec.Command(term, "-e", "bash", "-lc", inner)
 		}
-		return cmd.Run()
+		return spawnDetached(cmd)
 	}
 	return fmt.Errorf("no terminal emulator found")
 }
@@ -226,8 +242,7 @@ func launchTerminalWindows(opts Options) error {
 	// Use cmd /c start cmd /K to leave a window open after the command runs.
 	args := []string{"/c", "start", "cmd", "/K",
 		fmt.Sprintf("cd /D %s && %s%s", opts.WorktreePath, envPrefix, cmdLine)}
-	cmd := exec.Command("cmd", args...)
-	return cmd.Run()
+	return spawnDetached(exec.Command("cmd", args...))
 }
 
 func printFallback(opts Options) {

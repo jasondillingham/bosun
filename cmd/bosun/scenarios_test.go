@@ -1,9 +1,13 @@
 package main
 
 import (
+	"bytes"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // --- init ---
@@ -99,6 +103,66 @@ func TestScenario_StatusJSONSchemaStable(t *testing.T) {
 		if sess.Name == "" || sess.Branch == "" || sess.State == "" {
 			t.Errorf("session has empty required field: %+v", sess)
 		}
+	}
+}
+
+func TestScenario_StatusWatchRendersAndExitsCleanlyOnSIGINT(t *testing.T) {
+	// Drive `bosun status --watch --interval 1` end-to-end: start the
+	// process, wait long enough for at least one full render, send SIGINT,
+	// and verify the process exits 0 with the expected output. The default
+	// Go signal handler would exit non-zero on SIGINT, so a clean 0 here
+	// proves the signal.NotifyContext + return-nil-on-cancel plumbing.
+	s := newScenario(t)
+	s.Bosun("init", "1")
+
+	cmd := exec.Command(bosunBin, "status", "--watch", "--interval", "1")
+	cmd.Dir = s.repo
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start bosun status --watch: %v", err)
+	}
+
+	// ~1.2s gives the first render time to flush before we interrupt.
+	time.Sleep(1200 * time.Millisecond)
+
+	if err := cmd.Process.Signal(os.Interrupt); err != nil {
+		t.Fatalf("signal SIGINT: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("bosun status --watch did not exit 0 on SIGINT: %v\n%s", err, buf.String())
+		}
+	case <-time.After(5 * time.Second):
+		_ = cmd.Process.Kill()
+		t.Fatalf("bosun status --watch did not exit within 5s of SIGINT:\n%s", buf.String())
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "session-1") {
+		t.Errorf("expected at least one render containing session-1:\n%s", out)
+	}
+	if !strings.Contains(out, "\x1b[2J\x1b[H") {
+		t.Errorf("expected clear-screen escape in watch output:\n%q", out)
+	}
+}
+
+func TestScenario_StatusWatchRefusesJSON(t *testing.T) {
+	s := newScenario(t)
+	s.Bosun("init", "1")
+
+	out, err := s.BosunErr("status", "--watch", "--json")
+	if err == nil {
+		t.Fatalf("status --watch --json should refuse:\n%s", out)
+	}
+	if !strings.Contains(strings.ToLower(out), "mutually exclusive") {
+		t.Errorf("expected error mentioning mutual exclusion:\n%s", out)
 	}
 }
 

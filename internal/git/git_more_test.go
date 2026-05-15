@@ -3,6 +3,7 @@ package git
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -21,16 +22,21 @@ func TestRepoRoot(t *testing.T) {
 }
 
 func TestMainWorktreePath(t *testing.T) {
+	// The function does filepath.Dir on git's --git-common-dir output, so
+	// the expected value is OS-native (filepath.Dir uses OS separators).
+	commonDir := filepath.Join(string(filepath.Separator)+"repo", ".git")
+	want := filepath.Dir(commonDir)
+
 	c, _ := newFakeClient(t, runMatcher{
 		args:   []string{"rev-parse", "--path-format=absolute", "--git-common-dir"},
-		stdout: "/repo/.git\n",
+		stdout: commonDir + "\n",
 	})
 	got, err := c.MainWorktreePath(context.Background(), "/anywhere")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "/repo" {
-		t.Fatalf("MainWorktreePath = %q, want /repo", got)
+	if got != want {
+		t.Fatalf("MainWorktreePath = %q, want %q", got, want)
 	}
 }
 
@@ -112,7 +118,7 @@ func TestLogN(t *testing.T) {
 
 func TestAppendWorktreeExclude(t *testing.T) {
 	dir := t.TempDir()
-	infoPath := dir + "/info/exclude"
+	infoPath := filepath.Join(dir, "info", "exclude")
 
 	c, _ := newFakeClient(t, runMatcher{
 		args:   []string{"rev-parse", "--git-path", "info/exclude"},

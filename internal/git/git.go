@@ -49,13 +49,17 @@ func New() *Client {
 }
 
 // run is the internal helper that converts (stdout, stderr, err) into a
-// uniform error including stderr content.
+// uniform error including both stdout and stderr. Both streams matter
+// because git writes diagnostic content to whichever stream it pleases —
+// `git merge --squash`, for example, prints "CONFLICT (content): Merge
+// conflict in ..." to stdout.
 func (c *Client) run(ctx context.Context, dir string, args ...string) (string, error) {
 	out, errOut, err := c.Runner.Run(ctx, dir, args...)
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
-			return out, fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(errOut))
+			combined := strings.TrimSpace(strings.TrimSpace(out) + "\n" + strings.TrimSpace(errOut))
+			return out, fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, combined)
 		}
 		return out, fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
 	}

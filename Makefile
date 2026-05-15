@@ -2,7 +2,7 @@ BINARY := bosun
 PKG := github.com/jasondillingham/bosun/cmd/bosun
 DIST := dist
 
-.PHONY: build test test-race test-cover vet tidy cross clean install demo help
+.PHONY: build test test-race test-cover check vet tidy cross clean install demo help
 
 help:
 	@echo "Bosun — make targets:"
@@ -16,6 +16,7 @@ help:
 	@echo "  clean       Remove dist/ + ./$(BINARY)"
 	@echo "  demo        Run the interactive end-to-end demo in a sandbox"
 	@echo "  demo-fast   Run the demo without pausing between steps"
+	@echo "  check       vet + race tests + demo dry-run (run before commits)"
 
 build:
 	go build -o $(BINARY) ./cmd/bosun
@@ -57,3 +58,14 @@ demo: build
 
 demo-fast: build
 	@./examples/demo.sh --no-wait
+
+# Full health check: vet, race tests, scenario coverage, and demo dry-run.
+# Run this before committing anything non-trivial.
+check:
+	@printf '\n\033[1;36m▶ go vet\033[0m\n'
+	@go vet ./...
+	@printf '\n\033[1;36m▶ go test -race (incl. scenarios + scale)\033[0m\n'
+	@go test -race -count=1 ./...
+	@printf '\n\033[1;36m▶ demo dry-run\033[0m\n'
+	@./examples/demo.sh --no-wait >/dev/null 2>&1 && echo "  demo: OK" || (echo "  demo: FAIL" && exit 1)
+	@printf '\n\033[1;32m✓ all checks passed\033[0m\n'

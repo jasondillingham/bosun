@@ -21,3 +21,4 @@ Thumbs.db
 *.out
 coverage.txt
 .bosun/
+dogfood-plan.md

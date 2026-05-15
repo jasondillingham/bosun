@@ -149,12 +149,13 @@ func runCleanup(cmd *cobra.Command, opts cleanupOpts) error {
 			printf("  ▸ %s: would remove (%s)\n", p.s.Name, p.reason)
 			continue
 		}
-		// Worktree force needed if it has uncommitted changes or the user passed --force.
-		forceWT := opts.force || p.s.Dirty > 0
-		// Branch force needed when commits aren't on base — DONE sessions and
-		// any --force removal qualify. Squash-merged branches still appear
-		// "unmerged" to git, so a plain -d would fail.
-		forceBranch := opts.force || p.s.Ahead > 0 || p.s.State == session.StateDone
+		// Bosun's planCleanup already validated this session is safe to
+		// remove (DONE / empty / squash-merged / --force). Bypass git's own
+		// safety gates so untracked bosun metadata (BOSUN_BRIEF.md,
+		// .claude/CLAUDE.md) and patch-id-equivalent branches don't block
+		// the removal.
+		forceWT := true
+		forceBranch := true
 		if err := rc.git.RemoveWorktree(rc.ctx, rc.repoRoot, p.s.Path, forceWT); err != nil {
 			return gitErr("remove worktree "+p.s.Path, err)
 		}

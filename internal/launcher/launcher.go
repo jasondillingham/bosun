@@ -26,12 +26,13 @@ const (
 
 // Options controls a single launch.
 type Options struct {
-	Strategy     Strategy          // "auto" picks tmux → terminal → print
-	WorktreePath string            // absolute path to the worktree
-	SessionName  string            // e.g. "session-1" (for window titles)
-	Command      string            // command to run (default: "claude")
-	Env          map[string]string // extra env vars to set (e.g. GOCACHE)
-	Out          io.Writer         // where to print fallback commands; defaults to os.Stdout
+	Strategy      Strategy          // "auto" picks tmux → terminal → print
+	WorktreePath  string            // absolute path to the worktree
+	SessionName   string            // e.g. "session-1" (for window titles)
+	Command       string            // command to run (default: "claude")
+	InitialPrompt string            // optional initial message to pass to the launched agent
+	Env           map[string]string // extra env vars to set (e.g. GOCACHE)
+	Out           io.Writer         // where to print fallback commands; defaults to os.Stdout
 }
 
 // Launch runs Options against the chosen strategy. Returns the resolved
@@ -137,9 +138,24 @@ func launchTmux(opts Options) error {
 	for _, e := range envPairs {
 		args = append(args, "-e", e)
 	}
+	// tmux runs the command directly (not through a shell), so pass command
+	// + optional prompt as separate argv elements rather than as a shell-
+	// quoted string.
 	args = append(args, opts.Command)
+	if opts.InitialPrompt != "" {
+		args = append(args, opts.InitialPrompt)
+	}
 	cmd := exec.Command("tmux", args...)
 	return cmd.Run()
+}
+
+// shellInvocation returns "<command>" or "<command> '<quoted-prompt>'" for
+// use inside a POSIX shell pipeline. Shared by darwin/linux/ghostty paths.
+func shellInvocation(opts Options) string {
+	if opts.InitialPrompt == "" {
+		return opts.Command
+	}
+	return opts.Command + " " + shellQuote(opts.InitialPrompt)
 }
 
 func launchTerminal(opts Options) error {
@@ -163,7 +179,7 @@ func launchTerminal(opts Options) error {
 func launchTerminalGhostty(opts Options, bin string) error {
 	envPrefix := buildShellEnvPrefix(opts.Env)
 	inner := fmt.Sprintf("cd %s && %s%s; exec bash",
-		shellQuote(opts.WorktreePath), envPrefix, opts.Command)
+		shellQuote(opts.WorktreePath), envPrefix, shellInvocation(opts))
 	cmd := exec.Command(bin, "-e", "bash", "-lc", inner)
 	return cmd.Run()
 }
@@ -173,7 +189,7 @@ func launchTerminalDarwin(opts Options) error {
 	// osascript opens a new Terminal window cd'd to the worktree and runs the command.
 	script := fmt.Sprintf(
 		`tell application "Terminal" to do script "cd %s && %s%s"`,
-		shellQuote(opts.WorktreePath), envPrefix, opts.Command,
+		shellQuote(opts.WorktreePath), envPrefix, shellInvocation(opts),
 	)
 	cmd := exec.Command("osascript", "-e", script)
 	return cmd.Run()
@@ -182,7 +198,7 @@ func launchTerminalDarwin(opts Options) error {
 func launchTerminalLinux(opts Options) error {
 	envPrefix := buildShellEnvPrefix(opts.Env)
 	inner := fmt.Sprintf("cd %s && %s%s; exec bash",
-		shellQuote(opts.WorktreePath), envPrefix, opts.Command)
+		shellQuote(opts.WorktreePath), envPrefix, shellInvocation(opts))
 	for _, term := range linuxTerminals {
 		if _, err := exec.LookPath(term); err != nil {
 			continue
@@ -201,9 +217,15 @@ func launchTerminalLinux(opts Options) error {
 
 func launchTerminalWindows(opts Options) error {
 	envPrefix := buildCmdEnvPrefix(opts.Env)
+	cmdLine := opts.Command
+	if opts.InitialPrompt != "" {
+		// cmd.exe quoting: wrap in double-quotes, escape embedded `"` as `""`.
+		quoted := strings.ReplaceAll(opts.InitialPrompt, `"`, `""`)
+		cmdLine = fmt.Sprintf(`%s "%s"`, opts.Command, quoted)
+	}
 	// Use cmd /c start cmd /K to leave a window open after the command runs.
 	args := []string{"/c", "start", "cmd", "/K",
-		fmt.Sprintf("cd /D %s && %s%s", opts.WorktreePath, envPrefix, opts.Command)}
+		fmt.Sprintf("cd /D %s && %s%s", opts.WorktreePath, envPrefix, cmdLine)}
 	cmd := exec.Command("cmd", args...)
 	return cmd.Run()
 }
@@ -211,7 +233,7 @@ func launchTerminalWindows(opts Options) error {
 func printFallback(opts Options) {
 	envPrefix := buildShellEnvPrefix(opts.Env)
 	fmt.Fprintf(opts.Out, "bosun: run %s manually:\n", opts.SessionName)
-	fmt.Fprintf(opts.Out, "  cd %s && %s%s\n", shellQuote(opts.WorktreePath), envPrefix, opts.Command)
+	fmt.Fprintf(opts.Out, "  cd %s && %s%s\n", shellQuote(opts.WorktreePath), envPrefix, shellInvocation(opts))
 }
 
 func buildEnvPairs(env map[string]string) []string {

@@ -85,6 +85,54 @@ func TestLaunch_MissingPath(t *testing.T) {
 	}
 }
 
+func TestPrintStrategy_IncludesInitialPrompt(t *testing.T) {
+	var buf bytes.Buffer
+	_, err := Launch(Options{
+		Strategy:      StrategyPrint,
+		WorktreePath:  "/wt/session-1",
+		SessionName:   "session-1",
+		Command:       "claude",
+		InitialPrompt: "Read BOSUN_BRIEF.md in this directory",
+		Out:           &buf,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "'Read BOSUN_BRIEF.md in this directory'") {
+		t.Fatalf("print output missing quoted prompt:\n%s", out)
+	}
+}
+
+func TestShellInvocation_QuotesPrompt(t *testing.T) {
+	got := shellInvocation(Options{
+		Command:       "claude",
+		InitialPrompt: "hello world",
+	})
+	want := "claude 'hello world'"
+	if got != want {
+		t.Fatalf("shellInvocation = %q, want %q", got, want)
+	}
+}
+
+func TestShellInvocation_EmptyPrompt(t *testing.T) {
+	got := shellInvocation(Options{Command: "claude"})
+	if got != "claude" {
+		t.Fatalf("shellInvocation = %q, want claude", got)
+	}
+}
+
+func TestShellInvocation_EscapesSingleQuotes(t *testing.T) {
+	got := shellInvocation(Options{
+		Command:       "claude",
+		InitialPrompt: "it's a test",
+	})
+	want := `claude 'it'\''s a test'`
+	if got != want {
+		t.Fatalf("shellInvocation = %q, want %q", got, want)
+	}
+}
+
 func TestHasGhostty_OnPath(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("PATH stub uses POSIX shebang")

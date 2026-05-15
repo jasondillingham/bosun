@@ -15,11 +15,12 @@ import (
 
 func newInitCmd() *cobra.Command {
 	var (
-		briefPath    string
-		launch       bool
-		isolateCache bool
-		force        bool
-		fromBranch   string
+		briefPath     string
+		launch        bool
+		isolateCache  bool
+		force         bool
+		fromBranch    string
+		initialPrompt string
 	)
 
 	cmd := &cobra.Command{
@@ -28,11 +29,12 @@ func newInitCmd() *cobra.Command {
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runInit(cmd, args, initOpts{
-				brief:        briefPath,
-				launch:       launch,
-				isolateCache: isolateCache,
-				force:        force,
-				fromBranch:   fromBranch,
+				brief:         briefPath,
+				launch:        launch,
+				isolateCache:  isolateCache,
+				force:         force,
+				fromBranch:    fromBranch,
+				initialPrompt: initialPrompt,
 			})
 		},
 	}
@@ -42,16 +44,18 @@ func newInitCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&isolateCache, "isolate-cache", false, "set per-worktree build-cache env vars when launching")
 	cmd.Flags().BoolVar(&force, "force", false, "overwrite existing bosun worktrees")
 	cmd.Flags().StringVar(&fromBranch, "from", "", "base branch (defaults to config.base_branch)")
+	cmd.Flags().StringVar(&initialPrompt, "initial-prompt", "", "first message passed to each launched session (paired with --launch; default: 'Read BOSUN_BRIEF.md...' when --brief is also set)")
 
 	return cmd
 }
 
 type initOpts struct {
-	brief        string
-	launch       bool
-	isolateCache bool
-	force        bool
-	fromBranch   string
+	brief         string
+	launch        bool
+	isolateCache  bool
+	force         bool
+	fromBranch    string
+	initialPrompt string
 }
 
 func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
@@ -196,6 +200,14 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 
 	// Optional launch.
 	if opts.launch {
+		// Resolve the initial prompt: explicit flag wins; otherwise default to
+		// pointing the agent at its brief when --brief was supplied. With no
+		// brief and no prompt, the launch is silent (bare `claude`).
+		prompt := opts.initialPrompt
+		if prompt == "" && opts.brief != "" {
+			prompt = "Read BOSUN_BRIEF.md in this directory — it's your assignment. Read it in full, then follow the workflow it describes."
+		}
+
 		fmt.Fprintln(os.Stdout, "\nLaunching sessions:")
 		for i, c := range made {
 			env := map[string]string{}
@@ -203,11 +215,12 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 				env = launcher.IsolateCacheEnv(c.path)
 			}
 			strategy, err := launcher.Launch(launcher.Options{
-				Strategy:     launcher.Strategy(rc.cfg.Launcher),
-				WorktreePath: c.path,
-				SessionName:  c.name,
-				Command:      "claude",
-				Env:          env,
+				Strategy:      launcher.Strategy(rc.cfg.Launcher),
+				WorktreePath:  c.path,
+				SessionName:   c.name,
+				Command:       "claude",
+				InitialPrompt: prompt,
+				Env:           env,
 			})
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "  %s: launch failed: %v\n", c.name, err)

@@ -83,6 +83,28 @@ func TestScenario_InitBriefIsExcludedFromIndex(t *testing.T) {
 	}
 }
 
+func TestScenario_InitLaunchInitialPromptDefault(t *testing.T) {
+	// With --launch + --brief and no explicit --initial-prompt, bosun should
+	// default to telling the agent to read BOSUN_BRIEF.md. Use launcher=print
+	// config so the test doesn't spawn real terminal windows.
+	s := newScenario(t)
+	s.WriteFile(".bosun/config.json", `{"launcher":"print"}`)
+	s.WriteFile("plan.md", "## session-1\nrefactor things\n")
+
+	out := s.Bosun("init", "1", "--brief", "plan.md", "--launch")
+	s.AssertContains(out, "Read BOSUN_BRIEF.md")
+}
+
+func TestScenario_InitLaunchExplicitInitialPrompt(t *testing.T) {
+	// Explicit --initial-prompt should override the default and propagate
+	// through to the launched command.
+	s := newScenario(t)
+	s.WriteFile(".bosun/config.json", `{"launcher":"print"}`)
+
+	out := s.Bosun("init", "1", "--launch", "--initial-prompt", "custom kickoff")
+	s.AssertContains(out, "'custom kickoff'")
+}
+
 func TestScenario_InitBriefAutoGitignoresPlanFile(t *testing.T) {
 	// v0.1 dogfood finding: a plan.md at the repo root sat untracked and
 	// felt wrong. bosun init --brief should auto-add it to .gitignore.

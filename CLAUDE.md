@@ -6,6 +6,34 @@ If you're a Claude Code session working on the Bosun codebase, read this before 
 
 Bosun is a Go CLI that coordinates parallel Claude Code sessions on isolated git worktrees. **Read `SPEC.md` for the full v0.1 spec.** That document is authoritative for scope.
 
+## Release stance (read this before any public-facing action)
+
+**Bosun is NOT public yet.** The repo is private; the v0.2.0 tag is local-only;
+RELEASES.md is intentionally not yet caught up. Plan is to open-source under
+Apache 2.0 once the tool is well-tested enough that someone landing on the
+GitHub page from a Hacker News thread has a good experience — that means
+robust kickoff (no silent init hangs), a working `bosun doctor`-style
+preflight, and a brief-authoring assistant that lets a new user succeed
+without writing 6 disjoint briefs from scratch.
+
+Until then, **do not**:
+
+- Push to a public origin / create a public mirror
+- Generate marketing material (README rewrites for HN, demo GIFs that
+  would get linked anywhere, blog post drafts that say "available now")
+- Set the GitHub repo visibility to public
+
+You can absolutely:
+
+- Improve the README for future public-launch readiness
+- Draft (not publish) blog posts in `docs/blog/`
+- Write release notes in `RELEASES.md`
+- Build distribution scaffolding (Homebrew formula, prebuilt binaries) and
+  keep it dormant
+
+When the maintainer is ready to go public, they'll say so explicitly and
+remove this section. Don't take silence as permission.
+
 ## Scope discipline (most important rule)
 
 `SPEC.md` lists what's in v0.1 and what's explicitly NOT. Do not extend into v0.2+ work even when the codebase invites it. Examples of common drift:

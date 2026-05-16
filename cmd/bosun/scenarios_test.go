@@ -2020,3 +2020,235 @@ func TestScenario_CleanupOrphanDirs_SkipsLiveWorktreeDir(t *testing.T) {
 		t.Fatalf("live worktree dir was removed; should have been skipped: %v", err)
 	}
 }
+
+// --- config ---
+
+func TestScenario_ConfigListMarksDefaultsWhenNoFile(t *testing.T) {
+	// With no .bosun/config.json on disk, every key in `config list` should
+	// be flagged as a default. The marker is how operators tell "I set this"
+	// from "bosun is just showing me the built-in fallback."
+	s := newScenario(t)
+
+	out := s.Bosun("config", "list")
+	for _, key := range []string{
+		"base_branch",
+		"launcher",
+		"verify_cmd",
+		"default_session_count",
+		"session_prefix",
+		"worktree_suffix_pattern",
+		"isolate_cache_default",
+		"hooks",
+	} {
+		if !strings.Contains(out, key+":") {
+			t.Errorf("config list missing key %q:\n%s", key, out)
+		}
+	}
+	// Every line should carry the (default) marker since the file is absent.
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if !strings.Contains(line, "(default)") {
+			t.Errorf("line missing (default) marker: %q", line)
+		}
+	}
+}
+
+func TestScenario_ConfigListDropsDefaultMarkerForOverriddenKey(t *testing.T) {
+	// `config set` should write the file and `config list` should stop
+	// showing the (default) marker for the overridden key while every
+	// other key still shows it.
+	s := newScenario(t)
+	s.Bosun("config", "set", "verify_cmd", "go test ./...")
+
+	out := s.Bosun("config", "list")
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if strings.HasPrefix(line, "verify_cmd:") {
+			if strings.Contains(line, "(default)") {
+				t.Errorf("verify_cmd should not be flagged default after set: %q", line)
+			}
+			if !strings.Contains(line, "go test ./...") {
+				t.Errorf("verify_cmd line missing new value: %q", line)
+			}
+			continue
+		}
+		if !strings.Contains(line, "(default)") {
+			t.Errorf("non-overridden line missing (default) marker: %q", line)
+		}
+	}
+}
+
+func TestScenario_ConfigGetReturnsResolvedValue(t *testing.T) {
+	s := newScenario(t)
+
+	// Default first.
+	out := s.Bosun("config", "get", "base_branch")
+	if strings.TrimSpace(out) != "main" {
+		t.Errorf("get base_branch default = %q, want main", strings.TrimSpace(out))
+	}
+
+	// Override and re-read.
+	s.Bosun("config", "set", "base_branch", "trunk")
+	out = s.Bosun("config", "get", "base_branch")
+	if strings.TrimSpace(out) != "trunk" {
+		t.Errorf("get base_branch after set = %q, want trunk", strings.TrimSpace(out))
+	}
+}
+
+func TestScenario_ConfigGetUnknownKeyFails(t *testing.T) {
+	// Typos should error so the operator notices, rather than silently
+	// returning an empty string.
+	s := newScenario(t)
+
+	out, err := s.BosunErr("config", "get", "base-branch")
+	if err == nil {
+		t.Fatalf("get with unknown key should fail:\n%s", out)
+	}
+	if !strings.Contains(out, "unknown config key") {
+		t.Errorf("error should mention unknown config key: %s", out)
+	}
+}
+
+func TestScenario_ConfigSetParsesScalarTypes(t *testing.T) {
+	// Integer, bool, and string keys all flow through the same `set` entry
+	// point. Round-trip each through `get` to prove the type survives the
+	// JSON encode/decode cycle.
+	s := newScenario(t)
+	s.Bosun("config", "set", "default_session_count", "6")
+	s.Bosun("config", "set", "isolate_cache_default", "true")
+	s.Bosun("config", "set", "launcher", "print")
+
+	if got := strings.TrimSpace(s.Bosun("config", "get", "default_session_count")); got != "6" {
+		t.Errorf("default_session_count = %q, want 6", got)
+	}
+	if got := strings.TrimSpace(s.Bosun("config", "get", "isolate_cache_default")); got != "true" {
+		t.Errorf("isolate_cache_default = %q, want true", got)
+	}
+	if got := strings.TrimSpace(s.Bosun("config", "get", "launcher")); got != "print" {
+		t.Errorf("launcher = %q, want print", got)
+	}
+
+	// Subsequent `bosun init` should see the new default count.
+	out := s.Bosun("init")
+	if !strings.Contains(out, "Created 6 session(s)") {
+		t.Errorf("init didn't honor new default_session_count=6:\n%s", out)
+	}
+}
+
+func TestScenario_ConfigSetRejectsBadType(t *testing.T) {
+	// Type mismatches should fail with a clear error AND leave the file
+	// untouched so a typo doesn't blow away the existing config.
+	s := newScenario(t)
+	s.Bosun("config", "set", "default_session_count", "3")
+
+	out, err := s.BosunErr("config", "set", "default_session_count", "nope")
+	if err == nil {
+		t.Fatalf("set with non-integer should fail:\n%s", out)
+	}
+	if !strings.Contains(out, "must be an integer") {
+		t.Errorf("error should mention integer requirement: %s", out)
+	}
+	// The previous value must still be there.
+	if got := strings.TrimSpace(s.Bosun("config", "get", "default_session_count")); got != "3" {
+		t.Errorf("default_session_count was clobbered by failed set: got %q, want 3", got)
+	}
+}
+
+func TestScenario_ConfigSetRejectsValidatorFailure(t *testing.T) {
+	// Even with the right type, `config.Validate` must run — otherwise a
+	// nonsense launcher would silently land in the file and bosun would
+	// fail at startup of the next command instead.
+	s := newScenario(t)
+
+	out, err := s.BosunErr("config", "set", "launcher", "gnome-terminal")
+	if err == nil {
+		t.Fatalf("set with invalid launcher should fail:\n%s", out)
+	}
+	if !strings.Contains(out, "launcher") {
+		t.Errorf("error should mention launcher: %s", out)
+	}
+	// File should still be absent — validation runs before write.
+	if _, statErr := os.Stat(filepath.Join(s.repo, ".bosun", "config.json")); statErr == nil {
+		t.Errorf(".bosun/config.json shouldn't exist after a rejected set")
+	}
+}
+
+func TestScenario_ConfigSetUnknownKeyFails(t *testing.T) {
+	// Reject unknown keys with an error rather than silently writing them
+	// to the file (which would just be ignored by config.Load).
+	s := newScenario(t)
+
+	out, err := s.BosunErr("config", "set", "frobnitz", "x")
+	if err == nil {
+		t.Fatalf("set with unknown key should fail:\n%s", out)
+	}
+	if !strings.Contains(out, "unknown config key") {
+		t.Errorf("error should mention unknown config key: %s", out)
+	}
+}
+
+func TestScenario_ConfigSetHooksIsRejected(t *testing.T) {
+	// `hooks` is a list and out of scope for `set` this round. The error
+	// should point the operator at the file instead of just saying
+	// "unknown key" (it isn't — it's known but not settable here).
+	s := newScenario(t)
+
+	out, err := s.BosunErr("config", "set", "hooks", "[]")
+	if err == nil {
+		t.Fatalf("set hooks should fail:\n%s", out)
+	}
+	if !strings.Contains(out, "hooks") {
+		t.Errorf("error should mention hooks: %s", out)
+	}
+}
+
+func TestScenario_ConfigSetWritesAtomically(t *testing.T) {
+	// The write goes through a temp file + rename, so on success there
+	// should be exactly one config.json in .bosun/ — no leftover *.tmp
+	// files for a concurrent reader to stumble on.
+	s := newScenario(t)
+	s.Bosun("config", "set", "verify_cmd", "go test ./...")
+
+	entries, err := os.ReadDir(filepath.Join(s.repo, ".bosun"))
+	if err != nil {
+		t.Fatalf("read .bosun: %v", err)
+	}
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	for _, n := range names {
+		if strings.HasSuffix(n, ".tmp") || strings.Contains(n, "config-") && strings.HasSuffix(n, ".tmp") {
+			t.Errorf(".bosun has leftover temp file %q: %v", n, names)
+		}
+	}
+
+	// And the file should be valid JSON we can round-trip through config get.
+	if got := strings.TrimSpace(s.Bosun("config", "get", "verify_cmd")); got != "go test ./..." {
+		t.Errorf("verify_cmd after set = %q, want %q", got, "go test ./...")
+	}
+}
+
+func TestScenario_ConfigListShowsHooksCountWhenConfigured(t *testing.T) {
+	// `hooks` is a list and out of scope for `config set`, but `config list`
+	// should still summarise it. With one entry on disk, the line should
+	// read "1 hook(s)" (and not be marked default, since it's overridden).
+	s := newScenario(t)
+	s.WriteFile(".bosun/config.json", `{"hooks":[{"event":"post-init","command":"echo hi"}]}`)
+
+	out := s.Bosun("config", "list")
+	var hookLine string
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if strings.HasPrefix(line, "hooks:") {
+			hookLine = line
+			break
+		}
+	}
+	if hookLine == "" {
+		t.Fatalf("config list missing hooks line:\n%s", out)
+	}
+	if !strings.Contains(hookLine, "1 hook(s)") {
+		t.Errorf("hooks line wrong count: %q", hookLine)
+	}
+	if strings.Contains(hookLine, "(default)") {
+		t.Errorf("hooks line should not be (default) when configured: %q", hookLine)
+	}
+}

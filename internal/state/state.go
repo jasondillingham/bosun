@@ -24,6 +24,11 @@ type Store struct {
 
 func NewStore(repoRoot string) *Store { return &Store{repoRoot: repoRoot} }
 
+// RepoRoot returns the repo root this store was constructed against.
+// Callers that need to read other repo-scoped resources (e.g. config or
+// the git worktree list) can use this to stay aligned with the store.
+func (s *Store) RepoRoot() string { return s.repoRoot }
+
 func (s *Store) dir() string { return filepath.Join(s.repoRoot, dirRelative) }
 
 func (s *Store) path(sessionName string, suffix string) string {

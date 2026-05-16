@@ -84,15 +84,8 @@ func TestMCP_EndToEndOverUnixSocket(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list tools: %v", err)
 	}
-	var sawCheck bool
-	for _, tl := range tools.Tools {
-		if tl.Name == "bosun_check" {
-			sawCheck = true
-			break
-		}
-	}
-	if !sawCheck {
-		t.Fatalf("bosun_check missing from advertised tools: %+v", tools.Tools)
+	if !mcpToolNamed(tools.Tools, "bosun_check") {
+		t.Fatalf("bosun_check not in tools list: %+v", tools.Tools)
 	}
 
 	result, err := session.CallTool(ctx, &mcpsdk.CallToolParams{
@@ -122,6 +115,18 @@ func TestMCP_EndToEndOverUnixSocket(t *testing.T) {
 	if len(got.Conflicts[0].Sessions) != 1 || got.Conflicts[0].Sessions[0] != "session-1" {
 		t.Errorf("conflict sessions = %v, want [session-1]", got.Conflicts[0].Sessions)
 	}
+}
+
+// mcpToolNamed reports whether the tool list advertises a tool with name.
+// Kept here rather than at use-site so adding a tool doesn't force this
+// e2e file to track expected counts.
+func mcpToolNamed(tools []*mcpsdk.Tool, name string) bool {
+	for _, t := range tools {
+		if t.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // waitForSocket polls until a Unix socket accepts connections at path, or

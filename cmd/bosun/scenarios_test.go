@@ -817,6 +817,112 @@ func TestScenario_MCPClaimVisibleToCLIStatus(t *testing.T) {
 	}
 }
 
+// TestScenario_McpDoneRefusesDirtyAndForceMarksDone covers the bosun_done
+// MCP tool: dirty worktree must refuse, force=true must succeed, and the
+// .bosun/state/<n>.done marker must appear after the forced call. Mirrors
+// the CLI's `bosun done` lifecycle and proves the MCP path writes the
+// same on-disk state filesystem-readers like `bosun status` consume.
+func TestScenario_McpDoneRefusesDirtyAndForceMarksDone(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix sockets aren't supported on Windows runners")
+	}
+
+	s := newScenario(t)
+	s.Bosun("init", "1")
+
+	// Dirty the session worktree so validation has something to refuse.
+	wt1 := s.WorktreePath(1)
+	s.WriteFileIn(wt1, "README.md", "# dirty\n")
+
+	socketPath := filepath.Join("/tmp", fmt.Sprintf("bosun-mcp-done-%d.sock", time.Now().UnixNano()))
+	t.Cleanup(func() { _ = os.Remove(socketPath) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, bosunBin, "mcp", "--socket", socketPath)
+	cmd.Dir = s.repo
+	var subOut subprocessTail
+	cmd.Stdout = &subOut
+	cmd.Stderr = &subOut
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start bosun mcp: %v", err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}()
+
+	if err := waitForSocket(socketPath, 3*time.Second); err != nil {
+		t.Fatalf("socket never appeared: %v\nsubprocess output:\n%s", err, subOut.String())
+	}
+
+	netConn, err := net.Dial("unix", socketPath)
+	if err != nil {
+		t.Fatalf("dial socket: %v", err)
+	}
+	defer netConn.Close()
+
+	client := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "bosun-done-client", Version: "test"}, nil)
+	session, err := client.Connect(ctx, &netConnTransport{conn: netConn}, nil)
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	defer session.Close()
+
+	// Call 1: dirty worktree, force=false → must refuse.
+	result, err := session.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name: "bosun_done",
+		Arguments: map[string]any{
+			"session": "session-1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("call bosun_done (dirty): %v", err)
+	}
+	if !result.IsError {
+		t.Fatalf("bosun_done on dirty worktree should refuse, got: %+v", result)
+	}
+	markerPath := filepath.Join(s.repo, ".bosun", "state", "session-1.done")
+	if _, statErr := os.Stat(markerPath); statErr == nil {
+		t.Fatalf("done marker should NOT exist after refusal: %s", markerPath)
+	}
+
+	// Call 2: same dirty worktree but force=true → must succeed and write
+	// the marker. Force bypasses the dirty/ahead gate just like the CLI's
+	// --force flag.
+	result, err = session.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name: "bosun_done",
+		Arguments: map[string]any{
+			"session": "session-1",
+			"message": "forced from MCP",
+			"force":   true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("call bosun_done (force): %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("bosun_done force=true should succeed, got IsError: %+v", result)
+	}
+
+	body, err := os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatalf("expected done marker at %s: %v", markerPath, err)
+	}
+	if !strings.Contains(string(body), "forced from MCP") {
+		t.Errorf("marker missing message: %q", body)
+	}
+
+	// And bosun status must reflect the DONE state — the CLI and the MCP
+	// tool share the same .bosun/state/ files, so this proves end-to-end
+	// agreement between the two surfaces.
+	p := s.StatusJSON()
+	if sess := p.SessionByNumber(1); sess == nil || sess.State != "DONE" {
+		t.Fatalf("status after MCP done = %+v, want DONE", sess)
+	}
+}
+
 // --- helpers (test-local) ---
 
 func readFile(t *testing.T, path string) string {

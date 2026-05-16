@@ -22,6 +22,7 @@ import (
 	"sync"
 
 	"github.com/jasondillingham/bosun/internal/claims"
+	"github.com/jasondillingham/bosun/internal/git"
 	"github.com/jasondillingham/bosun/internal/state"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -45,10 +46,11 @@ const SocketEnv = "BOSUN_MCP_SOCK"
 // the same *mcp.Server and the same backing stores — that's the whole
 // point of running as a daemon vs. as a per-session subprocess.
 type Server struct {
-	mcp      *mcp.Server
-	claims   *claims.Store
-	state    *state.Store
-	listener net.Listener
+	mcp       *mcp.Server
+	claims    *claims.Store
+	state     *state.Store
+	gitClient *git.Client
+	listener  net.Listener
 
 	mu       sync.Mutex
 	connWG   sync.WaitGroup
@@ -71,10 +73,15 @@ func registerTool(f func(*Server)) {
 
 // NewServer builds a bosun MCP server with all tools registered against the
 // provided stores. Call Listen() before Serve().
-func NewServer(claimsStore *claims.Store, stateStore *state.Store) *Server {
+//
+// gitClient may be nil for tools that only need claims/state; tools that
+// inspect repo state (bosun_done) require it. Tests can pass nil and
+// pre-seed Session state manually; production callers should pass git.New().
+func NewServer(claimsStore *claims.Store, stateStore *state.Store, gitClient *git.Client) *Server {
 	s := &Server{
-		claims: claimsStore,
-		state:  stateStore,
+		claims:    claimsStore,
+		state:     stateStore,
+		gitClient: gitClient,
 	}
 	s.mcp = mcp.NewServer(&mcp.Implementation{
 		Name:    ServerName,

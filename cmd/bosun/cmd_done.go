@@ -70,11 +70,8 @@ func runDone(cmd *cobra.Command, sessionArg string, opts doneOpts) error {
 	}
 
 	if !opts.force {
-		if s.Dirty > 0 {
-			return userErr("%s has %d uncommitted change(s); commit them first or pass --force", name, s.Dirty)
-		}
-		if s.Ahead == 0 {
-			return userErr("%s has no commits ahead of %s; use `bosun remove` instead, or pass --force", name, rc.cfg.BaseBranch)
+		if err := session.ValidateDoneable(*s, rc.cfg.BaseBranch); err != nil {
+			return userErr("%v", err)
 		}
 	}
 

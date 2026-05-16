@@ -28,7 +28,7 @@ func TestServer_CheckTool(t *testing.T) {
 		t.Fatalf("seed claim: %v", err)
 	}
 
-	srv := NewServer(cstore, sstore)
+	srv := NewServer(cstore, sstore, nil)
 
 	clientReader, serverWriter := io.Pipe()
 	serverReader, clientWriter := io.Pipe()
@@ -64,7 +64,7 @@ func TestServer_CheckTool(t *testing.T) {
 		t.Fatalf("list tools: %v", err)
 	}
 	if !hasTool(tools.Tools, "bosun_check") {
-		t.Fatalf("bosun_check missing from advertised tools: %+v", tools.Tools)
+		t.Fatalf("bosun_check not in tools list: %+v", tools.Tools)
 	}
 
 	// Case 1: querying a path session-2 has claimed → conflict reported.
@@ -128,7 +128,9 @@ func callCheck(t *testing.T, ctx context.Context, session *mcpsdk.ClientSession,
 	return out
 }
 
-// hasTool reports whether name appears in tools.
+// hasTool reports whether tools contains one with the given name. Kept
+// loose so adding a tool doesn't force every existing test to update its
+// expected count.
 func hasTool(tools []*mcpsdk.Tool, name string) bool {
 	for _, t := range tools {
 		if t.Name == name {

@@ -72,7 +72,7 @@ func runMcp(_ *cobra.Command, socketPath string) error {
 		return userErr("socket path is %d bytes (Unix-domain max ≈100): %s\n  workaround: pass --socket /tmp/bosun-<repo>.sock or shorten the repo path", len(socketPath), socketPath)
 	}
 
-	srv := bosunmcp.NewServer(rc.claims, rc.state)
+	srv := bosunmcp.NewServer(rc.claims, rc.state, rc.git)
 	if err := srv.Listen(socketPath); err != nil {
 		return userErr("bind socket: %v", err)
 	}

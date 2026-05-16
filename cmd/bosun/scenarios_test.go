@@ -2989,3 +2989,88 @@ func TestScenario_PreRemoveHookSeesBosunEnv(t *testing.T) {
 		}
 	}
 }
+
+// --- v0.5-round2 session-5: init robustness ---
+
+func TestScenario_InitPrintsProgressPerWorktree(t *testing.T) {
+	// Part A: operators see forward progress so a slow worktree creation
+	// doesn't look like a silent hang.
+	s := newScenario(t)
+	out := s.Bosun("init", "3")
+	s.AssertContainsAll(out,
+		"Creating worktree session-1 (1/3)",
+		"Creating worktree session-2 (2/3)",
+		"Creating worktree session-3 (3/3)",
+	)
+}
+
+func TestScenario_InitWarnsOnHighLoadAndPauses(t *testing.T) {
+	// Part B: BOSUN_TEST_LOAD_AVERAGE is the subprocess-side seam — set
+	// it above the 5.0 threshold and confirm the warning prints.
+	t.Setenv("BOSUN_TEST_LOAD_AVERAGE", "8.0")
+	s := newScenario(t)
+	out := s.Bosun("init", "1")
+	if !strings.Contains(out, "system load is 8.00") {
+		t.Errorf("expected high-load warning, got:\n%s", out)
+	}
+	if !strings.Contains(out, "--no-load-check") {
+		t.Errorf("expected --no-load-check hint in warning, got:\n%s", out)
+	}
+}
+
+func TestScenario_InitNoLoadCheckSkipsWarning(t *testing.T) {
+	// Part B: --no-load-check must bypass the check entirely.
+	t.Setenv("BOSUN_TEST_LOAD_AVERAGE", "99.0")
+	s := newScenario(t)
+	out := s.Bosun("init", "1", "--no-load-check")
+	if strings.Contains(out, "system load is") {
+		t.Errorf("--no-load-check should suppress warning, got:\n%s", out)
+	}
+}
+
+func TestScenario_InitDetectsPhantomBranchRefs(t *testing.T) {
+	// Part C: filesystem artifacts from Finder / Time Machine /
+	// Spotlight that match the "<name> <digit>" pattern get flagged as
+	// phantom refs.
+	s := newScenario(t)
+	dir := filepath.Join(s.repo, ".git", "refs", "heads", "bosun")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "session-7 2"), []byte("ref\n"), 0o644); err != nil {
+		t.Fatalf("write phantom: %v", err)
+	}
+
+	out := s.Bosun("init", "1")
+	if !strings.Contains(out, "phantom branch ref") {
+		t.Errorf("expected phantom-ref advisory, got:\n%s", out)
+	}
+	if !strings.Contains(out, "--clean-phantoms") {
+		t.Errorf("expected --clean-phantoms hint, got:\n%s", out)
+	}
+	// Advisory mode leaves the phantom file in place.
+	if _, err := os.Stat(filepath.Join(dir, "session-7 2")); err != nil {
+		t.Errorf("phantom file should remain in advisory mode: %v", err)
+	}
+}
+
+func TestScenario_InitCleanPhantomsRemovesThem(t *testing.T) {
+	// Part C: --clean-phantoms deletes the bogus ref files.
+	s := newScenario(t)
+	dir := filepath.Join(s.repo, ".git", "refs", "heads", "bosun")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	phantom := filepath.Join(dir, "session-9 2")
+	if err := os.WriteFile(phantom, []byte("ref\n"), 0o644); err != nil {
+		t.Fatalf("write phantom: %v", err)
+	}
+
+	out := s.Bosun("init", "1", "--clean-phantoms")
+	if !strings.Contains(out, "Removed 1 phantom branch ref") {
+		t.Errorf("expected removed-phantom confirmation, got:\n%s", out)
+	}
+	if _, err := os.Stat(phantom); !os.IsNotExist(err) {
+		t.Errorf("phantom file should be gone, stat err=%v", err)
+	}
+}

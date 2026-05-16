@@ -3,9 +3,13 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jasondillingham/bosun/internal/brief"
 	"github.com/jasondillingham/bosun/internal/config"
@@ -24,6 +28,8 @@ func newInitCmd() *cobra.Command {
 		force         bool
 		fromBranch    string
 		initialPrompt string
+		noLoadCheck   bool
+		cleanPhantoms bool
 	)
 
 	cmd := &cobra.Command{
@@ -46,6 +52,8 @@ Mixing integers with names in the same invocation is a usage error.`,
 				force:         force,
 				fromBranch:    fromBranch,
 				initialPrompt: initialPrompt,
+				noLoadCheck:   noLoadCheck,
+				cleanPhantoms: cleanPhantoms,
 			})
 		},
 	}
@@ -56,6 +64,8 @@ Mixing integers with names in the same invocation is a usage error.`,
 	cmd.Flags().BoolVar(&force, "force", false, "overwrite existing bosun worktrees")
 	cmd.Flags().StringVar(&fromBranch, "from", "", "base branch (defaults to config.base_branch)")
 	cmd.Flags().StringVar(&initialPrompt, "initial-prompt", "", "first message passed to each launched session (paired with --launch; default: 'Read BOSUN_BRIEF.md...' when --brief is also set)")
+	cmd.Flags().BoolVar(&noLoadCheck, "no-load-check", false, "skip the pre-flight 1-minute load average check")
+	cmd.Flags().BoolVar(&cleanPhantoms, "clean-phantoms", false, "auto-remove Finder/Spotlight phantom branch refs (off by default)")
 
 	return cmd
 }
@@ -67,6 +77,8 @@ type initOpts struct {
 	force         bool
 	fromBranch    string
 	initialPrompt string
+	noLoadCheck   bool
+	cleanPhantoms bool
 }
 
 func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
@@ -78,6 +90,37 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 	labels, err := resolveInitLabels(args, rc.cfg)
 	if err != nil {
 		return err
+	}
+
+	// Pre-flight #1: phantom-branch detection. Cheap directory scan that
+	// catches Finder / Time Machine / Spotlight artifacts (literal "<name>
+	// <digit>" duplicates) before they confuse later git operations.
+	if phantoms, err := findPhantomBranchRefs(rc.repoRoot, rc.cfg.SessionPrefix); err != nil {
+		fmt.Fprintf(os.Stderr, "bosun: warning: phantom-ref scan failed: %v\n", err)
+	} else if len(phantoms) > 0 {
+		if opts.cleanPhantoms {
+			for _, p := range phantoms {
+				if err := os.Remove(p); err != nil {
+					fmt.Fprintf(os.Stderr, "bosun: warning: remove phantom ref %s: %v\n", p, err)
+				}
+			}
+			fmt.Fprintf(os.Stdout, "Removed %d phantom branch ref(s) under .git/refs/heads/%s/.\n", len(phantoms), rc.cfg.SessionPrefix)
+		} else {
+			example := filepath.Join(".git", "refs", "heads", rc.cfg.SessionPrefix, filepath.Base(phantoms[0]))
+			fmt.Fprintf(os.Stdout, "found %d phantom branch ref(s) under .git/refs/heads/%s/; remove with `rm '%s'` (or re-run with --clean-phantoms)\n", len(phantoms), rc.cfg.SessionPrefix, example)
+		}
+	}
+
+	// Pre-flight #2: 1-minute load average advisory. A high load right
+	// before spinning up N worktrees + N agents tends to turn a slow init
+	// into a silent-looking hang.
+	if !opts.noLoadCheck {
+		if load, err := getLoadAverage(); err != nil {
+			fmt.Fprintf(os.Stderr, "bosun: warning: load-average check failed: %v\n", err)
+		} else if load > loadAverageWarnThreshold {
+			fmt.Fprintf(os.Stdout, "system load is %.2f; init may be slow (--no-load-check to skip)\n", load)
+			time.Sleep(loadAveragePauseDuration)
+		}
 	}
 
 	base := opts.fromBranch
@@ -158,7 +201,7 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 	}
 	var made []created
 
-	for _, label := range labels {
+	for i, label := range labels {
 		branch := rc.cfg.BranchForLabel(label)
 		path := session.WorktreePathForLabel(rc.repoRoot, rc.cfg, label)
 
@@ -171,6 +214,7 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 				return gitErr("create branch "+branch, err)
 			}
 		}
+		fmt.Fprintf(os.Stdout, "Creating worktree %s (%d/%d)...\n", label, i+1, len(labels))
 		if err := rc.git.AddWorktree(rc.ctx, rc.repoRoot, path, branch); err != nil {
 			return gitErr("add worktree "+path, err)
 		}
@@ -453,4 +497,111 @@ func trimCR(s string) string {
 		return s[:len(s)-1]
 	}
 	return s
+}
+
+// loadAverageWarnThreshold is the 1-minute load average above which init
+// prints a slow-warning. loadAveragePauseDuration is how long it pauses
+// to give the operator a chance to abort. Both are var-scoped (not const)
+// so tests can shorten the pause without sleeping for real seconds.
+var (
+	loadAverageWarnThreshold = 5.0
+	loadAveragePauseDuration = 2 * time.Second
+)
+
+// getLoadAverage is the indirection point tests override to inject a
+// synthetic 1-minute load average. The default reads the host's actual
+// load (or honors BOSUN_TEST_LOAD_AVERAGE when set, which lets
+// subprocess-style scenario tests exercise the warning path).
+var getLoadAverage = readSystemLoadAverage
+
+func readSystemLoadAverage() (float64, error) {
+	if v := os.Getenv("BOSUN_TEST_LOAD_AVERAGE"); v != "" {
+		f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+		if err != nil {
+			return 0, fmt.Errorf("BOSUN_TEST_LOAD_AVERAGE=%q: %w", v, err)
+		}
+		return f, nil
+	}
+	switch runtime.GOOS {
+	case "linux":
+		return readLoadFromProcLoadavg()
+	case "darwin":
+		return readLoadFromUptime()
+	default:
+		// Windows / other: no reliable cross-vendor 1-min load average.
+		return 0, nil
+	}
+}
+
+func readLoadFromProcLoadavg() (float64, error) {
+	data, err := os.ReadFile("/proc/loadavg")
+	if err != nil {
+		return 0, err
+	}
+	fields := strings.Fields(string(data))
+	if len(fields) == 0 {
+		return 0, fmt.Errorf("unexpected /proc/loadavg format: %q", data)
+	}
+	return strconv.ParseFloat(fields[0], 64)
+}
+
+func readLoadFromUptime() (float64, error) {
+	out, err := exec.Command("uptime").Output()
+	if err != nil {
+		return 0, err
+	}
+	return parseUptimeLoad(string(out))
+}
+
+// parseUptimeLoad pulls the 1-minute load average out of `uptime` output.
+// Example input: "14:32  up 1:23, 2 users, load averages: 1.23 1.45 1.67".
+// macOS uses "load averages:" (plural) and Linux uses "load average:";
+// match either by anchoring on "load average".
+func parseUptimeLoad(text string) (float64, error) {
+	idx := strings.Index(text, "load average")
+	if idx < 0 {
+		return 0, fmt.Errorf("unexpected uptime output: %q", text)
+	}
+	colon := strings.Index(text[idx:], ":")
+	if colon < 0 {
+		return 0, fmt.Errorf("unexpected uptime output: %q", text)
+	}
+	rest := text[idx+colon+1:]
+	// Linux uptime separates with commas; macOS with spaces. Normalize.
+	rest = strings.ReplaceAll(rest, ",", " ")
+	fields := strings.Fields(rest)
+	if len(fields) == 0 {
+		return 0, fmt.Errorf("unexpected uptime output: %q", text)
+	}
+	return strconv.ParseFloat(fields[0], 64)
+}
+
+// phantomBranchRefPattern matches macOS Finder / Time Machine / Spotlight
+// ref duplicates: a literal space followed by a single digit (1-9) at end
+// of the filename. Pattern documented at the call site in runInit.
+var phantomBranchRefPattern = regexp.MustCompile(` [0-9]$`)
+
+// findPhantomBranchRefs scans .git/refs/heads/<sessionPrefix>/ for ref
+// files whose basename matches the phantom pattern. Returns absolute
+// paths. A missing directory (no bosun branches ever created here) is
+// not an error.
+func findPhantomBranchRefs(repoRoot, sessionPrefix string) ([]string, error) {
+	dir := filepath.Join(repoRoot, ".git", "refs", "heads", sessionPrefix)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var phantoms []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if phantomBranchRefPattern.MatchString(e.Name()) {
+			phantoms = append(phantoms, filepath.Join(dir, e.Name()))
+		}
+	}
+	return phantoms, nil
 }

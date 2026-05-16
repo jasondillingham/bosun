@@ -30,6 +30,7 @@ worktree, with one place to see what every session is doing.`,
 		newTuiCmd(),
 		newServeCmd(),
 		newSuggestCmd(),
+		newPredictCmd(),
 	)
 
 	return root

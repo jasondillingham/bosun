@@ -3189,6 +3189,99 @@ func TestScenario_ConfigInitWritesStubAndExample(t *testing.T) {
 	}
 }
 
+// --- v0.5-round3 session-3: predictive conflict ---
+
+// predictAvailable mirrors suggestAvailable — false when this session's
+// scenarios run inside its own worktree before the binary has been rebuilt
+// with session-3's CLI wiring. Once round-3 merges, the gate falls
+// through and the tests run for real.
+func (s *scenario) predictAvailable() bool {
+	out, err := s.bosunRaw(s.repo, "predict", "--help")
+	if err != nil {
+		return false
+	}
+	return strings.Contains(out, "predict")
+}
+
+// predictHasRealHeuristic returns true once session-2's predictor is
+// emitting non-empty results — useful for gating overlap assertions
+// that need an actual heuristic, not the round-3 stub.
+func (s *scenario) predictHasRealHeuristic() bool {
+	plan := filepath.Join(s.repo, "probe-plan.md")
+	if err := os.WriteFile(plan, []byte("## session-1\nTouch internal/auth/handlers.go.\n"), 0o644); err != nil {
+		return false
+	}
+	defer os.Remove(plan)
+	out, _ := s.bosunRaw(s.repo, "predict", "--json", plan)
+	// Real heuristic should pick at least one path out of a brief that
+	// literally names "internal/auth/handlers.go".
+	return strings.Contains(out, "internal/auth/handlers.go")
+}
+
+func TestScenario_PredictDisjointPlan_ExitsZero(t *testing.T) {
+	s := newScenario(t)
+	if !s.predictAvailable() {
+		t.Skip("bosun predict not built into binary")
+	}
+
+	// Two lanes that name clearly disjoint code paths. With the round-3
+	// shim predictor (returns nil/nil) this trivially passes; with
+	// session-2's real heuristic it should still detect no overlap.
+	s.WriteFile("plans/disjoint.md", `# Disjoint plan
+
+## session-1
+Refactor the auth handlers under internal/auth/.
+
+## session-2
+Migrate the storage layer under internal/storage/.
+`)
+
+	out := s.Bosun("predict", "plans/disjoint.md")
+	if !strings.Contains(out, "Overlaps: none predicted") {
+		t.Errorf("expected 'Overlaps: none predicted', got:\n%s", out)
+	}
+}
+
+func TestScenario_PredictOverlappingPlan_ExitsNonZero(t *testing.T) {
+	s := newScenario(t)
+	if !s.predictAvailable() {
+		t.Skip("bosun predict not built into binary")
+	}
+	if !s.predictHasRealHeuristic() {
+		// Round-3's shim predictor returns nil — the operator's real
+		// heuristic (session-2) ships the overlap detection logic. Skip
+		// until session-2 has landed so this test doesn't false-pass on
+		// "no overlaps reported" when the heuristic is just a stub.
+		t.Skip("predict heuristic is the round-3 stub; session-2 not merged yet")
+	}
+
+	// Two lanes that both name the same file — any reasonable
+	// filename-mention heuristic flags this. Use a slashed path so the
+	// heuristic's path-token regex picks it up (the regex requires at
+	// least one slash to avoid pulling in bare identifiers).
+	s.WriteFile("plans/overlap.md", `# Overlap plan
+
+## session-1
+Refactor internal/pkg/shared.go for clarity.
+
+## session-2
+Rewrite internal/pkg/shared.go to use the new API.
+`)
+
+	out, err := s.BosunErr("predict", "plans/overlap.md")
+	if err == nil {
+		t.Fatalf("predict should exit non-zero when overlaps detected, got:\n%s", out)
+	}
+	if !strings.Contains(out, "shared.go") {
+		t.Errorf("overlap report should name shared.go, got:\n%s", out)
+	}
+	for _, want := range []string{"session-1", "session-2"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("overlap report missing %q, got:\n%s", want, out)
+		}
+	}
+}
+
 func TestScenario_ConfigInitRefusesOverwriteWithoutForce(t *testing.T) {
 	s := newScenario(t)
 	s.Bosun("config", "init")
@@ -3206,4 +3299,54 @@ func TestScenario_ConfigInitRefusesOverwriteWithoutForce(t *testing.T) {
 	s.Bosun("config", "init", "--force")
 	listed := s.Bosun("config", "list")
 	s.AssertContains(listed, "launcher: auto")
+}
+
+func TestScenario_PredictJSON_HasStructuredShape(t *testing.T) {
+	s := newScenario(t)
+	if !s.predictAvailable() {
+		t.Skip("bosun predict not built into binary")
+	}
+
+	s.WriteFile("plans/p.md", `## session-1
+do thing A
+
+## session-2
+do thing B
+`)
+
+	// Drive `--json` and check that the top-level shape matches the
+	// MCP wire contract: {"predictions": [...], "overlaps": [...]}.
+	out, err := s.bosunRaw(s.repo, "predict", "--json", "plans/p.md")
+	_ = err
+
+	jsonText, jerr := firstJSONObject(out)
+	if jerr != nil {
+		t.Fatalf("--json output has no JSON object:\n%s", out)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(jsonText), &doc); err != nil {
+		t.Fatalf("--json decode: %v\n%s", err, jsonText)
+	}
+	for _, key := range []string{"predictions", "overlaps"} {
+		v, ok := doc[key]
+		if !ok {
+			t.Errorf("--json missing key %q (keys: %v)", key, mapKeys(doc))
+			continue
+		}
+		if _, ok := v.([]any); !ok && v != nil {
+			t.Errorf("--json %q should be an array, got %T", key, v)
+		}
+	}
+}
+
+func TestScenario_PredictMissingPlan_ExitsNonZero(t *testing.T) {
+	s := newScenario(t)
+	if !s.predictAvailable() {
+		t.Skip("bosun predict not built into binary")
+	}
+
+	out, err := s.BosunErr("predict", "no-such-plan.md")
+	if err == nil {
+		t.Fatalf("missing plan should exit non-zero, got:\n%s", out)
+	}
 }

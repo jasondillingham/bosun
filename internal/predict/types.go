@@ -5,30 +5,51 @@
 // before spawning the worktrees.
 //
 // This file holds the package contract — the shared types every
-// caller (CLI, MCP) depends on. The lane that lands first creates
-// this file; later lanes import it. Coordinate via `bosun_check`
-// before changing anything here.
+// caller (CLI, MCP) depends on. Coordinate via `bosun_check` before
+// changing anything here.
 package predict
 
 import "github.com/jasondillingham/bosun/internal/brief"
 
-// Prediction is the heuristic forecast for one session — files we
-// suspect the agent will touch based on the brief text.
-type Prediction struct {
-	Session   string   // "session-1" / "auth" / etc.
-	Predicted []string // path globs the heuristic extracted from the brief
-	Source    []string // why each path was predicted (for operator
-	// review — pairs 1:1 with Predicted)
-}
-
-// Overlap is one pair of sessions whose predictions intersect.
-type Overlap struct {
-	Path     string   // the colliding pattern (or first concrete file)
-	Sessions []string // labels of the colliding sessions
-	Severity string   // "high" (concrete file) / "medium" (dir glob) / "low" (heuristic guess)
-}
-
-// Predictor is the interface CLI + MCP tools depend on.
+// Predictor returns predictions and overlaps for a slice of briefs. Used
+// as a dependency-injection seam by CLI and MCP tool callers so tests
+// can swap in a canned-result stub without exercising the real heuristic.
 type Predictor interface {
 	Predict(briefs []brief.Brief) ([]Prediction, []Overlap, error)
+}
+
+// Prediction summarises one session's expected scope and the per-path
+// reasons the heuristic flagged each entry. Scope is a free-form one-liner
+// pulled from the brief body (typically the first non-empty line).
+type Prediction struct {
+	Session string          `json:"session"`
+	Scope   string          `json:"scope,omitempty"`
+	Paths   []PredictedPath `json:"paths"`
+
+	// Predicted and Source are JSON-ignored parallel-array views of Paths,
+	// populated alongside it by the heuristic. They exist because the
+	// session-2 predictor tests pre-date the richer PredictedPath shape;
+	// keeping the views around avoids rewriting that test surface in
+	// this merge. New callers should use Paths.
+	Predicted []string `json:"-"`
+	Source    []string `json:"-"`
+}
+
+// PredictedPath is one path the heuristic expects a session to touch and
+// the short reason it was inferred ("mentioned in brief", "matched
+// internal/<pkg>/", etc.).
+type PredictedPath struct {
+	Path   string `json:"path"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// Overlap is one predicted cross-session collision. Severity is an
+// implementation-defined string ("high"/"medium"/"low" is the expected
+// vocabulary). Mitigation is the operator-facing suggestion — e.g.
+// "narrow lane X to avoid the internal/auth/** glob."
+type Overlap struct {
+	Path       string   `json:"path"`
+	Sessions   []string `json:"sessions"`
+	Severity   string   `json:"severity"`
+	Mitigation string   `json:"mitigation,omitempty"`
 }

@@ -28,17 +28,40 @@ func (h *Heuristic) Predict(briefs []brief.Brief) ([]Prediction, []Overlap, erro
 	for _, b := range briefs {
 		label := labelOf(b)
 		paths, sources := extractPaths(b.Body)
-		preds = append(preds, Prediction{
+		pred := Prediction{
 			Session:   label,
+			Scope:     firstNonEmptyLine(b.Body),
+			Paths:     make([]PredictedPath, 0, len(paths)),
 			Predicted: paths,
 			Source:    sources,
-		})
+		}
+		for i, p := range paths {
+			reason := ""
+			if i < len(sources) {
+				reason = sources[i]
+			}
+			pred.Paths = append(pred.Paths, PredictedPath{Path: p, Reason: reason})
+		}
+		preds = append(preds, pred)
 	}
 	sort.Slice(preds, func(i, j int) bool {
 		return preds[i].Session < preds[j].Session
 	})
 	overlaps := detectOverlaps(preds)
 	return preds, overlaps, nil
+}
+
+// firstNonEmptyLine returns the first non-blank line of body, trimmed.
+// Used for Prediction.Scope — gives the operator a glanceable summary
+// without dragging in the whole brief.
+func firstNonEmptyLine(body string) string {
+	for _, line := range strings.Split(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" && !strings.HasPrefix(trimmed, "#") {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func labelOf(b brief.Brief) string {
@@ -273,9 +296,9 @@ func pairOverlap(a, b Prediction) []Overlap {
 			best[p] = sev
 		}
 	}
-	for _, pa := range a.Predicted {
-		for _, pb := range b.Predicted {
-			collide, sev := classifyOverlap(pa, pb)
+	for _, pa := range a.Paths {
+		for _, pb := range b.Paths {
+			collide, sev := classifyOverlap(pa.Path, pb.Path)
 			if sev == "" {
 				continue
 			}

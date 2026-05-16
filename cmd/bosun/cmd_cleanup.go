@@ -211,6 +211,15 @@ func runCleanup(cmd *cobra.Command, opts cleanupOpts) error {
 		return err
 	}
 
+	// Drop git metadata for worktrees whose directory has been manually
+	// removed (e.g. `rm -rf` on a session dir). Without this, Derive
+	// would skip the stale entries (good for status) but the on-disk
+	// admin files would linger until the user notices. Doing it here
+	// keeps cleanup's promise of "nothing left behind."
+	if err := rc.git.PruneWorktrees(rc.ctx, rc.repoRoot); err != nil {
+		return gitErr("prune worktrees", err)
+	}
+
 	sessions, err := session.Derive(rc.ctx, rc.git, rc.cfg, rc.repoRoot, rc.state, rc.claims)
 	if err != nil {
 		return gitErr("derive sessions", err)

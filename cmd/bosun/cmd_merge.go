@@ -179,6 +179,22 @@ func mergeOne(rc *runCtx, s *session.Session, opts mergeOpts) (status, reason st
 		return mergeStatusSkipped, "already merged", nil
 	}
 
+	// Tree-equivalence: when the operator hand-resolved a prior squash
+	// conflict, the patch ids on branch differ from base's squashed
+	// commit, so UnmergedPatches reports unmerged > 0. But the branch's
+	// tree may now equal base's tree (operator merged "theirs"), in which
+	// case re-running the squash would just re-conflict against
+	// already-applied content. Catch that here.
+	treeEqual, err := rc.git.TreeEqualsBase(rc.ctx, rc.repoRoot, rc.cfg.BaseBranch, s.Branch)
+	if err != nil {
+		return "", "", gitErr("check tree-equivalence for "+s.Branch, err)
+	}
+	if treeEqual {
+		_ = rc.state.Clear(s.Name)
+		_ = rc.claims.Clear(s.Name)
+		return mergeStatusSkipped, "already merged (tree-equivalent to base)", nil
+	}
+
 	commitMsg := opts.message
 	if commitMsg == "" {
 		commitMsg = fmt.Sprintf("merge: %s", s.Branch)
@@ -298,6 +314,12 @@ func blockingDep(label string, depMap map[string][]string, sessions []session.Se
 		// Patch-equivalent to base counts as merged even if `ahead` > 0.
 		unmerged, err := rc.git.UnmergedPatches(rc.ctx, rc.repoRoot, rc.cfg.BaseBranch, dep.Branch)
 		if err == nil && unmerged == 0 {
+			continue
+		}
+		// Tree-equivalent to base also counts as merged — covers the
+		// hand-resolved-squash case where patch ids no longer match.
+		treeEqual, terr := rc.git.TreeEqualsBase(rc.ctx, rc.repoRoot, rc.cfg.BaseBranch, dep.Branch)
+		if terr == nil && treeEqual {
 			continue
 		}
 		return d, true

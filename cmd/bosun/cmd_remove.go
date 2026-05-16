@@ -32,13 +32,39 @@ func runRemove(cmd *cobra.Command, sessionArg string, force bool) error {
 		return userErr("%v", err)
 	}
 
+	// Drop admin metadata for worktrees whose directory was manually
+	// removed before deriving sessions — otherwise Derive (which now
+	// skips prunable entries) would report this session as missing
+	// and the leftover branch + state would linger.
+	if err := rc.git.PruneWorktrees(rc.ctx, rc.repoRoot); err != nil {
+		return gitErr("prune worktrees", err)
+	}
+
 	sessions, err := session.Derive(rc.ctx, rc.git, rc.cfg, rc.repoRoot, rc.state, rc.claims)
 	if err != nil {
 		return gitErr("derive sessions", err)
 	}
 	s := findSessionByLabel(sessions, label)
 	if s == nil {
-		return userErr("%s not found", label)
+		// Session has no worktree, but its branch may still exist
+		// (e.g. operator rm -rf'd the dir, prune cleaned admin files,
+		// branch is the only thing left). Honor the remove request by
+		// deleting that branch and any state/claims for the label.
+		branch := rc.cfg.BranchForLabel(label)
+		exists, berr := rc.git.BranchExists(rc.ctx, rc.repoRoot, branch)
+		if berr != nil {
+			return gitErr("check branch "+branch, berr)
+		}
+		if !exists {
+			return userErr("%s not found", label)
+		}
+		if err := rc.git.DeleteBranch(rc.ctx, rc.repoRoot, branch, true); err != nil {
+			return gitErr("delete branch "+branch, err)
+		}
+		_ = rc.claims.Clear(label)
+		_ = rc.state.Clear(label)
+		printf("bosun: removed %s (worktree dir was already gone; cleaned up branch + state)\n", label)
+		return nil
 	}
 
 	// destructive controls whether we let git's own safety checks (`branch -d`,

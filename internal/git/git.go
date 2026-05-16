@@ -152,11 +152,12 @@ func (c *Client) RemoveWorktree(ctx context.Context, dir, path string, force boo
 
 // Worktree represents one entry from `git worktree list --porcelain`.
 type Worktree struct {
-	Path   string // absolute path
-	HEAD   string // commit SHA at HEAD, or empty if bare
-	Branch string // full ref like "refs/heads/bosun/session-1", or empty if detached
-	Bare   bool
-	Locked bool
+	Path     string // absolute path
+	HEAD     string // commit SHA at HEAD, or empty if bare
+	Branch   string // full ref like "refs/heads/bosun/session-1", or empty if detached
+	Bare     bool
+	Locked   bool
+	Prunable bool // git reports the gitdir points at a missing/invalid worktree
 }
 
 // ListWorktrees returns every worktree known to git for this repo.
@@ -200,6 +201,8 @@ func parseWorktreeList(s string) []Worktree {
 			cur.Branch = ""
 		case strings.HasPrefix(line, "locked"):
 			cur.Locked = true
+		case strings.HasPrefix(line, "prunable"):
+			cur.Prunable = true
 		}
 	}
 	flush()
@@ -237,6 +240,32 @@ func (c *Client) UnmergedPatches(ctx context.Context, dir, base, branch string) 
 		}
 	}
 	return n, nil
+}
+
+// TreeEqualsBase reports whether the tip trees of base and branch are
+// identical (i.e. `git diff base..branch` is empty). True means merging
+// branch into base would be a no-op. This catches an "already merged"
+// state that patch-id comparison misses: after the operator hand-resolves
+// a prior squash conflict and commits, the branch's content lives on base
+// but the patch-ids no longer match.
+func (c *Client) TreeEqualsBase(ctx context.Context, dir, base, branch string) (bool, error) {
+	_, errOut, err := c.Runner.Run(ctx, dir, "diff", "--quiet", base+".."+branch, "--")
+	if err == nil {
+		return true, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, fmt.Errorf("git diff --quiet %s..%s: %w: %s", base, branch, err, strings.TrimSpace(errOut))
+}
+
+// PruneWorktrees runs `git worktree prune` to drop admin metadata for
+// worktrees whose directories have disappeared on disk. Safe to call
+// even when there's nothing to prune.
+func (c *Client) PruneWorktrees(ctx context.Context, dir string) error {
+	_, err := c.run(ctx, dir, "worktree", "prune")
+	return err
 }
 
 // PorcelainStatusLine is one parsed line of `git status --porcelain`.

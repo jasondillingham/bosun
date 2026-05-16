@@ -80,6 +80,14 @@ func Derive(ctx context.Context, c *git.Client, cfg config.Config, repoRoot stri
 		if m == nil {
 			continue
 		}
+		// Skip worktrees whose on-disk directory is gone. Git keeps the
+		// admin metadata until `git worktree prune` runs, but every
+		// subsequent `git -C <path>` call would fail. Cleanup/remove
+		// prune these explicitly; here we just keep `bosun status`
+		// rendering instead of dying on the first missing dir.
+		if wt.Prunable {
+			continue
+		}
 		label := m[1]
 		// Numbered sessions populate Number; named sessions leave it at 0
 		// (and ParseLabel rejects "session-0"/"session-" forms upstream).

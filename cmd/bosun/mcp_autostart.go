@@ -28,12 +28,17 @@ type mcpServerInfo struct {
 
 // ensureMcp guarantees a running bosun MCP server for repoRoot and
 // returns the socket path agent sessions should set BOSUN_MCP_SOCK to.
-// Reuse order: env var → pidfile → fresh spawn.
+// Reuse order: env var (only if it belongs to this repo) → pidfile →
+// fresh spawn.
 func ensureMcp(repoRoot string) (mcpServerInfo, error) {
-	// Operator already exposed a server via the env var: assume they know
-	// what they're doing and reuse it rather than starting a duplicate.
+	// Operator may have an inherited BOSUN_MCP_SOCK from a parent process
+	// that's running bosun against a *different* repo. Reusing that
+	// socket sends our agents to the wrong daemon. Validate the socket
+	// belongs to this repo before honoring the env var: it's the default
+	// socket path for repoRoot, or this repo's pidfile already records
+	// that exact socket path.
 	if sock := os.Getenv(bosunmcp.SocketEnv); sock != "" {
-		if isSocketAlive(sock) {
+		if inheritedSocketBelongsToRepo(sock, repoRoot) && isSocketAlive(sock) {
 			return mcpServerInfo{socketPath: sock}, nil
 		}
 	}
@@ -44,6 +49,21 @@ func ensureMcp(repoRoot string) (mcpServerInfo, error) {
 		return mcpServerInfo{socketPath: info.socketPath, pid: info.pid}, nil
 	}
 	return spawnMcpDaemon(repoRoot)
+}
+
+// inheritedSocketBelongsToRepo reports whether an inherited BOSUN_MCP_SOCK
+// value plausibly belongs to repoRoot's daemon. Accepts the value if it
+// equals the default socket path for this repo (covering both the
+// normal `<repo>/.bosun/mcp.sock` and the `/tmp/bosun-<hash>.sock`
+// fallback) or if repoRoot's pidfile records that exact path.
+func inheritedSocketBelongsToRepo(sock, repoRoot string) bool {
+	if sock == bosunmcp.DefaultSocketPath(repoRoot) {
+		return true
+	}
+	if info, ok := readMcpPidfile(repoRoot); ok && info.socketPath == sock {
+		return true
+	}
+	return false
 }
 
 // spawnMcpDaemon launches `bosun mcp --socket <default>` as a detached

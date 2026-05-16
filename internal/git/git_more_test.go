@@ -3,9 +3,46 @@ package git
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 )
+
+// makeExitError builds a real *exec.ExitError with the given exit code by
+// running a shell that exits with that code. Tests need it because
+// TreeEqualsBase distinguishes "diff returned 1" (clean signal) from
+// "diff failed for another reason" (real error) via errors.As(*ExitError).
+func makeExitError(t *testing.T, code int) error {
+	t.Helper()
+	err := exec.Command("sh", "-c", "exit "+itoaForTest(code)).Run()
+	if err == nil {
+		t.Fatalf("expected non-nil error from sh exit %d", code)
+	}
+	return err
+}
+
+func itoaForTest(n int) string {
+	// Small integer to string — avoids pulling strconv into a tiny test helper.
+	if n == 0 {
+		return "0"
+	}
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	var buf [12]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	if neg {
+		i--
+		buf[i] = '-'
+	}
+	return string(buf[i:])
+}
 
 func TestRepoRoot(t *testing.T) {
 	c, _ := newFakeClient(t, runMatcher{
@@ -175,5 +212,66 @@ func TestListWorktrees_Roundtrip(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Path != "/repo" {
 		t.Fatalf("ListWorktrees = %+v", got)
+	}
+}
+
+func TestParseWorktreeList_Prunable(t *testing.T) {
+	in := "worktree /repo\nHEAD abc\nbranch refs/heads/main\n\nworktree /repo-bosun-1\nHEAD def\nbranch refs/heads/bosun/session-1\nprunable gitdir file points to non-existent location\n"
+	got := parseWorktreeList(in)
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2", len(got))
+	}
+	if got[0].Prunable {
+		t.Fatalf("main entry marked prunable")
+	}
+	if !got[1].Prunable {
+		t.Fatalf("session entry not marked prunable")
+	}
+}
+
+func TestTreeEqualsBase_Equal(t *testing.T) {
+	c, _ := newFakeClient(t, runMatcher{
+		args:   []string{"diff", "--quiet", "main..bosun/session-1", "--"},
+		stdout: "",
+	})
+	got, err := c.TreeEqualsBase(context.Background(), "/repo", "main", "bosun/session-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got {
+		t.Fatalf("TreeEqualsBase = false, want true (empty diff)")
+	}
+}
+
+func TestTreeEqualsBase_Different(t *testing.T) {
+	c, _ := newFakeClient(t, runMatcher{
+		args: []string{"diff", "--quiet", "main..bosun/session-1", "--"},
+		err:  makeExitError(t, 1),
+	})
+	got, err := c.TreeEqualsBase(context.Background(), "/repo", "main", "bosun/session-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got {
+		t.Fatalf("TreeEqualsBase = true, want false (exit 1)")
+	}
+}
+
+func TestTreeEqualsBase_OtherError(t *testing.T) {
+	// Exit 128 is git's "bad ref" — surface this as a real error, not "false".
+	c, _ := newFakeClient(t, runMatcher{
+		args:   []string{"diff", "--quiet", "main..bosun/missing", "--"},
+		stderr: "fatal: bad revision 'main..bosun/missing'\n",
+		err:    makeExitError(t, 128),
+	})
+	if _, err := c.TreeEqualsBase(context.Background(), "/repo", "main", "bosun/missing"); err == nil {
+		t.Fatalf("TreeEqualsBase exit 128 returned nil error")
+	}
+}
+
+func TestPruneWorktrees(t *testing.T) {
+	c, _ := newFakeClient(t, runMatcher{args: []string{"worktree", "prune"}})
+	if err := c.PruneWorktrees(context.Background(), "/repo"); err != nil {
+		t.Fatal(err)
 	}
 }

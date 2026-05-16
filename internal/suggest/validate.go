@@ -21,27 +21,9 @@ import (
 // LaneProposal is the top-level structured output from the proposer.
 // Each entry in Sessions describes one bosun session's lane.
 //
-// Shared across internal/suggest/ — declared here so validate.go
-// compiles standalone in the v0.5 round-1 dogfood worktree. Session-1
-// owns internal/suggest/types.go per the brief; if that file declares
-// the same types after lanes merge, drop this block and import.
-type LaneProposal struct {
-	Version  string `json:"version"`
-	Sessions []Lane `json:"sessions"`
-}
-
-// Lane is one entry in a proposal: a single bosun session's scope,
-// owned/avoid file globs, and dependency declarations.
-type Lane struct {
-	Label      string   `json:"label"`
-	Scope      string   `json:"scope"`
-	OwnedFiles []string `json:"owned_files"`
-	AvoidFiles []string `json:"avoid_files"`
-	DependsOn  []string `json:"depends_on"`
-	Rationale  string   `json:"rationale"`
-	WorkToDo   []string `json:"work_to_do"`
-	Notes      string   `json:"notes"`
-}
+// LaneProposal and Lane types live in types.go (the canonical shared
+// contract per the v0.5-round1 plan). Lane-3 originally duplicated them
+// here while developing in isolation; merged out at integration time.
 
 // OverlapError reports two lanes whose OwnedFiles patterns intersect.
 // Carries both lane labels and both patterns so the operator can hand-

@@ -385,7 +385,7 @@ func parseAndValidate(text, goal string, n int) (LaneProposal, error) {
 	if err := dec.Decode(&proposal); err != nil {
 		return LaneProposal{}, fmt.Errorf("decode JSON: %w", err)
 	}
-	if err := validateSchema(proposal, goal, n); err != nil {
+	if err := validateClaudeSchema(proposal, goal, n); err != nil {
 		return LaneProposal{}, err
 	}
 	return proposal, nil
@@ -443,7 +443,7 @@ func extractJSON(text string) (string, error) {
 // Lane-level overlap + cycle detection is session-3's territory
 // (internal/suggest/validate.go) and runs downstream of this; this
 // function only enforces the API contract.
-func validateSchema(p LaneProposal, goal string, n int) error {
+func validateClaudeSchema(p LaneProposal, goal string, n int) error {
 	if p.Version == "" {
 		return errors.New("missing required field: version")
 	}

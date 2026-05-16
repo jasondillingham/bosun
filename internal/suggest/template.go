@@ -7,31 +7,9 @@ import (
 	"time"
 )
 
-// LaneProposal is the structured output of the proposer — N lanes the
-// operator can review then turn into a plan markdown.
-//
-// These types mirror the shared contract spelled out in
-// `v0.5-round1-plan.md`. They live here so this lane can compile
-// independently; the round's lane-1 owns `internal/suggest/types.go` and
-// is expected to lift these declarations there. When that lands, remove
-// the duplicates here.
-type LaneProposal struct {
-	Version  string `json:"version"`
-	Goal     string `json:"goal"`
-	Sessions []Lane `json:"sessions"`
-}
-
-// Lane is one proposed session in a LaneProposal.
-type Lane struct {
-	Label      string   `json:"label"`
-	Scope      string   `json:"scope"`
-	OwnedFiles []string `json:"owned_files"`
-	AvoidFiles []string `json:"avoid_files"`
-	DependsOn  []string `json:"depends_on"`
-	Rationale  string   `json:"rationale"`
-	WorkToDo   []string `json:"work_to_do"`
-	Notes      string   `json:"notes"`
-}
+// LaneProposal and Lane types live in types.go (the canonical shared
+// contract per the v0.5-round1 plan). Lane-4 originally duplicated them
+// here while developing in isolation; merged out at integration time.
 
 // now is the clock used by RenderPlanMarkdown. Tests swap it to keep
 // the generated-date line deterministic without having to massage the

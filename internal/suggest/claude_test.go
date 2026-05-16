@@ -20,9 +20,9 @@ func validProposalJSON(goal string, count int) string {
 	p := LaneProposal{Version: "v1", Goal: goal, Sessions: make([]Lane, 0, count)}
 	for i := 1; i <= count; i++ {
 		p.Sessions = append(p.Sessions, Lane{
-			Label:      labelFor(i),
+			Label:      claudeLabelFor(i),
 			Scope:      "stub scope",
-			OwnedFiles: []string{"internal/stub/" + labelFor(i) + "/**"},
+			OwnedFiles: []string{"internal/stub/" + claudeLabelFor(i) + "/**"},
 			AvoidFiles: []string{},
 			DependsOn:  []string{},
 			Rationale:  "stub rationale",
@@ -34,7 +34,7 @@ func validProposalJSON(goal string, count int) string {
 	return string(b)
 }
 
-func labelFor(i int) string {
+func claudeLabelFor(i int) string {
 	switch i {
 	case 1:
 		return "session-1"
@@ -350,7 +350,7 @@ func TestValidateSchema(t *testing.T) {
 			{Label: "session-1", Scope: "s", OwnedFiles: []string{"a/**"}, WorkToDo: []string{"x"}, Rationale: "r"},
 		},
 	}
-	if err := validateSchema(good, "g", 1); err != nil {
+	if err := validateClaudeSchema(good, "g", 1); err != nil {
 		t.Errorf("good: %v", err)
 	}
 
@@ -382,7 +382,7 @@ func TestValidateSchema(t *testing.T) {
 				Sessions: append([]Lane{}, good.Sessions...),
 			}
 			c.mut(&cp)
-			if err := validateSchema(cp, "g", c.n); err == nil {
+			if err := validateClaudeSchema(cp, "g", c.n); err == nil {
 				t.Errorf("%s: expected error", c.name)
 			}
 		})

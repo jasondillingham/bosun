@@ -181,21 +181,20 @@ func launchTerminalGhostty(opts Options, bin string) error {
 	return spawnDetached(exec.Command(bin, ghosttyArgs(opts)...))
 }
 
-// ghosttyArgs builds the argv for the Ghostty CLI. Extracted so tests can
-// assert the shape (especially the +new-tab action) without spawning a
-// real Ghostty.
+// ghosttyArgs builds the argv for the Ghostty CLI.
+//
+// Note on OpenAsTab: Ghostty's CLI does NOT currently support opening a
+// new tab in an existing window — `+new-tab` exists as a keybinding
+// action but isn't wired into the CLI. This is a long-requested upstream
+// feature (ghostty-org/ghostty discussions #3445, #4579 among others).
+// Until the upstream ships, OpenAsTab is silently ignored and every
+// session opens in its own window. SPEC.md and docs/v0.2-roadmap.md flag
+// this as deferred-on-Ghostty.
 func ghosttyArgs(opts Options) []string {
 	envPrefix := buildShellEnvPrefix(opts.Env)
 	inner := fmt.Sprintf("cd %s && %s%s; exec bash",
 		shellQuote(opts.WorktreePath), envPrefix, shellInvocation(opts))
-	args := make([]string, 0, 5)
-	if opts.OpenAsTab {
-		// Ghostty's `+new-tab` action attaches to the existing/focused
-		// window; the first launch (no flag) creates the parent window.
-		args = append(args, "+new-tab")
-	}
-	args = append(args, "-e", "bash", "-lc", inner)
-	return args
+	return []string{"-e", "bash", "-lc", inner}
 }
 
 // spawnDetached starts cmd without blocking on its exit. Used for terminal

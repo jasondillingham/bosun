@@ -133,44 +133,31 @@ func TestShellInvocation_EscapesSingleQuotes(t *testing.T) {
 	}
 }
 
-func TestGhosttyArgs_NewWindow(t *testing.T) {
-	args := ghosttyArgs(Options{
-		WorktreePath: "/wt/session-1",
-		SessionName:  "session-1",
-		Command:      "claude",
-	})
-	// No +new-tab — first session opens a new window.
-	for _, a := range args {
-		if a == "+new-tab" {
-			t.Fatalf("expected no +new-tab for window launch, got: %v", args)
+func TestGhosttyArgs_AlwaysNewWindow(t *testing.T) {
+	// Ghostty's CLI doesn't support opening a tab in an existing window
+	// (long-requested upstream feature). Until then, OpenAsTab is a no-op
+	// and every session opens in its own window.
+	for _, opts := range []Options{
+		{WorktreePath: "/wt/session-1", Command: "claude"},
+		{WorktreePath: "/wt/session-2", Command: "claude", OpenAsTab: true},
+	} {
+		args := ghosttyArgs(opts)
+		for _, a := range args {
+			if a == "+new-tab" {
+				t.Fatalf("ghostty CLI doesn't support +new-tab; should never appear in argv, got: %v", args)
+			}
+		}
+		if args[0] != "-e" {
+			t.Fatalf("expected first arg to be -e, got %q", args[0])
 		}
 	}
-	if args[0] != "-e" {
-		t.Fatalf("expected first arg to be -e, got %q", args[0])
-	}
 }
 
-func TestGhosttyArgs_NewTab(t *testing.T) {
-	args := ghosttyArgs(Options{
-		WorktreePath: "/wt/session-2",
-		SessionName:  "session-2",
-		Command:      "claude",
-		OpenAsTab:    true,
-	})
-	if args[0] != "+new-tab" {
-		t.Fatalf("expected +new-tab as first arg, got: %v", args)
-	}
-	if args[1] != "-e" {
-		t.Fatalf("expected -e after +new-tab, got %q", args[1])
-	}
-}
-
-func TestGhosttyArgs_TabCarriesPromptAndCWD(t *testing.T) {
+func TestGhosttyArgs_CarriesPromptAndCWD(t *testing.T) {
 	args := ghosttyArgs(Options{
 		WorktreePath:  "/wt/session-2",
 		Command:       "claude",
 		InitialPrompt: "hello",
-		OpenAsTab:     true,
 	})
 	// Find the bash -lc payload — must include both the cd and the quoted prompt.
 	var payload string

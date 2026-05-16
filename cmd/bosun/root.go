@@ -24,6 +24,7 @@ worktree, with one place to see what every session is doing.`,
 		newRemoveCmd(),
 		newCleanupCmd(),
 		newListCmd(),
+		newMcpCmd(),
 	)
 
 	return root

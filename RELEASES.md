@@ -1,5 +1,37 @@
 # Releases
 
+## v0.2.0-alpha — 2026-05-15
+
+Round-0 foundation for the v0.2 MCP server work. Establishes the protocol layer, one stub tool, and the discovery contract that round-1 parallel sessions will build on. **Not production-ready** — explicitly tagged `-alpha` to signal that round 1 is where the user-facing surface fills in.
+
+### What's in
+
+- New `internal/mcp` package built on `github.com/modelcontextprotocol/go-sdk` v1.6+
+- Custom Unix-socket transport so one server can fan multiple sessions onto a single shared backend (vs. the SDK's default stdio = one subprocess per session)
+- One tool: `bosun_check(paths) → {conflicts: [{path, sessions}]}` — read-only, queries existing `.bosun/claims/` for overlaps
+- New `bosun mcp` subcommand: foreground daemon, default socket at `<repo>/.bosun/mcp.sock`, `--socket` override
+- Discovery contract: sessions read `BOSUN_MCP_SOCK` env var (auto-export in round-1's session-4)
+- Helpful error when the resolved socket path exceeds the ~104-byte Unix-domain limit (catches the deep-repo-path footgun before bind fails)
+- Two tests: in-process pipe-based smoke test for the protocol; end-to-end test spawning the real `bosun mcp` subprocess and dialing the socket
+- Protocol notes in `docs/mcp-protocol.md` documenting the contract round-1 sessions will target
+
+### Compatibility
+
+- **Go 1.25+** is now required (up from 1.23 in v0.1.0). The MCP SDK requires it.
+- The filesystem-based coordination from v0.1.0 still works unchanged. The MCP server reads and writes the same `.bosun/claims/` and `.bosun/state/` that `bosun status` / `cleanup` / `merge` operate on. Sessions that don't connect to MCP keep working as before; mixed-mode operation is the intended behavior, not a fallback.
+
+### What's NOT in (planned for round 1)
+
+- `bosun_claim`, `bosun_release` tools
+- `bosun_done`, `bosun_stuck` tools
+- `bosun_announce` (operator-visible events)
+- `bosun init --launch` auto-exporting `BOSUN_MCP_SOCK` to each spawned session
+- Session-identity handshake (today's tools are stateless across the connection)
+
+See [`docs/mcp-protocol.md`](./docs/mcp-protocol.md) for the round-1 plan.
+
+---
+
 ## v0.1.0 — 2026-05-15
 
 First tagged release. A Go CLI for coordinating parallel coding-agent sessions on isolated git worktrees, with a workflow built around `init → claim → done → merge → cleanup`. Repo is private; tag is for internal versioning.

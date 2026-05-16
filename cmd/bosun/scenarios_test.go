@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1444,6 +1445,197 @@ func waitForHTTP200(t *testing.T, url string, timeout time.Duration, log *subpro
 	}
 	t.Fatalf("never got 200 from %s within %s\nsubprocess output:\n%s", url, timeout, log.String())
 	return ""
+}
+
+// --- boundary regression tests (v0.3.1 follow-up) ---
+
+// TestScenario_InitRefusesDependencyCycle confirms session-4's cycle
+// detection fires at init time — a brief with a 2-cycle (session-1 ⇄
+// session-2) should fail fast with a clear `a → b → a` message rather
+// than create the worktrees and silently wedge merge later.
+func TestScenario_InitRefusesDependencyCycle(t *testing.T) {
+	s := newScenario(t)
+	s.WriteFile("plan.md", `## session-1 (depends: session-2)
+foundation
+
+## session-2 (depends: session-1)
+wraps foundation
+`)
+	out, err := s.BosunErr("init", "2", "--brief", "plan.md")
+	if err == nil {
+		t.Fatalf("init should refuse a cyclic brief; got success:\n%s", out)
+	}
+	for _, want := range []string{"cycle", "session-1", "session-2"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("error output missing %q\nfull output:\n%s", want, out)
+		}
+	}
+	// No worktrees should have been created.
+	s.AssertWorktreeMissing(1)
+	s.AssertWorktreeMissing(2)
+}
+
+// TestScenario_MergeRefusesTamperedDependencyCycle exercises the
+// defense-in-depth: even if the archived plan at .bosun/briefs/plan.last.md
+// is hand-edited to introduce a cycle AFTER init has run, `bosun merge`
+// must still refuse rather than silently stalling on the topoOrder
+// input-order fallback. Probes session-4's merge-time cycle guard.
+func TestScenario_MergeRefusesTamperedDependencyCycle(t *testing.T) {
+	s := newScenario(t)
+	// Start with a clean (acyclic) plan so init succeeds.
+	s.WriteFile("plan.md", `## session-1
+foundation
+
+## session-2 (depends: session-1)
+wraps foundation
+`)
+	s.Bosun("init", "2", "--brief", "plan.md")
+
+	// Now tamper with the archived plan to introduce the cycle. The merge
+	// path re-reads this file via brief.LoadArchivedDeps; the in-memory
+	// briefs from init are no longer consulted at merge time.
+	tampered := `## session-1 (depends: session-2)
+foundation
+
+## session-2 (depends: session-1)
+wraps foundation
+`
+	s.WriteFile(".bosun/briefs/plan.last.md", tampered)
+
+	// Both sessions need commits + DONE to be merge candidates.
+	for i := 1; i <= 2; i++ {
+		wt := s.WorktreePath(i)
+		s.WriteFileIn(wt, fmt.Sprintf("file-%d.txt", i), "content\n")
+		s.CommitIn(wt, fmt.Sprintf("session-%d work", i))
+		s.Bosun("done", fmt.Sprintf("session-%d", i))
+	}
+
+	out, err := s.BosunErr("merge")
+	if err == nil {
+		t.Fatalf("merge should refuse on a tampered cyclic plan; got success:\n%s", out)
+	}
+	for _, want := range []string{"cycle", "session-1", "session-2"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("error output missing %q\nfull output:\n%s", want, out)
+		}
+	}
+}
+
+// TestScenario_ClaimsRoundtripCliAndStatus drives a claim via the CLI and
+// confirms it surfaces in `bosun status --with-overlaps` and `bosun show`
+// the way the same claim made via `bosun_claim` MCP would. This is the
+// boundary session-1 hardened (mutex + atomic write on claims.Store):
+// concurrent CLI + MCP writers shouldn't corrupt the on-disk JSON, and
+// every reader path should see the same data.
+func TestScenario_ClaimsRoundtripCliAndStatus(t *testing.T) {
+	s := newScenario(t)
+	s.Bosun("init", "2")
+	s.Bosun("claim", "session-1", "internal/auth/handler.go", "internal/auth/middleware.go")
+	s.Bosun("claim", "session-2", "internal/auth/handler.go")
+
+	statusOut := s.Bosun("status", "--with-overlaps")
+	s.AssertContainsAll(statusOut,
+		"internal/auth/handler.go",
+		"session-1",
+		"session-2",
+	)
+	if !strings.Contains(statusOut, "1 overlap") {
+		t.Errorf("expected '1 overlap' summary, got:\n%s", statusOut)
+	}
+
+	showOut := s.Bosun("show", "session-1")
+	s.AssertContainsAll(showOut,
+		"internal/auth/handler.go",
+		"internal/auth/middleware.go",
+	)
+}
+
+// TestScenario_DoneRefusesOnDirtyWorktree exercises the lifecycle gate
+// for the CLI path the way session-2's MCP tool_done test does for the
+// MCP path. Same policy must hold in both surfaces — an agent that ran
+// `bosun done` while a file was uncommitted should be told to commit
+// first, not silently advance the session to DONE.
+func TestScenario_DoneRefusesOnDirtyWorktree(t *testing.T) {
+	s := newScenario(t)
+	s.Bosun("init", "1")
+	wt := s.WorktreePath(1)
+	// Commit a tracked file first so it's part of HEAD; then modify it
+	// so the dirty count is non-zero.
+	s.WriteFileIn(wt, "tracked.txt", "v1\n")
+	s.GitIn(wt, "add", "tracked.txt")
+	s.CommitIn(wt, "add tracked")
+	s.WriteFileIn(wt, "tracked.txt", "v2 dirty\n")
+
+	out, err := s.BosunErr("done", "session-1")
+	if err == nil {
+		t.Fatalf("done should refuse on a dirty worktree; got success:\n%s", out)
+	}
+	if !strings.Contains(out, "uncommitted") && !strings.Contains(out, "dirty") {
+		t.Errorf("expected diagnostic about uncommitted/dirty work, got:\n%s", out)
+	}
+}
+
+// TestScenario_ConcurrentCliClaimsAllLandOrFailLoudly stresses the
+// CLI claim path with multiple processes racing on the same session's
+// claims file. The session-1 fix added a sync.Mutex inside claims.Store
+// (in-process serialization) plus atomic temp-file+rename writes
+// (no torn JSON), but separate `bosun claim` invocations are separate
+// Go processes — the in-process mutex doesn't bind across them. If the
+// read-modify-write loop is unguarded against cross-process races,
+// some claims will silently disappear from the merged set. Run N=8
+// claimers in parallel and assert: either every claim made it in, or
+// the failing ones produced a clear error — never a silent drop.
+func TestScenario_ConcurrentCliClaimsAllLandOrFailLoudly(t *testing.T) {
+	s := newScenario(t)
+	s.Bosun("init", "1")
+
+	const claimers = 8
+	type outcome struct {
+		path string
+		err  error
+		out  string
+	}
+	results := make([]outcome, claimers)
+	var wg sync.WaitGroup
+	wg.Add(claimers)
+	for i := 0; i < claimers; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			path := fmt.Sprintf("internal/concurrent/file-%d.go", i)
+			out, err := s.bosunRaw(s.repo, "claim", "session-1", path)
+			results[i] = outcome{path: path, err: err, out: out}
+		}()
+	}
+	wg.Wait()
+
+	// Build the expected set of paths from claimers whose CLI invocation
+	// exited cleanly. Any failure is OK as long as it's a loud one — the
+	// surfacing bug would be a silent drop (no error, no claim).
+	want := map[string]bool{}
+	for _, r := range results {
+		if r.err == nil {
+			want[r.path] = true
+		} else {
+			t.Logf("claim %s reported error: %v\n%s", r.path, r.err, r.out)
+		}
+	}
+	if len(want) == 0 {
+		t.Fatalf("every concurrent claim reported an error — none was supposed to fail in this scenario")
+	}
+
+	// Read back what bosun actually stored.
+	showOut := s.Bosun("show", "session-1")
+	missing := []string{}
+	for p := range want {
+		if !strings.Contains(showOut, p) {
+			missing = append(missing, p)
+		}
+	}
+	if len(missing) > 0 {
+		t.Fatalf("%d/%d claims silently disappeared (no CLI error, but not in `bosun show`): %v\nshow output:\n%s",
+			len(missing), len(want), missing, showOut)
+	}
 }
 
 // --- helpers (test-local) ---

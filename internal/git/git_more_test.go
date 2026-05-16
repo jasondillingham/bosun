@@ -283,6 +283,127 @@ func TestChmodWritableTree(t *testing.T) {
 	}
 }
 
+// TestChmodWritableTree_DeepRealisticGoModCacheShape stresses the helper
+// against a directory layout that more faithfully reflects what
+// --isolate-cache leaves behind: many modules, each several path segments
+// deep, with read-only files (0o444) inside read-only directories (0o555).
+// The original TestChmodWritableTree only exercises one module path; we
+// observed during the v0.3.1 bug-hunt cleanup that `bosun cleanup --force`
+// still hit Permission denied on real-world GOMODCACHE trees even after the
+// pre-chmod ran. This test asserts the helper's invariant holds at scale.
+func TestChmodWritableTree_DeepRealisticGoModCacheShape(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission model differs on Windows")
+	}
+	root := t.TempDir()
+
+	// 6 different module-like subtrees, each with the kind of nesting
+	// gopath sees: <root>/.cache/go-mod/<host>/<org>/<pkg>@<ver>/<sub>/<file>
+	modules := []struct {
+		host, org, pkg, ver string
+	}{
+		{"github.com", "google", "jsonschema-go", "v0.4.3"},
+		{"github.com", "spf13", "cobra", "v1.10.2"},
+		{"github.com", "modelcontextprotocol", "go-sdk", "v1.6.0"},
+		{"golang.org", "x", "term", "v0.27.0"},
+		{"golang.org", "x", "sys", "v0.41.0"},
+		{"github.com", "shirou", "gopsutil", "v3.24.5"},
+	}
+	for _, m := range modules {
+		base := filepath.Join(root, ".cache", "go-mod", m.host, m.org, m.pkg+"@"+m.ver)
+		// Two sub-packages per module + several files each, to mimic real density.
+		for _, sub := range []string{".", "internal", "internal/util", "cmd/tool"} {
+			dir := filepath.Join(base, sub)
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatalf("mkdir %s: %v", dir, err)
+			}
+			for _, f := range []string{"go.mod", "go.sum", "LICENSE", "README.md", "doc.go", "util.go", "util_test.go"} {
+				if err := os.WriteFile(filepath.Join(dir, f), []byte("x"), 0o644); err != nil {
+					t.Fatalf("write %s: %v", f, err)
+				}
+			}
+		}
+	}
+
+	// Lock down (bottom-up): files 0o444, then dirs 0o555.
+	if err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		return os.Chmod(p, 0o444)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var dirs []string
+	_ = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		if err == nil && d.IsDir() {
+			dirs = append(dirs, p)
+		}
+		return nil
+	})
+	for i := len(dirs) - 1; i >= 0; i-- {
+		if err := os.Chmod(dirs[i], 0o555); err != nil {
+			t.Fatalf("chmod %s: %v", dirs[i], err)
+		}
+	}
+	t.Cleanup(func() {
+		_ = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+			if err != nil {
+				return nil
+			}
+			if d.IsDir() {
+				_ = os.Chmod(p, 0o755)
+			} else {
+				_ = os.Chmod(p, 0o644)
+			}
+			return nil
+		})
+	})
+
+	// Premise: untouched RemoveAll fails on this shape.
+	if err := os.RemoveAll(filepath.Join(root, ".cache")); err == nil {
+		t.Fatal("expected unaided RemoveAll to fail on locked-down GOMODCACHE")
+	}
+
+	// Helper should make every entry writable…
+	if err := chmodWritableTree(root); err != nil {
+		t.Fatalf("chmodWritableTree: %v", err)
+	}
+
+	// …and the post-condition is binary: nothing under root is read-only.
+	// Use the same invariant as the production code (u+w bit must be set).
+	var leftReadOnly []string
+	_ = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		info, ierr := d.Info()
+		if ierr != nil {
+			return nil
+		}
+		if info.Mode().Perm()&0o200 == 0 {
+			leftReadOnly = append(leftReadOnly, p)
+		}
+		return nil
+	})
+	if len(leftReadOnly) > 0 {
+		t.Fatalf("%d entries still missing u+w after chmodWritableTree; sample: %v",
+			len(leftReadOnly), leftReadOnly[:minInt(5, len(leftReadOnly))])
+	}
+
+	// Belt-and-suspenders: RemoveAll must now succeed.
+	if err := os.RemoveAll(filepath.Join(root, ".cache")); err != nil {
+		t.Fatalf("RemoveAll after chmod: %v", err)
+	}
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 // TestChmodWritableTree_MissingRoot just confirms the walk doesn't panic on
 // a path that doesn't exist — RemoveWorktree calls Stat first, but the
 // helper itself should still degrade cleanly.

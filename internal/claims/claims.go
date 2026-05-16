@@ -49,89 +49,104 @@ func (s *Store) file(session string) string {
 
 // Add merges the given paths into session's claim file, deduplicating.
 // Creates the file (and parent dir) if needed.
+//
+// In-process callers serialize via s.mu; cross-process callers (e.g. two
+// concurrent `bosun claim` shell invocations) serialize via the POSIX
+// flock on .bosun/claims/.lock so a read-modify-write race doesn't
+// silently drop updates.
 func (s *Store) Add(session string, paths []string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := os.MkdirAll(s.dir(), 0o755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", s.dir(), err)
 	}
-	existing, err := s.readLocked(session)
-	if err != nil {
-		return err
-	}
-	if existing == nil {
-		existing = &Claim{Session: session}
-	}
-	merged := dedupe(append(existing.Paths, normalizeAll(paths)...))
-	sort.Strings(merged)
-	existing.Paths = merged
-	existing.UpdatedAt = time.Now().UTC()
-	return s.write(existing)
+	return withStoreLock(s.dir(), func() error {
+		existing, err := s.readLocked(session)
+		if err != nil {
+			return err
+		}
+		if existing == nil {
+			existing = &Claim{Session: session}
+		}
+		merged := dedupe(append(existing.Paths, normalizeAll(paths)...))
+		sort.Strings(merged)
+		existing.Paths = merged
+		existing.UpdatedAt = time.Now().UTC()
+		return s.write(existing)
+	})
 }
 
 // Replace overwrites session's claim file with exactly these paths.
+// Serializes against concurrent CLI/MCP writers via the cross-process
+// flock the same way Add does.
 func (s *Store) Replace(session string, paths []string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := os.MkdirAll(s.dir(), 0o755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", s.dir(), err)
 	}
-	merged := dedupe(normalizeAll(paths))
-	sort.Strings(merged)
-	c := &Claim{Session: session, Paths: merged, UpdatedAt: time.Now().UTC()}
-	return s.write(c)
+	return withStoreLock(s.dir(), func() error {
+		merged := dedupe(normalizeAll(paths))
+		sort.Strings(merged)
+		c := &Claim{Session: session, Paths: merged, UpdatedAt: time.Now().UTC()}
+		return s.write(c)
+	})
 }
 
 // Remove drops the given paths from session's claim file. Paths not currently
 // claimed are silently ignored. If the resulting claim has no paths left, the
 // file is removed (mirrors Clear). A missing claim file is not an error.
-// Returns the number of paths actually removed.
+// Returns the number of paths actually removed. Cross-process safe via the
+// same flock Add uses.
 func (s *Store) Remove(session string, paths []string) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	existing, err := s.readLocked(session)
+	var removed int
+	err := withStoreLock(s.dir(), func() error {
+		existing, err := s.readLocked(session)
+		if err != nil {
+			return err
+		}
+		if existing == nil || len(existing.Paths) == 0 {
+			return nil
+		}
+		drop := map[string]struct{}{}
+		for _, p := range normalizeAll(paths) {
+			drop[p] = struct{}{}
+		}
+		kept := make([]string, 0, len(existing.Paths))
+		for _, p := range existing.Paths {
+			if _, ok := drop[p]; ok {
+				removed++
+				continue
+			}
+			kept = append(kept, p)
+		}
+		if removed == 0 {
+			return nil
+		}
+		if len(kept) == 0 {
+			return s.clearLocked(session)
+		}
+		sort.Strings(kept)
+		existing.Paths = kept
+		existing.UpdatedAt = time.Now().UTC()
+		return s.write(existing)
+	})
 	if err != nil {
-		return 0, err
-	}
-	if existing == nil || len(existing.Paths) == 0 {
-		return 0, nil
-	}
-	drop := map[string]struct{}{}
-	for _, p := range normalizeAll(paths) {
-		drop[p] = struct{}{}
-	}
-	kept := make([]string, 0, len(existing.Paths))
-	removed := 0
-	for _, p := range existing.Paths {
-		if _, ok := drop[p]; ok {
-			removed++
-			continue
-		}
-		kept = append(kept, p)
-	}
-	if removed == 0 {
-		return 0, nil
-	}
-	if len(kept) == 0 {
-		if err := s.clearLocked(session); err != nil {
-			return 0, err
-		}
-		return removed, nil
-	}
-	sort.Strings(kept)
-	existing.Paths = kept
-	existing.UpdatedAt = time.Now().UTC()
-	if err := s.write(existing); err != nil {
 		return 0, err
 	}
 	return removed, nil
 }
 
 // Clear removes session's claim file. Missing is not an error.
+// Cross-process safe via the flock Add/Remove/Replace use.
 func (s *Store) Clear(session string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.clearLocked(session)
+	return withStoreLock(s.dir(), func() error {
+		return s.clearLocked(session)
+	})
 }
 
 // clearLocked is Clear's body without taking the lock — for callers like

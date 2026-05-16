@@ -1,12 +1,75 @@
 package mcp
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
 )
+
+// Schema-lock test for the event objects emitted on `GET /api/events`
+// and persisted to `.bosun/events.log`. Documented in
+// `docs/json-schema.md`. If you add, rename, retype, or omit a key,
+// this test fails — update the doc and the lock list together.
+//
+// The Event struct is the single source of truth for both the SSE wire
+// format and the JSONL on-disk format; locking the marshaled key set
+// covers both.
+var eventJSON_LockedKeys = []string{"session", "kind", "message", "at"}
+
+func TestSchema_EventJSON_LockedKeys(t *testing.T) {
+	e := Event{
+		Session: "session-1",
+		Kind:    "progress",
+		Message: "halfway",
+		At:      time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC),
+	}
+	data, err := json.Marshal(e)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(data, &obj); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, data)
+	}
+
+	got := make([]string, 0, len(obj))
+	for k := range obj {
+		got = append(got, k)
+	}
+	sort.Strings(got)
+	want := append([]string(nil), eventJSON_LockedKeys...)
+	sort.Strings(want)
+
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("Event key set mismatch — update docs/json-schema.md and this lock list when intentional.\n  want: %v\n  got:  %v",
+			want, got)
+	}
+
+	// Spot-check types: the time format must be RFC3339 — round-tripping
+	// through `time.Parse` proves the wire shape without locking the
+	// exact string. Consumers can rely on RFC3339 indefinitely.
+	atStr, ok := obj["at"].(string)
+	if !ok {
+		t.Errorf("at: want string, got %T", obj["at"])
+	}
+	if _, err := time.Parse(time.RFC3339, atStr); err != nil {
+		t.Errorf("at value %q is not RFC3339: %v", atStr, err)
+	}
+
+	// Locked decision (see F5 in docs/json-schema.md): no version field
+	// on event records. A consumer can rely on `kind` being open-ended
+	// (info/progress/warn today, possibly more later).
+	if _, ok := obj["version"]; ok {
+		t.Errorf("Event must NOT emit a 'version' field (see F5 in docs/json-schema.md). Adding one is a deliberate breaking-change moment.")
+	}
+	if _, ok := obj["v"]; ok {
+		t.Errorf("Event must NOT emit a 'v' field (see F5 in docs/json-schema.md)")
+	}
+}
 
 func TestEvents_PushAndRecent(t *testing.T) {
 	ResetEventsForTest()

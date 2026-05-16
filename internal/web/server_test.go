@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -129,6 +130,150 @@ func TestServer_Show_Present(t *testing.T) {
 	if got.Brief != briefBody {
 		t.Errorf("brief mismatch:\n got: %q\nwant: %q", got.Brief, briefBody)
 	}
+}
+
+// Schema-lock for the /api/show/<session> JSON payload. Documented in
+// `docs/json-schema.md` (especially F1/F2/F4 — this surface diverges
+// from `bosun show --json` on purpose; the lock keeps the divergence
+// deliberate). If any key is added, renamed, retyped, or moved between
+// omitempty/non-omitempty, this test fails — and the fix is to update
+// the doc and the lock lists together.
+var apiShowJSON_AllFieldsPopulatedKeys = []string{
+	"name", "number", "branch", "path", "state",
+	"state_message",
+	"ahead", "dirty", "claimed", "running",
+	"running_pid",
+	"last_sha", "last_subject", "last_relative", "last_unix",
+	"claimed_paths", "brief",
+}
+
+var apiShowJSON_MinimalKeys = []string{
+	"name", "number", "branch", "path", "state",
+	"ahead", "dirty", "claimed", "running",
+	"claimed_paths", "brief",
+}
+
+func TestSchema_ShowAPIJSON_LockedKeys(t *testing.T) {
+	repo := newTestRepo(t)
+	addBosunSession(t, repo, "session-1")
+	store := claims.NewStore(repo)
+	if err := store.Add("session-1", []string{"internal/auth.go"}); err != nil {
+		t.Fatalf("claims.Add: %v", err)
+	}
+	cfg, err := config.Load(repo)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	wt := filepath.Join(filepath.Dir(repo), filepath.Base(repo)+cfg.WorktreeSuffixForLabel("session-1"))
+	if err := os.WriteFile(filepath.Join(wt, "BOSUN_BRIEF.md"), []byte("# brief\n"), 0o644); err != nil {
+		t.Fatalf("write brief: %v", err)
+	}
+
+	srv := startTestServer(t, repo)
+	body := getOK(t, "http://"+srv.Addr()+"/api/show/session-1")
+
+	var top map[string]any
+	if err := json.Unmarshal([]byte(body), &top); err != nil {
+		t.Fatalf("decode: %v\n%s", err, body)
+	}
+	// Minimal-keys fixture: an empty bosun repo session has no commits
+	// yet (so all last_* are absent), no agent running (no running_pid),
+	// and no .done/.stuck file (no state_message). This locks the
+	// omitempty contract.
+	assertExactWebKeys(t, "/api/show/<session> (minimal)", top, apiShowJSON_MinimalKeys)
+
+	// Lock the deliberate divergence with `bosun show --json`. If these
+	// keys move to match (because the surfaces converged), update F1/F2
+	// in docs/json-schema.md and this lock list together.
+	if _, ok := top["worktree"]; ok {
+		t.Errorf("/api/show emits 'path', not 'worktree' (see docs/json-schema.md F1) — found unexpected 'worktree' key")
+	}
+	if _, ok := top["state_msg"]; ok {
+		t.Errorf("/api/show emits 'state_message', not 'state_msg' (see docs/json-schema.md F2) — found unexpected 'state_msg' key")
+	}
+	if _, ok := top["recent_commits"]; ok {
+		t.Errorf("/api/show does NOT emit recent_commits (see docs/json-schema.md F4) — found unexpected key")
+	}
+	if _, ok := top["version"]; ok {
+		t.Errorf("/api/show does NOT emit a top-level version field today (see docs/json-schema.md F3). Adding it is purely additive — but update the doc + lock list together.")
+	}
+
+	// claimed_paths must always be an array (never null).
+	if _, ok := top["claimed_paths"].([]any); !ok {
+		t.Errorf("claimed_paths: want array, got %T", top["claimed_paths"])
+	}
+}
+
+// TestSchema_ShowAPIJSON_AllFieldsPopulated exercises the
+// "every omitempty field is set" half of the contract by manually
+// marshaling the struct with a fully-populated fixture. This is the
+// only practical way to assert the full key set without a flaky
+// dependency on the agent process running inside a test worktree.
+func TestSchema_ShowAPIJSON_AllFieldsPopulated(t *testing.T) {
+	row := showJSON{
+		Name:         "session-1",
+		Number:       1,
+		Branch:       "bosun/session-1",
+		Path:         "/abs/myproj-bosun-1",
+		State:        "WORKING",
+		StateMsg:     "blocked",
+		Ahead:        2,
+		Dirty:        0,
+		Claimed:      1,
+		Running:      true,
+		RunningPID:   12345,
+		LastSHA:      "abc1234",
+		LastSubject:  "wire up handler",
+		LastRel:      "3m ago",
+		LastUnix:     1700000000,
+		ClaimedPaths: []string{"internal/auth.go"},
+		Brief:        "# brief\n",
+	}
+	data, err := json.Marshal(row)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var top map[string]any
+	if err := json.Unmarshal(data, &top); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, data)
+	}
+	assertExactWebKeys(t, "/api/show/<session> (full)", top, apiShowJSON_AllFieldsPopulatedKeys)
+}
+
+// assertExactWebKeys is the same shape comparator used by
+// status_json_test.go and cmd_list_test.go, copied here to keep the
+// internal/web tests free of cross-package test imports.
+func assertExactWebKeys(t *testing.T, label string, obj map[string]any, want []string) {
+	t.Helper()
+	got := make([]string, 0, len(obj))
+	for k := range obj {
+		got = append(got, k)
+	}
+	sort.Strings(got)
+	expected := append([]string(nil), want...)
+	sort.Strings(expected)
+
+	missing := webKeyDiff(expected, got)
+	extra := webKeyDiff(got, expected)
+	if len(missing) == 0 && len(extra) == 0 {
+		return
+	}
+	t.Errorf("%s key set mismatch — update docs/json-schema.md and this lock list when intentional.\n  want: %v\n  got:  %v\n  missing: %v\n  extra:   %v",
+		label, expected, got, missing, extra)
+}
+
+func webKeyDiff(a, b []string) []string {
+	set := make(map[string]struct{}, len(b))
+	for _, x := range b {
+		set[x] = struct{}{}
+	}
+	var out []string
+	for _, x := range a {
+		if _, ok := set[x]; !ok {
+			out = append(out, x)
+		}
+	}
+	return out
 }
 
 // TestServer_Show_Absent proves /api/show/<unknown> returns 404 — the

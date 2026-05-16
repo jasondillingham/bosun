@@ -29,6 +29,7 @@ worktree, with one place to see what every session is doing.`,
 		newMcpCmd(),
 		newTuiCmd(),
 		newServeCmd(),
+		newSuggestCmd(),
 	)
 
 	return root

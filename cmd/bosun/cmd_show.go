@@ -1,28 +1,70 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 
 	"github.com/jasondillingham/bosun/internal/brief"
 	"github.com/jasondillingham/bosun/internal/session"
+	"github.com/jasondillingham/bosun/internal/status"
 	"github.com/spf13/cobra"
 )
 
+// showJSON is the stable wire shape behind `bosun show <session> --json`.
+//
+// Schema (versioned by status.JSONSchemaVersion; additive changes keep the
+// same version, key renames or removals are breaking and bump it):
+//
+//	{
+//	  "version":        string,
+//	  "name":           string,
+//	  "branch":         string,
+//	  "worktree":       string,    // absolute worktree path
+//	  "state":          string,    // "WORKING" | "DONE" | "STUCK"
+//	  "state_msg":      string,    // body of .done/.stuck marker, "" when blank
+//	  "ahead":          int,       // commits ahead of base branch
+//	  "dirty":          int,       // count of uncommitted tracked-file changes
+//	  "claimed_paths":  []string,  // claim file's Paths, [] when none
+//	  "recent_commits": string,    // raw output of `git log -10 --oneline --decorate`, "" when none
+//	  "brief":          string     // full BOSUN_BRIEF.md contents, "" when missing
+//	}
+//
+// `claimed_paths` is always a JSON array (never null). `recent_commits` and
+// `brief` are raw strings — they may contain newlines and be large.
+type showJSON struct {
+	Version       string   `json:"version"`
+	Name          string   `json:"name"`
+	Branch        string   `json:"branch"`
+	Worktree      string   `json:"worktree"`
+	State         string   `json:"state"`
+	StateMsg      string   `json:"state_msg"`
+	Ahead         int      `json:"ahead"`
+	Dirty         int      `json:"dirty"`
+	ClaimedPaths  []string `json:"claimed_paths"`
+	RecentCommits string   `json:"recent_commits"`
+	Brief         string   `json:"brief"`
+}
+
 func newShowCmd() *cobra.Command {
+	var jsonOut bool
+
 	cmd := &cobra.Command{
 		Use:   "show <session>",
 		Short: "Inspect one session's brief, claims, state, and recent activity",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runShow(cmd, args[0])
+			return runShow(cmd, args[0], jsonOut)
 		},
 	}
+
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit machine-readable JSON")
+
 	return cmd
 }
 
-func runShow(cmd *cobra.Command, sessionArg string) error {
+func runShow(cmd *cobra.Command, sessionArg string, jsonOut bool) error {
 	rc, err := loadCtx()
 	if err != nil {
 		return err
@@ -40,6 +82,54 @@ func runShow(cmd *cobra.Command, sessionArg string) error {
 		return userErr("%s not found (use `bosun list` to see active sessions)", label)
 	}
 
+	if jsonOut {
+		return renderShowJSON(rc, s)
+	}
+	return renderShowText(rc, s)
+}
+
+func renderShowJSON(rc *runCtx, s *session.Session) error {
+	payload := showJSON{
+		Version:      status.JSONSchemaVersion,
+		Name:         s.Name,
+		Branch:       s.Branch,
+		Worktree:     s.Path,
+		State:        string(s.State),
+		StateMsg:     s.StateMsg,
+		Ahead:        s.Ahead,
+		Dirty:        s.Dirty,
+		ClaimedPaths: []string{},
+	}
+
+	c, err := rc.claims.Read(s.Name)
+	if err != nil {
+		return internalErr("read claims", err)
+	}
+	if c != nil && len(c.Paths) > 0 {
+		payload.ClaimedPaths = append(payload.ClaimedPaths, c.Paths...)
+	}
+
+	briefBody, err := brief.ReadFromWorktree(s.Path)
+	if err != nil {
+		return internalErr("read brief", err)
+	}
+	payload.Brief = briefBody
+
+	log, err := rc.git.LogN(rc.ctx, s.Path, 10)
+	if err != nil {
+		return gitErr("git log", err)
+	}
+	payload.RecentCommits = log
+
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(payload); err != nil {
+		return internalErr("encode json", err)
+	}
+	return nil
+}
+
+func renderShowText(rc *runCtx, s *session.Session) error {
 	fmt.Fprintf(os.Stdout, "Session:  %s\n", s.Name)
 	fmt.Fprintf(os.Stdout, "Branch:   %s\n", s.Branch)
 	fmt.Fprintf(os.Stdout, "Worktree: %s\n", s.Path)

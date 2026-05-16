@@ -53,6 +53,14 @@ import (
 	"github.com/jasondillingham/bosun/internal/session"
 )
 
+// JSONSchemaVersion is the wire-stable version tag emitted by bosun's
+// machine-readable JSON outputs (`bosun list --json`, `bosun show --json`).
+// Consumers can switch on this string to detect breaking changes; additive
+// field changes keep the same version. `bosun status --json` predates this
+// constant and intentionally does not surface it — its stability promise
+// lives in the doc comment at the top of this file.
+const JSONSchemaVersion = "v0.4.0"
+
 // sessionJSON is the per-session row in the public payload. Field tags are
 // the stable wire names — see the package doc above before renaming.
 type sessionJSON struct {

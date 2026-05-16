@@ -1744,3 +1744,162 @@ func readFile(t *testing.T, path string) string {
 	}
 	return string(data)
 }
+
+// --- list --json / show --json ---
+//
+// `bosun list` and `bosun show` mirror `bosun status --json`'s precedent:
+// a stable wire shape that scripts and dashboards can consume. The tests
+// below parse the JSON, check the version key matches the shared constant,
+// and assert the documented keys are present.
+
+func TestScenario_ListJSONShape(t *testing.T) {
+	s := newScenario(t)
+	s.Bosun("init", "3")
+
+	// session-2 → DONE so we have a non-WORKING state in the slice.
+	wt2 := s.WorktreePath(2)
+	s.WriteFileIn(wt2, "a.txt", "x\n")
+	s.CommitIn(wt2, "work")
+	s.Bosun("done", "session-2")
+
+	out := s.Bosun("list", "--json")
+
+	var payload struct {
+		Version  string `json:"version"`
+		Sessions []struct {
+			Name   string `json:"name"`
+			Branch string `json:"branch"`
+			State  string `json:"state"`
+		} `json:"sessions"`
+	}
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		t.Fatalf("list --json parse: %v\n%s", err, out)
+	}
+	if payload.Version == "" {
+		t.Errorf("list --json missing version key:\n%s", out)
+	}
+	if len(payload.Sessions) != 3 {
+		t.Fatalf("sessions = %d, want 3:\n%s", len(payload.Sessions), out)
+	}
+	var foundDone bool
+	for _, sess := range payload.Sessions {
+		if sess.Name == "" || sess.Branch == "" || sess.State == "" {
+			t.Errorf("session has empty required field: %+v", sess)
+		}
+		if !strings.HasPrefix(sess.Branch, "bosun/") {
+			t.Errorf("session %s: branch %q missing bosun/ prefix", sess.Name, sess.Branch)
+		}
+		if sess.Name == "session-2" {
+			if sess.State != "DONE" {
+				t.Errorf("session-2 state = %q, want DONE", sess.State)
+			}
+			foundDone = true
+		}
+	}
+	if !foundDone {
+		t.Errorf("session-2 missing from list --json output:\n%s", out)
+	}
+}
+
+func TestScenario_ListJSONHonorsReadyFilter(t *testing.T) {
+	// `--ready` filters before serialization, so only DONE sessions show up
+	// — same contract as the plain-text form.
+	s := newScenario(t)
+	s.Bosun("init", "3")
+
+	wt2 := s.WorktreePath(2)
+	s.WriteFileIn(wt2, "a.txt", "x\n")
+	s.CommitIn(wt2, "work")
+	s.Bosun("done", "session-2")
+
+	out := s.Bosun("list", "--json", "--ready")
+
+	var payload struct {
+		Version  string `json:"version"`
+		Sessions []struct {
+			Name  string `json:"name"`
+			State string `json:"state"`
+		} `json:"sessions"`
+	}
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		t.Fatalf("list --json --ready parse: %v\n%s", err, out)
+	}
+	if payload.Version == "" {
+		t.Errorf("list --json --ready missing version key:\n%s", out)
+	}
+	if len(payload.Sessions) != 1 {
+		t.Fatalf("sessions = %d, want 1 (DONE filter):\n%s", len(payload.Sessions), out)
+	}
+	if payload.Sessions[0].Name != "session-2" || payload.Sessions[0].State != "DONE" {
+		t.Errorf("unexpected ready session: %+v", payload.Sessions[0])
+	}
+}
+
+func TestScenario_ShowJSONShape(t *testing.T) {
+	s := newScenario(t)
+	s.WriteFile("plan.md", "## session-1\nrefactor things\n")
+	s.Bosun("init", "1", "--brief", "plan.md")
+
+	wt1 := s.WorktreePath(1)
+	s.WriteFileIn(wt1, "internal/foo.go", "package foo\n")
+	s.CommitIn(wt1, "add foo")
+	s.Bosun("claim", "session-1", "internal/foo.go")
+
+	out := s.Bosun("show", "session-1", "--json")
+
+	var payload struct {
+		Version       string   `json:"version"`
+		Name          string   `json:"name"`
+		Branch        string   `json:"branch"`
+		Worktree      string   `json:"worktree"`
+		State         string   `json:"state"`
+		StateMsg      string   `json:"state_msg"`
+		Ahead         int      `json:"ahead"`
+		Dirty         int      `json:"dirty"`
+		ClaimedPaths  []string `json:"claimed_paths"`
+		RecentCommits string   `json:"recent_commits"`
+		Brief         string   `json:"brief"`
+	}
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		t.Fatalf("show --json parse: %v\n%s", err, out)
+	}
+	if payload.Version == "" {
+		t.Errorf("show --json missing version key:\n%s", out)
+	}
+	if payload.Name != "session-1" {
+		t.Errorf("name = %q, want session-1", payload.Name)
+	}
+	if !strings.HasSuffix(payload.Branch, "session-1") {
+		t.Errorf("branch = %q, want suffix session-1", payload.Branch)
+	}
+	if payload.Worktree == "" {
+		t.Errorf("worktree path empty")
+	}
+	if payload.State != "WORKING" {
+		t.Errorf("state = %q, want WORKING", payload.State)
+	}
+	if payload.Ahead != 1 {
+		t.Errorf("ahead = %d, want 1", payload.Ahead)
+	}
+	if len(payload.ClaimedPaths) != 1 || payload.ClaimedPaths[0] != "internal/foo.go" {
+		t.Errorf("claimed_paths = %v, want [internal/foo.go]", payload.ClaimedPaths)
+	}
+	if !strings.Contains(payload.RecentCommits, "add foo") {
+		t.Errorf("recent_commits missing 'add foo':\n%s", payload.RecentCommits)
+	}
+	if !strings.Contains(payload.Brief, "refactor things") {
+		t.Errorf("brief missing BOSUN_BRIEF.md body:\n%s", payload.Brief)
+	}
+}
+
+func TestScenario_ShowJSONUnknownSessionFails(t *testing.T) {
+	// `--json` shouldn't paper over the "session not found" error — the
+	// command must still exit non-zero so scripts can detect it.
+	s := newScenario(t)
+	s.Bosun("init", "1")
+
+	out, err := s.BosunErr("show", "session-missing", "--json")
+	if err == nil {
+		t.Fatalf("show <missing> --json should fail:\n%s", out)
+	}
+}

@@ -59,10 +59,10 @@ The original v0.1 spec listed 8 commands and a smaller surface. The v0.1.0 relea
 ### What's not in v0.1.0 (deferred to v0.2)
 
 - MCP server interface — sessions still coordinate via filesystem state, not tool calls
-- Bubbletea TUI control center (originally planned for v0.3; promoted to v0.2 after dogfood)
 - Tab support for non-Ghostty terminals (Terminal.app, iTerm2, gnome-terminal, Windows Terminal)
 - Custom session names beyond `session-N`
 - Conflict prediction before sessions step on each other
+- Bubbletea TUI control center — deferred to v0.3 so the MCP work in v0.2 lands cleanly first
 
 See [`docs/v0.2-roadmap.md`](./docs/v0.2-roadmap.md) for the planned next step.
 

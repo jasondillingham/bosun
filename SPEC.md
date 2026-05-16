@@ -78,7 +78,7 @@ That's the complete v0.1.0 command surface.
 These remain deferred to later versions. See [`docs/v0.2-roadmap.md`](./docs/v0.2-roadmap.md) for the planned next steps.
 
 - ❌ MCP server interface — **v0.2** (filesystem claims/state cover this for now)
-- ❌ Bubbletea TUI control center — **v0.2** (originally planned for v0.3; dogfood feedback pulled it forward)
+- ❌ Bubbletea TUI control center — v0.3 (proposed for v0.2 mid-dogfood, then parked back at v0.3 so MCP work can land cleanly first)
 - ❌ Real-time push/notification of session state between sessions — v0.2
 - ❌ Predictive conflict analysis (knowing what a session *will* touch before it touches it) — v0.2
 - ❌ Web dashboard — v0.3
@@ -527,8 +527,8 @@ The implementer should resolve these and document decisions in the PR:
 
 See [`docs/v0.2-roadmap.md`](./docs/v0.2-roadmap.md) for the planned next step. At a glance:
 
-- **v0.2 (next):** Bubbletea TUI control center + MCP server. The TUI replaces `bosun status --watch` with a persistent operator dashboard; the MCP server replaces `.bosun/claims/` and `.bosun/state/` with structured tool calls so sessions coordinate directly. Workflow shape stays identical.
-- **v0.3:** Web dashboard for live monitoring. Same data as `bosun status` but live-updating over HTTP.
+- **v0.2 (next):** MCP server. Replaces `.bosun/claims/` and `.bosun/state/` with structured tool calls so sessions coordinate directly. Workflow shape stays identical; filesystem fallback remains for non-MCP sessions.
+- **v0.3:** Bubbletea TUI control center + web dashboard. Persistent operator views with live state and action keybinds, sharing the same underlying coordination layer as the MCP server.
 - **v0.4:** Hooks (pre-init, post-merge), session profiles, named sessions, dependency-aware dispatch.
 
 ## Author's note (post-ship)

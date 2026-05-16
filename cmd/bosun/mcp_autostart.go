@@ -144,12 +144,40 @@ func readMcpPidfile(repoRoot string) (mcpServerInfo, bool) {
 // writeMcpPidfile records the daemon's pid + socket path so other bosun
 // invocations can find it. Called from `bosun mcp` (the daemon writes
 // its own pidfile on startup).
+//
+// Writes atomically via temp + rename so a concurrent readMcpPidfile —
+// e.g. a second `bosun init --launch` running outside the spawn flock,
+// or a `bosun status` reading the daemon's coordinates — never observes
+// a half-written pidfile and treats it as "no daemon, spawn one." A
+// non-atomic write (the prior os.WriteFile path) racing a reader was
+// not catastrophic (the reader fell through to a fresh spawn attempt
+// which would have raced on socket bind), but it was avoidable.
 func writeMcpPidfile(repoRoot string, pid int, socketPath string) error {
-	path := filepath.Join(repoRoot, mcpPidfileRelative)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	final := filepath.Join(repoRoot, mcpPidfileRelative)
+	dir := filepath.Dir(final)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte(fmt.Sprintf("%d\n%s\n", pid, socketPath)), 0o644)
+	tmp, err := os.CreateTemp(dir, filepath.Base(final)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("temp pidfile: %w", err)
+	}
+	tmpName := tmp.Name()
+	cleanup := func() { _ = os.Remove(tmpName) }
+	if _, err := tmp.Write([]byte(fmt.Sprintf("%d\n%s\n", pid, socketPath))); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return fmt.Errorf("write temp pidfile: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		cleanup()
+		return fmt.Errorf("close temp pidfile: %w", err)
+	}
+	if err := os.Rename(tmpName, final); err != nil {
+		cleanup()
+		return fmt.Errorf("rename pidfile: %w", err)
+	}
+	return nil
 }
 
 // removeMcpPidfile deletes the pidfile, used as a defer in `bosun mcp`.

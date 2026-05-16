@@ -21,9 +21,12 @@ const dirRelative = ".bosun/state"
 // Store reads and writes session state markers under repoRoot/.bosun/state/.
 //
 // MarkDone/MarkStuck each do write-then-remove on the opposite marker;
-// without a lock, an interleaving of two concurrent calls can clear
+// without serialization, an interleaving of two concurrent calls can clear
 // both markers (leaving the session as WORKING when the operator
-// expected DONE or STUCK). mu serializes every public write/clear.
+// expected DONE or STUCK). mu covers in-process callers; cross-process
+// callers (e.g. a `bosun done` CLI invocation racing the MCP daemon's
+// bosun_done tool) serialize via the POSIX flock on .bosun/state/.lock
+// — see lock_unix.go for the full rationale.
 type Store struct {
 	repoRoot string
 	mu       sync.Mutex
@@ -44,47 +47,59 @@ func (s *Store) path(sessionName string, suffix string) string {
 
 // MarkDone writes a `.done` marker for sessionName with an optional message.
 // Removes any prior `.stuck` marker on the same session.
+//
+// In-process callers serialize via s.mu; cross-process callers serialize
+// via the flock on .bosun/state/.lock so a MarkDone interleaving a
+// MarkStuck from another bosun process can't strip both markers.
 func (s *Store) MarkDone(sessionName, message string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := os.MkdirAll(s.dir(), 0o755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", s.dir(), err)
 	}
-	body := buildBody(message)
-	if err := os.WriteFile(s.path(sessionName, "done"), []byte(body), 0o644); err != nil {
-		return fmt.Errorf("write done marker: %w", err)
-	}
-	_ = os.Remove(s.path(sessionName, "stuck"))
-	return nil
+	return withStateLock(s.dir(), func() error {
+		body := buildBody(message)
+		if err := os.WriteFile(s.path(sessionName, "done"), []byte(body), 0o644); err != nil {
+			return fmt.Errorf("write done marker: %w", err)
+		}
+		_ = os.Remove(s.path(sessionName, "stuck"))
+		return nil
+	})
 }
 
 // MarkStuck writes a `.stuck` marker with an optional message. Removes any
-// prior `.done` marker.
+// prior `.done` marker. Cross-process safe via the same flock MarkDone uses.
 func (s *Store) MarkStuck(sessionName, message string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := os.MkdirAll(s.dir(), 0o755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", s.dir(), err)
 	}
-	body := buildBody(message)
-	if err := os.WriteFile(s.path(sessionName, "stuck"), []byte(body), 0o644); err != nil {
-		return fmt.Errorf("write stuck marker: %w", err)
-	}
-	_ = os.Remove(s.path(sessionName, "done"))
-	return nil
+	return withStateLock(s.dir(), func() error {
+		body := buildBody(message)
+		if err := os.WriteFile(s.path(sessionName, "stuck"), []byte(body), 0o644); err != nil {
+			return fmt.Errorf("write stuck marker: %w", err)
+		}
+		_ = os.Remove(s.path(sessionName, "done"))
+		return nil
+	})
 }
 
 // Clear removes both done and stuck markers for sessionName. Missing is OK.
+// Cross-process safe via the flock MarkDone/MarkStuck use — without it,
+// Clear racing MarkDone could remove the marker MarkDone just wrote.
 func (s *Store) Clear(sessionName string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, suffix := range []string{"done", "stuck"} {
-		err := os.Remove(s.path(sessionName, suffix))
-		if err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("remove %s: %w", s.path(sessionName, suffix), err)
+	return withStateLock(s.dir(), func() error {
+		for _, suffix := range []string{"done", "stuck"} {
+			err := os.Remove(s.path(sessionName, suffix))
+			if err != nil && !errors.Is(err, fs.ErrNotExist) {
+				return fmt.Errorf("remove %s: %w", s.path(sessionName, suffix), err)
+			}
 		}
-	}
-	return nil
+		return nil
+	})
 }
 
 // Read returns the session's current state plus the marker body.

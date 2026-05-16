@@ -57,6 +57,13 @@ type Hook struct {
 //
 // Hooks that match no event are skipped silently. A nil or empty slice is
 // a no-op.
+//
+// Callers MUST NOT invoke Run while holding any of bosun's cross-process
+// flocks (claims, state, mcp.lock). A slow hook command (sleeping or
+// awaiting network) would otherwise pin the flock and block every other
+// bosun process trying to take the same lock. Today every callsite
+// (cmd_init.go pre-init/post-init, cmd_done.go post-done) fires outside
+// flock-held regions; preserve that property when adding new events.
 func Run(ctx context.Context, hooks []Hook, event string, env map[string]string) error {
 	for i, h := range hooks {
 		if h.Event != event {

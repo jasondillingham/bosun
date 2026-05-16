@@ -1,0 +1,112 @@
+{
+  "version": "v1",
+  "goal": "Migrate from React Router v5 to v6",
+  "sessions": [
+    {
+      "label": "session-1",
+      "scope": "v6 compatibility shim + shared hooks",
+      "owned_files": [
+        "src/lib/router-compat/**",
+        "src/lib/router-compat.ts"
+      ],
+      "avoid_files": [
+        "src/features/**",
+        "src/main.tsx",
+        "src/router.tsx",
+        "package.json"
+      ],
+      "depends_on": [],
+      "rationale": "Foundational shim that downstream lanes import. Lands first so the per-feature migrations can rebase on a stable surface.",
+      "work_to_do": [
+        "Create src/lib/router-compat/ with v5→v6 helpers (useHistory→useNavigate, Redirect→Navigate).",
+        "Re-export the helpers from src/lib/router-compat.ts so feature lanes import a single path.",
+        "Unit tests covering each helper signature against v6 expectations."
+      ],
+      "notes": "Don't touch feature directories — those belong to sessions 2-4."
+    },
+    {
+      "label": "session-2",
+      "scope": "Migrate /auth routes to v6",
+      "owned_files": [
+        "src/features/auth/**"
+      ],
+      "avoid_files": [
+        "src/features/dashboard/**",
+        "src/features/settings/**",
+        "src/lib/router-compat/**",
+        "package.json"
+      ],
+      "depends_on": ["session-1"],
+      "rationale": "Auth has the simplest route tree; serves as the reference migration for the larger feature areas.",
+      "work_to_do": [
+        "Replace Switch/Route with Routes/Route under src/features/auth/.",
+        "Swap useHistory for useNavigate via the session-1 compat shim.",
+        "Update co-located tests to render with the v6 MemoryRouter."
+      ],
+      "notes": ""
+    },
+    {
+      "label": "session-3",
+      "scope": "Migrate /dashboard routes to v6",
+      "owned_files": [
+        "src/features/dashboard/**"
+      ],
+      "avoid_files": [
+        "src/features/auth/**",
+        "src/features/settings/**",
+        "src/lib/router-compat/**",
+        "package.json"
+      ],
+      "depends_on": ["session-1"],
+      "rationale": "Dashboard mirrors the auth migration pattern. Independent feature directory keeps the merge surface clean.",
+      "work_to_do": [
+        "Convert nested Switch trees to the v6 Routes + Outlet pattern.",
+        "Adopt the compat hooks from session-1 wherever useHistory/match appears.",
+        "Update co-located tests and fixtures."
+      ],
+      "notes": ""
+    },
+    {
+      "label": "session-4",
+      "scope": "Migrate /settings routes to v6",
+      "owned_files": [
+        "src/features/settings/**"
+      ],
+      "avoid_files": [
+        "src/features/auth/**",
+        "src/features/dashboard/**",
+        "src/lib/router-compat/**",
+        "package.json"
+      ],
+      "depends_on": ["session-1"],
+      "rationale": "Settings has the deepest nested routes; isolating it lets the migration land without blocking the simpler feature areas.",
+      "work_to_do": [
+        "Refactor settings sub-routes (profile, billing, team) to v6 nested Routes.",
+        "Swap Redirect for Navigate.",
+        "Update integration tests under src/features/settings/."
+      ],
+      "notes": ""
+    },
+    {
+      "label": "session-5",
+      "scope": "Strip remaining v5 imports and bump package.json",
+      "owned_files": [
+        "src/main.tsx",
+        "src/router.tsx",
+        "package.json"
+      ],
+      "avoid_files": [
+        "src/features/**",
+        "src/lib/router-compat/**"
+      ],
+      "depends_on": ["session-2", "session-3", "session-4"],
+      "rationale": "Last mile — entry point, root router, dependency bump. Runs after every feature migration lands so the bump can't break in-flight work.",
+      "work_to_do": [
+        "Replace BrowserRouter usage in src/main.tsx with the v6 createBrowserRouter pattern.",
+        "Update src/router.tsx to the new RouterProvider model.",
+        "Remove react-router-dom@5 from package.json and pin v6."
+      ],
+      "notes": "Hold this lane until 2-4 merge — package.json is the choke point."
+    }
+  ]
+}

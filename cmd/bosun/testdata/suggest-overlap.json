@@ -1,0 +1,37 @@
+{
+  "version": "v1",
+  "goal": "Refactor src/components into a design system",
+  "sessions": [
+    {
+      "label": "session-1",
+      "scope": "Extract primitives (Button, Input) into a shared module",
+      "owned_files": [
+        "src/components/**"
+      ],
+      "avoid_files": [],
+      "depends_on": [],
+      "rationale": "Pulls the primitive components out so the rest of the codebase consumes a single import root.",
+      "work_to_do": [
+        "Move Button.tsx and Input.tsx under src/components/primitives/.",
+        "Update barrel index.ts to re-export from the new path.",
+        "Add stories for each primitive."
+      ],
+      "notes": ""
+    },
+    {
+      "label": "session-2",
+      "scope": "Add design tokens + ThemeProvider scaffold (intentionally collides with session-1)",
+      "owned_files": [
+        "src/components/**"
+      ],
+      "avoid_files": [],
+      "depends_on": [],
+      "rationale": "Bad-fixture lane: deliberately shares OwnedFiles with session-1 so the overlap validator rejects the proposal.",
+      "work_to_do": [
+        "Add design tokens at src/components/tokens.ts.",
+        "Wire ThemeProvider into src/components/index.tsx."
+      ],
+      "notes": "Deliberately overlapping with session-1 for the rejection scenario."
+    }
+  ]
+}

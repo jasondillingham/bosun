@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,7 +17,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jasondillingham/bosun/internal/brief"
 	bosunmcp "github.com/jasondillingham/bosun/internal/mcp"
+	"github.com/jasondillingham/bosun/internal/suggest"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -2251,4 +2254,312 @@ func TestScenario_ConfigListShowsHooksCountWhenConfigured(t *testing.T) {
 	if strings.Contains(hookLine, "(default)") {
 		t.Errorf("hooks line should not be (default) when configured: %q", hookLine)
 	}
+}
+
+// --- suggest scenarios (v0.5 round-2) ---
+//
+// End-to-end coverage for `bosun suggest`. Each test spins up an
+// httptest.Server that wraps the LaneProposal fixture in an Anthropic
+// Messages API envelope and points the bosun binary at it via
+// ANTHROPIC_API_URL — that env override is the production hook
+// internal/suggest/claude.go reads when no explicit endpoint is
+// configured.
+//
+// The fixtures themselves are pure LaneProposal JSON (cmd/bosun/testdata/),
+// not full API responses — the envelope wrapping happens in
+// stubClaudeServer below so the fixtures stay reusable for unit-style
+// tests too.
+
+// stubClaudeServer returns an httptest.Server that responds to every
+// request with an Anthropic Messages API envelope wrapping fixturePath's
+// contents as the assistant text block. fixturePath is read once at
+// construction; callers don't need to Close it themselves — t.Cleanup
+// handles teardown.
+func stubClaudeServer(t *testing.T, fixturePath string) *httptest.Server {
+	t.Helper()
+	fixture, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Fatalf("read fixture %s: %v", fixturePath, err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		envelope := map[string]any{
+			"id":   "msg_stub",
+			"type": "message",
+			"role": "assistant",
+			"content": []map[string]string{
+				{"type": "text", "text": string(fixture)},
+			},
+			"stop_reason": "end_turn",
+		}
+		w.Header().Set("content-type", "application/json")
+		_ = json.NewEncoder(w).Encode(envelope)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// suggestAvailable returns true if the compiled bosun binary recognises
+// the `suggest` subcommand. False during the v0.5 round-2 window when
+// this session's tests are committed before session-1's cmd_suggest.go
+// has merged. Once both lanes are integrated, the gate falls through
+// and the tests run for real — the skip is purely a defense against
+// local `make check` runs in the session-2 worktree.
+func (s *scenario) suggestAvailable() bool {
+	out, err := s.bosunRaw(s.repo, "suggest", "--help")
+	if err != nil {
+		return false
+	}
+	return strings.Contains(out, "suggest")
+}
+
+func TestScenario_SuggestProducesValidPlan(t *testing.T) {
+	s := newScenario(t)
+	if !s.suggestAvailable() {
+		t.Skip("bosun suggest not built into binary (session-1 dep not merged)")
+	}
+
+	// Give the inspector something to chew on so RepoIntel's snapshot is
+	// non-trivial. Not strictly required — the stubbed Claude ignores the
+	// payload — but it exercises the inspection step on a realistic shape.
+	s.WriteFile("package.json", `{"name":"demo","dependencies":{"react-router-dom":"^5.3.4"}}`)
+	s.WriteFile("src/index.tsx", "// entry\n")
+	s.WriteFile("src/features/auth/AuthRoutes.tsx", "// auth\n")
+	s.WriteFile("src/features/dashboard/DashboardRoutes.tsx", "// dashboard\n")
+	s.CommitIn(s.repo, "scaffold")
+
+	fixtureRel := filepath.Join("testdata", "suggest-react-router.json")
+	fixtureAbs, err := filepath.Abs(fixtureRel)
+	if err != nil {
+		t.Fatalf("abs fixture: %v", err)
+	}
+	server := stubClaudeServer(t, fixtureAbs)
+
+	t.Setenv("ANTHROPIC_API_KEY", "stub")
+	t.Setenv("ANTHROPIC_API_URL", server.URL)
+
+	s.Bosun("suggest", "--sessions", "5", "Migrate from React Router v5 to v6")
+
+	planPath := filepath.Join(s.repo, "suggested-plan.md")
+	if _, err := os.Stat(planPath); err != nil {
+		t.Fatalf("suggested-plan.md missing after `bosun suggest`: %v", err)
+	}
+
+	briefs, err := brief.Parse(planPath)
+	if err != nil {
+		t.Fatalf("brief.Parse(suggested-plan.md): %v\n--- plan ---\n%s", err,
+			readFile(t, planPath))
+	}
+
+	var fixture suggest.LaneProposal
+	raw, err := os.ReadFile(fixtureAbs)
+	if err != nil {
+		t.Fatalf("re-read fixture: %v", err)
+	}
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatalf("decode fixture: %v", err)
+	}
+
+	if got, want := len(briefs), len(fixture.Sessions); got != want {
+		t.Fatalf("brief.Parse returned %d briefs, want %d (one per fixture lane)", got, want)
+	}
+
+	parsedLabels := make(map[string]bool, len(briefs))
+	for _, b := range briefs {
+		parsedLabels[b.Label] = true
+	}
+	for _, lane := range fixture.Sessions {
+		if !parsedLabels[lane.Label] {
+			t.Errorf("rendered plan missing lane %q (parsed labels: %v)",
+				lane.Label, briefKeys(parsedLabels))
+		}
+	}
+}
+
+func TestScenario_SuggestInspectOnly_PrintsRepoIntel(t *testing.T) {
+	s := newScenario(t)
+	if !s.suggestAvailable() {
+		t.Skip("bosun suggest not built into binary (session-1 dep not merged)")
+	}
+
+	// Drop in a couple of manifests + source files so the printed intel
+	// has concrete shape (languages, file_count, top_dirs) the assertions
+	// can latch onto.
+	s.WriteFile("package.json", `{"name":"demo","dependencies":{}}`)
+	s.WriteFile("src/index.tsx", "// entry\n")
+	s.WriteFile("src/feature/a.ts", "export const a = 1\n")
+	s.WriteFile("src/feature/b.ts", "export const b = 2\n")
+	s.CommitIn(s.repo, "scaffold")
+
+	// No ANTHROPIC_API_KEY needed — --inspect-only short-circuits before
+	// the network call. If session-1's implementation drifts and starts
+	// hitting the network here, this test will fail loudly with an
+	// "API key" error rather than silently passing.
+	out := s.Bosun("suggest", "--inspect-only", "Migrate to v6")
+
+	// Locate the JSON object in the output — implementations are free to
+	// print a human-readable banner before/after, but the snapshot itself
+	// must be parseable JSON.
+	jsonText, err := firstJSONObject(out)
+	if err != nil {
+		t.Fatalf("--inspect-only output has no JSON object:\n%s", out)
+	}
+	var intel map[string]any
+	if err := json.Unmarshal([]byte(jsonText), &intel); err != nil {
+		t.Fatalf("--inspect-only JSON parse: %v\n%s", err, jsonText)
+	}
+
+	for _, key := range []string{"file_count", "languages", "extension_histogram", "top_dirs"} {
+		if _, ok := intel[key]; !ok {
+			t.Errorf("inspect JSON missing required key %q (keys: %v)", key, mapKeys(intel))
+		}
+	}
+
+	// Spot-check that the values reflect the repo we just built: node
+	// language detected (package.json), non-zero file count.
+	if langs, ok := intel["languages"].([]any); ok {
+		var sawNode bool
+		for _, l := range langs {
+			if l == "node" {
+				sawNode = true
+				break
+			}
+		}
+		if !sawNode {
+			t.Errorf("languages should include \"node\" given package.json on disk: %v", langs)
+		}
+	}
+	if fc, ok := intel["file_count"].(float64); ok {
+		if fc < 1 {
+			t.Errorf("file_count = %v, want >= 1", fc)
+		}
+	} else {
+		t.Errorf("file_count not a number: %v", intel["file_count"])
+	}
+}
+
+func TestScenario_SuggestRejectsOverlappingLanes(t *testing.T) {
+	s := newScenario(t)
+	if !s.suggestAvailable() {
+		t.Skip("bosun suggest not built into binary (session-1 dep not merged)")
+	}
+
+	s.WriteFile("package.json", `{"name":"demo"}`)
+	s.WriteFile("src/components/Button.tsx", "// button\n")
+	s.CommitIn(s.repo, "scaffold")
+
+	fixtureRel := filepath.Join("testdata", "suggest-overlap.json")
+	fixtureAbs, err := filepath.Abs(fixtureRel)
+	if err != nil {
+		t.Fatalf("abs fixture: %v", err)
+	}
+	server := stubClaudeServer(t, fixtureAbs)
+
+	t.Setenv("ANTHROPIC_API_KEY", "stub")
+	t.Setenv("ANTHROPIC_API_URL", server.URL)
+
+	// Without --allow-overlaps: bosun must reject the proposal and name
+	// both colliding lanes in the error so the operator can hand-edit or
+	// re-prompt.
+	out, err := s.BosunErr("suggest", "--sessions", "2",
+		"Refactor src/components into a design system")
+	if err == nil {
+		t.Fatalf("expected non-zero exit for overlapping-lanes proposal:\n%s", out)
+	}
+	for _, want := range []string{"session-1", "session-2", "overlap"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("overlap error missing %q:\n%s", want, out)
+		}
+	}
+	// And no plan file should land on disk — the operator opts in to
+	// taking the messy proposal with --allow-overlaps.
+	planPath := filepath.Join(s.repo, "suggested-plan.md")
+	if _, err := os.Stat(planPath); err == nil {
+		t.Errorf("suggested-plan.md should not be written on rejected overlap")
+	}
+
+	// With --allow-overlaps: succeed, but surface a warning that names
+	// both lanes so the operator knows what they accepted.
+	out2 := s.Bosun("suggest", "--sessions", "2", "--allow-overlaps",
+		"Refactor src/components into a design system")
+	for _, want := range []string{"session-1", "session-2"} {
+		if !strings.Contains(out2, want) {
+			t.Errorf("--allow-overlaps warning missing %q:\n%s", want, out2)
+		}
+	}
+	if !containsAny(out2, "overlap", "warning", "Warning", "WARN") {
+		t.Errorf("--allow-overlaps output should flag the overlap:\n%s", out2)
+	}
+	if _, err := os.Stat(planPath); err != nil {
+		t.Errorf("suggested-plan.md missing after --allow-overlaps run: %v", err)
+	}
+}
+
+// --- helpers (suggest-scenario-local) ---
+
+// firstJSONObject extracts the first balanced top-level JSON object from
+// s. Used by the --inspect-only test so implementations can prepend a
+// human banner without breaking the assertion. Walks brace depth honoring
+// string literals and escapes — mirrors the model-response parser in
+// internal/suggest/claude.go (extractJSON) but standalone for test use.
+func firstJSONObject(s string) (string, error) {
+	start := strings.Index(s, "{")
+	if start < 0 {
+		return "", fmt.Errorf("no '{' in input")
+	}
+	depth := 0
+	inString := false
+	escaped := false
+	for i := start; i < len(s); i++ {
+		ch := s[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if inString {
+			switch ch {
+			case '\\':
+				escaped = true
+			case '"':
+				inString = false
+			}
+			continue
+		}
+		switch ch {
+		case '"':
+			inString = true
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return s[start : i+1], nil
+			}
+		}
+	}
+	return "", fmt.Errorf("unbalanced braces from offset %d", start)
+}
+
+func containsAny(s string, subs ...string) bool {
+	for _, sub := range subs {
+		if strings.Contains(s, sub) {
+			return true
+		}
+	}
+	return false
+}
+
+func briefKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
+func mapKeys(m map[string]any) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }

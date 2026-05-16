@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/jasondillingham/bosun/internal/claims"
 	"github.com/jasondillingham/bosun/internal/config"
@@ -39,6 +40,9 @@ func loadCtx() (*runCtx, error) {
 	cfg, err := config.Load(root)
 	if err != nil {
 		return nil, userErr("load config: %v", err)
+	}
+	if cfg.GitOpTimeoutSeconds > 0 {
+		c.SetTimeout(time.Duration(cfg.GitOpTimeoutSeconds) * time.Second)
 	}
 	return &runCtx{
 		ctx:      ctx,

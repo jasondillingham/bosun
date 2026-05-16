@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 )
 
 // fakeRunner returns canned output for matching arg sequences.
@@ -191,5 +193,83 @@ func TestRun_WrapsError(t *testing.T) {
 	}
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("error chain does not wrap original: %v", err)
+	}
+}
+
+// blockingRunner sleeps until the caller's ctx is cancelled, then surfaces
+// ctx.Err(). It mimics the silent-hang shape we care about: a `git`
+// subprocess that produces no output and refuses to exit until the kernel
+// reaps it. The fake doesn't actually fork — it just demonstrates that
+// Client.run honors the timeout it installs on the child context.
+type blockingRunner struct{}
+
+func (blockingRunner) Run(ctx context.Context, _ string, _ ...string) (string, string, error) {
+	<-ctx.Done()
+	return "", "", ctx.Err()
+}
+
+func TestRun_TimeoutReturnsStructuredError(t *testing.T) {
+	c := &Client{Runner: blockingRunner{}, Timeout: 50 * time.Millisecond}
+	start := time.Now()
+	_, err := c.Status(context.Background(), "/repo")
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+	// Must surface as *TimeoutError, not a bare context.DeadlineExceeded
+	// or a generic "git status: ..." string. Operator-facing error.
+	var to *TimeoutError
+	if !errors.As(err, &to) {
+		t.Fatalf("error is not *TimeoutError: %v (type %T)", err, err)
+	}
+	if to.Timeout != 50*time.Millisecond {
+		t.Errorf("TimeoutError.Timeout = %v, want 50ms", to.Timeout)
+	}
+	if !strings.HasPrefix(to.Op, "status") {
+		t.Errorf("TimeoutError.Op = %q, want it to start with the git subcommand", to.Op)
+	}
+	// Sanity: the timeout actually fired within a reasonable window. A
+	// 500ms ceiling is generous enough to survive a slow CI runner but
+	// tight enough to fail loudly if the timeout doesn't fire at all.
+	if elapsed > 500*time.Millisecond {
+		t.Errorf("elapsed = %v, expected timeout near 50ms", elapsed)
+	}
+	// Error string should be human-readable, naming both op and duration.
+	msg := err.Error()
+	if !strings.Contains(msg, "timed out") || !strings.Contains(msg, "50ms") {
+		t.Errorf("error message %q missing 'timed out' / duration", msg)
+	}
+}
+
+func TestRun_ZeroTimeoutDisablesDeadline(t *testing.T) {
+	// Timeout = 0 means "no per-op timeout" — caller passes their own ctx.
+	// Verify by passing a ctx that has its own short deadline: the parent
+	// ctx, not our Client.Timeout, should drive cancellation. The error
+	// must NOT be a *TimeoutError because the deadline isn't ours.
+	c := &Client{Runner: blockingRunner{}, Timeout: 0}
+	parent, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	_, err := c.Status(parent, "/repo")
+	if err == nil {
+		t.Fatal("expected error from parent ctx deadline")
+	}
+	var to *TimeoutError
+	if errors.As(err, &to) {
+		t.Fatalf("unexpected *TimeoutError when parent ctx caused cancellation: %v", err)
+	}
+}
+
+func TestSetTimeout(t *testing.T) {
+	c := New()
+	if c.Timeout != DefaultOpTimeout {
+		t.Fatalf("New() timeout = %v, want %v", c.Timeout, DefaultOpTimeout)
+	}
+	c.SetTimeout(2 * time.Minute)
+	if c.Timeout != 2*time.Minute {
+		t.Fatalf("after SetTimeout, c.Timeout = %v, want 2m", c.Timeout)
+	}
+	c.SetTimeout(0)
+	if c.Timeout != 0 {
+		t.Fatalf("after SetTimeout(0), c.Timeout = %v, want 0 (disabled)", c.Timeout)
 	}
 }

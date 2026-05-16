@@ -20,6 +20,9 @@ func TestDefaults(t *testing.T) {
 	if c.Launcher != "auto" {
 		t.Fatalf("Launcher = %q, want auto", c.Launcher)
 	}
+	if c.GitOpTimeoutSeconds != DefaultGitOpTimeoutSeconds {
+		t.Fatalf("GitOpTimeoutSeconds = %d, want %d", c.GitOpTimeoutSeconds, DefaultGitOpTimeoutSeconds)
+	}
 	if c.Suggest.Model != DefaultSuggestModel {
 		t.Fatalf("Suggest.Model = %q, want %q", c.Suggest.Model, DefaultSuggestModel)
 	}
@@ -149,6 +152,62 @@ func TestValidate_SuggestRejectsNegativeMaxTokens(t *testing.T) {
 	c.Suggest.MaxTokens = -1
 	if err := c.Validate(); err == nil {
 		t.Fatal("Validate with negative Suggest.MaxTokens should fail")
+	}
+}
+
+func TestValidate_GitOpTimeoutRejectsNegative(t *testing.T) {
+	c := Defaults()
+	c.GitOpTimeoutSeconds = -1
+	if err := c.Validate(); err == nil {
+		t.Fatal("Validate with negative GitOpTimeoutSeconds should fail")
+	}
+}
+
+func TestValidate_GitOpTimeoutZeroAllowed(t *testing.T) {
+	// Zero is a sentinel meaning "use the default" — Load() leaves the
+	// defaulted value in place when the overlay reports 0. Validate must
+	// accept it so a defaulted Config stays valid even before Load wires
+	// the constant in.
+	c := Defaults()
+	c.GitOpTimeoutSeconds = 0
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate with zero GitOpTimeoutSeconds: %v", err)
+	}
+}
+
+func TestLoad_GitOpTimeoutOverride(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".bosun"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".bosun/config.json"), []byte(`{"git_op_timeout_seconds":120}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.GitOpTimeoutSeconds != 120 {
+		t.Fatalf("GitOpTimeoutSeconds = %d, want 120", c.GitOpTimeoutSeconds)
+	}
+}
+
+func TestLoad_GitOpTimeoutKeepsDefaultWhenUnset(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".bosun"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A config file that doesn't mention the field must keep the default
+	// rather than coercing it to JSON's zero (which would be 0 / unbounded).
+	if err := os.WriteFile(filepath.Join(dir, ".bosun/config.json"), []byte(`{"base_branch":"develop"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.GitOpTimeoutSeconds != DefaultGitOpTimeoutSeconds {
+		t.Fatalf("GitOpTimeoutSeconds = %d, want default %d", c.GitOpTimeoutSeconds, DefaultGitOpTimeoutSeconds)
 	}
 }
 

@@ -14,7 +14,27 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
+
+// DefaultOpTimeout is the per-operation timeout applied by Client when no
+// explicit value is configured. Kept here rather than imported from
+// internal/config to avoid a package cycle — internal/config wires its own
+// constant through Client.SetTimeout at startup.
+const DefaultOpTimeout = 30 * time.Second
+
+// TimeoutError indicates a git subprocess exceeded its configured timeout.
+// Callers can check `errors.As(err, &git.TimeoutError{})` to distinguish
+// the silent-hang case (Spotlight reindex, APFS pressure, etc.) from
+// real git failures.
+type TimeoutError struct {
+	Op      string        // joined git args, e.g. "worktree add /tmp/foo bosun/session-1"
+	Timeout time.Duration // the timeout that fired
+}
+
+func (e *TimeoutError) Error() string {
+	return fmt.Sprintf("git %s: timed out after %s", e.Op, e.Timeout)
+}
 
 // Runner is the surface area we depend on from os/exec. It lets tests inject
 // a fake runner that returns canned output.
@@ -42,11 +62,32 @@ func (ExecRunner) Run(ctx context.Context, dir string, args ...string) (string, 
 // Client wraps a Runner with the operations bosun needs.
 type Client struct {
 	Runner Runner
+	// Timeout, if positive, caps every git subprocess invocation. Zero
+	// disables the timeout (use the parent ctx as-is). New() initializes
+	// this to DefaultOpTimeout.
+	Timeout time.Duration
 }
 
-// New returns a Client that shells out to the real git binary.
+// New returns a Client that shells out to the real git binary with the
+// default per-operation timeout.
 func New() *Client {
-	return &Client{Runner: ExecRunner{}}
+	return &Client{Runner: ExecRunner{}, Timeout: DefaultOpTimeout}
+}
+
+// SetTimeout overrides the per-operation timeout. A zero or negative value
+// disables the timeout entirely.
+func (c *Client) SetTimeout(d time.Duration) {
+	c.Timeout = d
+}
+
+// withTimeout returns a child context capped at c.Timeout, or the parent
+// unchanged when Timeout is non-positive. The returned cancel function is
+// always safe to call.
+func (c *Client) withTimeout(parent context.Context) (context.Context, context.CancelFunc) {
+	if c.Timeout <= 0 {
+		return parent, func() {}
+	}
+	return context.WithTimeout(parent, c.Timeout)
 }
 
 // run is the internal helper that converts (stdout, stderr, err) into a
@@ -54,9 +95,19 @@ func New() *Client {
 // because git writes diagnostic content to whichever stream it pleases —
 // `git merge --squash`, for example, prints "CONFLICT (content): Merge
 // conflict in ..." to stdout.
-func (c *Client) run(ctx context.Context, dir string, args ...string) (string, error) {
+//
+// run also enforces c.Timeout. When the timeout fires, the returned error
+// is a *TimeoutError naming the operation and the configured duration —
+// not a bare context.DeadlineExceeded — because this surfaces directly to
+// the operator (see `bosun init` silent-hang findings, v0.4).
+func (c *Client) run(parentCtx context.Context, dir string, args ...string) (string, error) {
+	ctx, cancel := c.withTimeout(parentCtx)
+	defer cancel()
 	out, errOut, err := c.Runner.Run(ctx, dir, args...)
 	if err != nil {
+		if isOurTimeout(parentCtx, ctx) {
+			return out, &TimeoutError{Op: strings.Join(args, " "), Timeout: c.Timeout}
+		}
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			combined := strings.TrimSpace(strings.TrimSpace(out) + "\n" + strings.TrimSpace(errOut))
@@ -65,6 +116,14 @@ func (c *Client) run(ctx context.Context, dir string, args ...string) (string, e
 		return out, fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
 	}
 	return out, nil
+}
+
+// isOurTimeout reports whether the child ctx deadlined because of *our*
+// timeout, as opposed to the parent's. Distinguishing these matters when
+// callers wrap the client with their own deadline — we shouldn't claim
+// "git op timed out after 30s" when the operator's ctx was the limiter.
+func isOurTimeout(parentCtx, childCtx context.Context) bool {
+	return childCtx.Err() == context.DeadlineExceeded && parentCtx.Err() != context.DeadlineExceeded
 }
 
 // RepoRoot returns the absolute path to the *current* worktree (linked or main).

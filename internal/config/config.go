@@ -22,7 +22,14 @@ const (
 	DefaultIsolateCache      = false
 	DefaultLauncherStrategy  = "auto"
 	DefaultVerifyCmd         = "make check"
-	ConfigRelativePath       = ".bosun/config.json"
+	// DefaultGitOpTimeoutSeconds is the per-operation timeout applied to
+	// every `git` subprocess by internal/git.Client. Catches the
+	// silent-init-hang case where `git worktree add` blocks indefinitely
+	// on a closing fsync while the host is under APFS / Spotlight
+	// pressure. Operators can extend or shorten via the
+	// `git_op_timeout_seconds` config field.
+	DefaultGitOpTimeoutSeconds = 30
+	ConfigRelativePath         = ".bosun/config.json"
 
 	// Defaults for the suggest assistant (see internal/suggest and
 	// docs/v0.5-suggest-spec.md). Kept here so config and the suggest
@@ -45,6 +52,9 @@ type Config struct {
 	// convention). Projects with different test workflows set this to e.g.
 	// "make test" or "go test ./...".
 	VerifyCmd string `json:"verify_cmd"`
+	// GitOpTimeoutSeconds caps each `git` subprocess invocation made by
+	// internal/git.Client. Zero / unset → DefaultGitOpTimeoutSeconds.
+	GitOpTimeoutSeconds int `json:"git_op_timeout_seconds"`
 	// Hooks are operator-defined shell commands run at lifecycle moments
 	// (see internal/hooks for the runner and the v0.1 event set).
 	Hooks []hooks.Hook `json:"hooks,omitempty"`
@@ -77,6 +87,7 @@ func Defaults() Config {
 		IsolateCacheDefault:   DefaultIsolateCache,
 		Launcher:              DefaultLauncherStrategy,
 		VerifyCmd:             DefaultVerifyCmd,
+		GitOpTimeoutSeconds:   DefaultGitOpTimeoutSeconds,
 		Suggest: SuggestConfig{
 			Model:     DefaultSuggestModel,
 			MaxTokens: DefaultSuggestMaxTokens,
@@ -122,6 +133,11 @@ func Load(repoRoot string) (Config, error) {
 	}
 	if overlay.VerifyCmd != "" {
 		cfg.VerifyCmd = overlay.VerifyCmd
+	}
+	// Only override when the operator set a positive value — 0 / unset
+	// keeps the documented default per DefaultGitOpTimeoutSeconds.
+	if overlay.GitOpTimeoutSeconds > 0 {
+		cfg.GitOpTimeoutSeconds = overlay.GitOpTimeoutSeconds
 	}
 	// Bool fields are tri-state-ish; we just adopt the parsed value.
 	cfg.IsolateCacheDefault = overlay.IsolateCacheDefault
@@ -176,6 +192,9 @@ func (c Config) Validate() error {
 	}
 	if c.Suggest.MaxTokens < 0 {
 		return fmt.Errorf("suggest.max_tokens must be ≥ 0, got %d", c.Suggest.MaxTokens)
+	}
+	if c.GitOpTimeoutSeconds < 0 {
+		return fmt.Errorf("git_op_timeout_seconds must be ≥ 0, got %d", c.GitOpTimeoutSeconds)
 	}
 	for i, h := range c.Hooks {
 		if !hooks.IsKnownEvent(h.Event) {

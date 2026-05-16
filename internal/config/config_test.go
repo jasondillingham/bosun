@@ -207,8 +207,10 @@ func TestValidate_Hooks(t *testing.T) {
 			{Event: "pre-init", Command: "true"},
 			{Event: "post-init", Command: "true"},
 			{Event: "post-done", Command: "true"},
+			{Event: "pre-merge", Command: "true"},
+			{Event: "post-merge", Command: "true"},
 		}, false},
-		{"unknown event", []hooks.Hook{{Event: "pre-merge", Command: "echo"}}, true},
+		{"unknown event", []hooks.Hook{{Event: "not-a-real-event", Command: "echo"}}, true},
 		{"empty event", []hooks.Hook{{Event: "", Command: "echo"}}, true},
 		{"empty command", []hooks.Hook{{Event: "pre-init", Command: ""}}, true},
 		{"whitespace command", []hooks.Hook{{Event: "pre-init", Command: "   "}}, true},
@@ -254,7 +256,7 @@ func TestLoad_RejectsUnknownHookEvent(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dir, ".bosun"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	data := []byte(`{"hooks":[{"event":"post-merge","command":"echo hi"}]}`)
+	data := []byte(`{"hooks":[{"event":"not-a-real-event","command":"echo hi"}]}`)
 	if err := os.WriteFile(filepath.Join(dir, ".bosun/config.json"), data, 0o644); err != nil {
 		t.Fatal(err)
 	}

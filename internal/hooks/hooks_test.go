@@ -15,9 +15,8 @@ func TestIsKnownEvent(t *testing.T) {
 			t.Errorf("IsKnownEvent(%q) = false, want true", e)
 		}
 	}
-	if IsKnownEvent("pre-merge") {
-		// pre-merge is v0.2+ — must not be accepted yet.
-		t.Errorf("IsKnownEvent(pre-merge) = true, want false (v0.2 territory)")
+	if IsKnownEvent("not-a-real-event") {
+		t.Errorf("IsKnownEvent(not-a-real-event) = true, want false")
 	}
 	if IsKnownEvent("") {
 		t.Errorf("IsKnownEvent(\"\") = true, want false")

@@ -24,6 +24,8 @@ var KnownEvents = []string{
 	"pre-init",
 	"post-init",
 	"post-done",
+	"pre-merge",
+	"post-merge",
 }
 
 // IsKnownEvent reports whether name is in KnownEvents.

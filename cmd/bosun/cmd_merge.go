@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"os/exec"
+	"strconv"
 	"strings"
 
 	"github.com/jasondillingham/bosun/internal/brief"
+	"github.com/jasondillingham/bosun/internal/hooks"
 	"github.com/jasondillingham/bosun/internal/session"
 	"github.com/spf13/cobra"
 )
@@ -213,8 +217,20 @@ func mergeOne(rc *runCtx, s *session.Session, opts mergeOpts) (status, reason st
 	// merge. Report what would happen without touching the working tree or
 	// state. Conflict prediction is out of scope — this only reports the
 	// plan, not the merge outcome.
+	//
+	// pre-merge intentionally does NOT fire on dry-run: dry-run is meant
+	// to be side-effect-free, and operator hooks (Slack pings, backups,
+	// preflight gates) shouldn't observe a planning run.
 	if opts.dryRun {
 		return mergeStatusWouldMerge, fmt.Sprintf("%d commit(s)", s.Ahead), nil
+	}
+
+	// pre-merge: fail-closed hooks block the squash for this session.
+	// Surface as Skipped (not Conflict) — the merge never started, the
+	// reason names the hook so the operator knows where to look.
+	preEnv := mergeHookEnv(s, rc.cfg.BaseBranch)
+	if err := hooks.Run(rc.ctx, rc.cfg.Hooks, "pre-merge", preEnv); err != nil {
+		return mergeStatusSkipped, fmt.Sprintf("pre-merge hook refused: %v", err), nil
 	}
 
 	commitMsg := opts.message
@@ -254,9 +270,47 @@ func mergeOne(rc *runCtx, s *session.Session, opts mergeOpts) (status, reason st
 		}
 	}
 
+	// post-merge fires after the squash commit lands. Failures are
+	// non-fatal: a notification or backup hook misfiring shouldn't unwind
+	// a clean merge. Resolve the commit SHA via plain `git rev-parse HEAD`
+	// to avoid widening the internal/git Client surface this round.
+	postEnv := mergeHookEnv(s, rc.cfg.BaseBranch)
+	if sha, err := headSHA(rc.ctx, rc.repoRoot); err == nil {
+		postEnv["BOSUN_MERGE_COMMIT"] = sha
+	}
+	if err := hooks.Run(rc.ctx, rc.cfg.Hooks, "post-merge", postEnv); err != nil {
+		printf("bosun: warning: post-merge hook: %v\n", err)
+	}
+
 	_ = rc.state.Clear(s.Name)
 	_ = rc.claims.Clear(s.Name)
 	return mergeStatusMerged, fmt.Sprintf("%d commit(s) squashed", s.Ahead), nil
+}
+
+// mergeHookEnv returns the env injected into pre-merge and post-merge
+// hooks for a given session. Kept in one place so the two call-sites
+// stay in sync; post-merge layers BOSUN_MERGE_COMMIT on top.
+func mergeHookEnv(s *session.Session, baseBranch string) map[string]string {
+	return map[string]string{
+		"BOSUN_SESSION":       s.Name,
+		"BOSUN_TARGET_BRANCH": baseBranch,
+		"BOSUN_BRANCH":        s.Branch,
+		"BOSUN_AHEAD":         strconv.Itoa(s.Ahead),
+	}
+}
+
+// headSHA returns the current HEAD commit SHA for repo. Used to populate
+// BOSUN_MERGE_COMMIT for post-merge — we shell out instead of extending
+// internal/git so this lane doesn't collide with the timeout work
+// happening in internal/git/git.go this round.
+func headSHA(ctx context.Context, repo string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
+	cmd.Dir = repo
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 // isMergeConflict heuristically detects whether an err message indicates a merge conflict.

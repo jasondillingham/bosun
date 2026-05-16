@@ -2563,3 +2563,188 @@ func mapKeys(m map[string]any) []string {
 	}
 	return out
 }
+
+// --- merge hooks (pre-merge, post-merge) ---
+//
+// pre-merge gates each session's squash; fail-closed exits skip that
+// session with a clear reason and don't touch base. fail-open hooks
+// emit a warning to stderr and let the merge proceed. post-merge fires
+// after the squash commit lands and receives the new commit SHA via
+// BOSUN_MERGE_COMMIT; failures there are non-fatal.
+
+func TestScenario_PreMergeHookFailClosedBlocksMerge(t *testing.T) {
+	// A pre-merge hook that exits non-zero with fail_open:false must skip
+	// the merge for that session and surface the hook in the reason. The
+	// session's branch must remain unmerged so the operator can fix the
+	// hook condition and re-run.
+	s := newScenario(t)
+
+	cfgBytes, err := json.MarshalIndent(map[string]any{
+		"hooks": []map[string]any{
+			{"event": "pre-merge", "command": "exit 1", "fail_open": false},
+		},
+	}, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	s.WriteFile(".bosun/config.json", string(cfgBytes))
+
+	s.Bosun("init", "1")
+	wt := s.WorktreePath(1)
+	s.WriteFileIn(wt, "blocked.txt", "x\n")
+	s.CommitIn(wt, "work")
+	s.Bosun("done", "session-1")
+
+	out := s.Bosun("merge")
+	s.AssertContainsAll(out, "session-1", "skipped", "pre-merge hook")
+
+	// The file the session committed must NOT be on main — the squash
+	// never ran.
+	if _, err := os.Stat(filepath.Join(s.repo, "blocked.txt")); err == nil {
+		t.Fatalf("pre-merge fail-closed should have blocked merge, but blocked.txt is on main")
+	}
+}
+
+func TestScenario_PreMergeHookFailOpenLetsMergeProceed(t *testing.T) {
+	// fail_open:true: the hook errors but bosun emits a warning and the
+	// squash still runs. The file should land on main.
+	s := newScenario(t)
+
+	cfgBytes, err := json.MarshalIndent(map[string]any{
+		"hooks": []map[string]any{
+			{"event": "pre-merge", "command": "exit 1", "fail_open": true},
+		},
+	}, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	s.WriteFile(".bosun/config.json", string(cfgBytes))
+
+	s.Bosun("init", "1")
+	wt := s.WorktreePath(1)
+	s.WriteFileIn(wt, "open.txt", "y\n")
+	s.CommitIn(wt, "work")
+	s.Bosun("done", "session-1")
+
+	out := s.Bosun("merge")
+	s.AssertContainsAll(out, "session-1: merged")
+	s.AssertFileOnMain("open.txt")
+}
+
+func TestScenario_PreMergeHookSkippedOnDryRun(t *testing.T) {
+	// Dry-run is meant to be side-effect-free: pre-merge must NOT fire,
+	// even when fail_open:false would otherwise block the merge. The
+	// hook command writes a sentinel — its absence proves it didn't run.
+	s := newScenario(t)
+
+	sentinel := filepath.Join(s.parent, "premerge-fired.txt")
+	cfgBytes, err := json.MarshalIndent(map[string]any{
+		"hooks": []map[string]any{
+			{
+				"event":     "pre-merge",
+				"command":   `touch ` + shQuote(sentinel) + ` && exit 1`,
+				"fail_open": false,
+			},
+		},
+	}, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	s.WriteFile(".bosun/config.json", string(cfgBytes))
+
+	s.Bosun("init", "1")
+	wt := s.WorktreePath(1)
+	s.WriteFileIn(wt, "dry.txt", "z\n")
+	s.CommitIn(wt, "work")
+	s.Bosun("done", "session-1")
+
+	out := s.Bosun("merge", "--dry-run")
+	s.AssertContains(out, "would merge")
+
+	if _, err := os.Stat(sentinel); err == nil {
+		t.Fatalf("pre-merge hook fired on dry-run (sentinel exists at %s)", sentinel)
+	}
+}
+
+func TestScenario_PostMergeHookEnvIncludesMergeCommit(t *testing.T) {
+	// post-merge must see BOSUN_SESSION, BOSUN_TARGET_BRANCH, BOSUN_BRANCH,
+	// BOSUN_AHEAD, and BOSUN_MERGE_COMMIT (the squash SHA on base). The
+	// hook writes them to a file we then parse and compare against the
+	// actual HEAD on main.
+	s := newScenario(t)
+
+	hookOut := filepath.Join(s.parent, "post-merge-env.txt")
+	cmdStr := `env | grep -E '^BOSUN_(SESSION|TARGET_BRANCH|BRANCH|AHEAD|MERGE_COMMIT)=' | sort > ` + shQuote(hookOut)
+
+	cfgBytes, err := json.MarshalIndent(map[string]any{
+		"hooks": []map[string]any{
+			{"event": "post-merge", "command": cmdStr},
+		},
+	}, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	s.WriteFile(".bosun/config.json", string(cfgBytes))
+
+	s.Bosun("init", "1")
+	wt := s.WorktreePath(1)
+	s.WriteFileIn(wt, "a.txt", "a\n")
+	s.CommitIn(wt, "work-1")
+	s.WriteFileIn(wt, "b.txt", "b\n")
+	s.CommitIn(wt, "work-2")
+	s.Bosun("done", "session-1")
+
+	out := s.Bosun("merge")
+	s.AssertContains(out, "session-1: merged")
+
+	data, err := os.ReadFile(hookOut)
+	if err != nil {
+		t.Fatalf("post-merge hook did not run (expected %s): %v", hookOut, err)
+	}
+	got := string(data)
+
+	for _, want := range []string{
+		"BOSUN_AHEAD=2\n",
+		"BOSUN_BRANCH=bosun/session-1\n",
+		"BOSUN_SESSION=session-1\n",
+		"BOSUN_TARGET_BRANCH=main\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("post-merge env missing %q; got:\n%s", want, got)
+		}
+	}
+
+	// BOSUN_MERGE_COMMIT must match the actual HEAD on main after the
+	// squash commit lands.
+	wantSHA := strings.TrimSpace(s.GitIn(s.repo, "rev-parse", "HEAD"))
+	if !strings.Contains(got, "BOSUN_MERGE_COMMIT="+wantSHA+"\n") {
+		t.Errorf("post-merge env missing BOSUN_MERGE_COMMIT=%s; got:\n%s", wantSHA, got)
+	}
+}
+
+func TestScenario_PostMergeHookFailureIsNonFatal(t *testing.T) {
+	// A failing post-merge hook must NOT unwind a clean squash. The merge
+	// reports success and the file lands on main; the hook failure shows
+	// up as a warning in the output but doesn't change the exit code.
+	s := newScenario(t)
+
+	cfgBytes, err := json.MarshalIndent(map[string]any{
+		"hooks": []map[string]any{
+			{"event": "post-merge", "command": "exit 7", "fail_open": false},
+		},
+	}, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	s.WriteFile(".bosun/config.json", string(cfgBytes))
+
+	s.Bosun("init", "1")
+	wt := s.WorktreePath(1)
+	s.WriteFileIn(wt, "kept.txt", "k\n")
+	s.CommitIn(wt, "work")
+	s.Bosun("done", "session-1")
+
+	out := s.Bosun("merge")
+	s.AssertContainsAll(out, "session-1: merged", "post-merge hook")
+	s.AssertFileOnMain("kept.txt")
+}

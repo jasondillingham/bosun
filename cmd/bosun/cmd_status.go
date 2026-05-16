@@ -5,14 +5,21 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"time"
 
 	"github.com/jasondillingham/bosun/internal/claims"
+	bosunmcp "github.com/jasondillingham/bosun/internal/mcp"
 	"github.com/jasondillingham/bosun/internal/session"
 	"github.com/jasondillingham/bosun/internal/status"
 	"github.com/jasondillingham/bosun/internal/tui"
 	"github.com/spf13/cobra"
 )
+
+// statusEventTailN caps how many announcements the status command tails
+// from the events log. Five is enough for a glanceable feed; the operator
+// can tail the JSONL file directly if they want full history.
+const statusEventTailN = 5
 
 func newStatusCmd() *cobra.Command {
 	var (
@@ -97,7 +104,30 @@ func renderStatusOnce(w io.Writer, rc *runCtx, opts statusOpts) error {
 		Overlaps:     overlaps,
 		WithOverlaps: opts.withOverlaps,
 		NoColor:      opts.noColor,
+		Events:       recentEvents(rc.repoRoot),
 	})
+}
+
+// recentEvents pulls the last few bosun_announce entries from
+// .bosun/events.log so the renderer can surface them. Errors are swallowed
+// — a missing or unreadable log shouldn't keep `bosun status` from showing
+// the session table.
+func recentEvents(repoRoot string) []status.Event {
+	logPath := filepath.Join(repoRoot, bosunmcp.EventLogRelative)
+	raw, err := bosunmcp.TailEvents(logPath, statusEventTailN)
+	if err != nil || len(raw) == 0 {
+		return nil
+	}
+	out := make([]status.Event, 0, len(raw))
+	for _, e := range raw {
+		out = append(out, status.Event{
+			Session: e.Session,
+			Kind:    e.Kind,
+			Message: e.Message,
+			At:      e.At,
+		})
+	}
+	return out
 }
 
 // runStatusWatch wires up SIGINT handling and drives the watch loop against

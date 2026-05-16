@@ -6,11 +6,22 @@ import (
 	"io"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/jasondillingham/bosun/internal/claims"
 	"github.com/jasondillingham/bosun/internal/session"
 	"github.com/jasondillingham/bosun/internal/tui"
 )
+
+// Event is one operator-visible announcement (typed in the status package
+// so the renderer doesn't have to import internal/mcp). The caller in
+// cmd_status.go fills these from mcp.TailEvents and hands them in.
+type Event struct {
+	Session string
+	Kind    string
+	Message string
+	At      time.Time
+}
 
 // RenderOptions controls table rendering.
 type RenderOptions struct {
@@ -18,6 +29,13 @@ type RenderOptions struct {
 	Overlaps     []claims.Overlap // nil if --with-overlaps not requested
 	WithOverlaps bool
 	NoColor      bool
+	// Events is an optional list of recent bosun_announce records. When
+	// non-empty, RenderText prints one "Recent: ..." line per event after
+	// the summary line.
+	Events []Event
+	// Now is the reference time used to format event ages. Zero defers to
+	// time.Now() — tests pin it for deterministic output.
+	Now time.Time
 }
 
 // RenderText writes a human-readable table (and optional overlap section) to w.
@@ -30,6 +48,7 @@ func RenderText(w io.Writer, opts RenderOptions) error {
 	}
 
 	writeSummary(w, opts, useColor)
+	writeEvents(w, opts, useColor)
 
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "SESSION\tBRANCH\tSTATE\tAHEAD\tDIRTY\tCLAIMED\tLAST_COMMIT")
@@ -95,6 +114,63 @@ func writeSummary(w io.Writer, opts RenderOptions, useColor bool) {
 		line += " · " + fmt.Sprintf("%d %s", n, pluralize("overlap", n))
 	}
 	fmt.Fprintln(w, line)
+}
+
+// writeEvents prints one "Recent:" line per buffered announcement, newest
+// first. No-op when opts.Events is empty so the table still butts up
+// directly against the summary in the common case.
+func writeEvents(w io.Writer, opts RenderOptions, useColor bool) {
+	if len(opts.Events) == 0 {
+		return
+	}
+	now := opts.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
+	// Iterate newest-first: caller hands them oldest-first (chronological).
+	for i := len(opts.Events) - 1; i >= 0; i-- {
+		e := opts.Events[i]
+		kind := e.Kind
+		if useColor {
+			kind = colorKind(e.Kind)
+		}
+		fmt.Fprintf(w, "Recent: %s [%s] %s (%s)\n",
+			e.Session, kind, e.Message, relativeAge(now, e.At))
+	}
+}
+
+// colorKind tints the kind label so the operator can scan progress vs.
+// warnings at a glance. Unknown kinds pass through unstyled.
+func colorKind(kind string) string {
+	switch kind {
+	case "warn":
+		return tui.Colorize(kind, tui.Red(), true)
+	case "progress":
+		return tui.Colorize(kind, tui.Yellow(), true)
+	case "info":
+		return tui.Colorize(kind, tui.Green(), true)
+	}
+	return kind
+}
+
+// relativeAge formats now-then in a compact form (e.g. "3s ago", "12m ago",
+// "2h ago"). Future timestamps (clock skew) get "just now" so the line
+// doesn't show a confusing negative duration.
+func relativeAge(now, then time.Time) string {
+	d := now.Sub(then)
+	if d < 0 {
+		return "just now"
+	}
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds ago", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	}
 }
 
 func pluralize(word string, n int) string {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jasondillingham/bosun/internal/claims"
 	"github.com/jasondillingham/bosun/internal/git"
@@ -157,6 +158,81 @@ func TestRenderText_Overlaps(t *testing.T) {
 	}
 	if !strings.Contains(out, "internal/auth/handler.go") {
 		t.Errorf("missing overlap path: %s", out)
+	}
+}
+
+func TestRenderText_EventsSection(t *testing.T) {
+	now := time.Date(2026, 5, 15, 12, 0, 30, 0, time.UTC)
+	events := []Event{
+		// Oldest first (chronological), like TailEvents returns them.
+		{Session: "session-1", Kind: "info", Message: "kicked off", At: now.Add(-90 * time.Second)},
+		{Session: "session-2", Kind: "progress", Message: "starting on storage layer", At: now.Add(-3 * time.Second)},
+	}
+
+	var buf bytes.Buffer
+	err := RenderText(&buf, RenderOptions{
+		Sessions: sampleSessions(),
+		Events:   events,
+		Now:      now,
+		NoColor:  true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+
+	// Newest event should appear first.
+	idxProgress := strings.Index(out, "Recent: session-2 [progress] starting on storage layer (3s ago)")
+	idxInfo := strings.Index(out, "Recent: session-1 [info] kicked off (1m ago)")
+	if idxProgress < 0 {
+		t.Errorf("missing progress line:\n%s", out)
+	}
+	if idxInfo < 0 {
+		t.Errorf("missing info line:\n%s", out)
+	}
+	if idxProgress >= 0 && idxInfo >= 0 && idxProgress > idxInfo {
+		t.Errorf("expected newest-first ordering; progress(%d) should come before info(%d):\n%s", idxProgress, idxInfo, out)
+	}
+
+	// Events section should sit between the summary line and the SESSION
+	// table header so readers see the alerts before scanning the grid.
+	idxSummary := strings.Index(out, "3 sessions")
+	idxHeader := strings.Index(out, "SESSION")
+	if !(idxSummary < idxProgress && idxProgress < idxHeader) {
+		t.Errorf("events should sit between summary and header (summary=%d, event=%d, header=%d)", idxSummary, idxProgress, idxHeader)
+	}
+}
+
+func TestRenderText_EmptyEventsHasNoRecentLine(t *testing.T) {
+	var buf bytes.Buffer
+	err := RenderText(&buf, RenderOptions{Sessions: sampleSessions(), NoColor: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(buf.String(), "Recent:") {
+		t.Errorf("no Events should produce no Recent line, got:\n%s", buf.String())
+	}
+}
+
+func TestRelativeAge_Buckets(t *testing.T) {
+	now := time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		delta time.Duration
+		want  string
+	}{
+		{0, "0s ago"},
+		{5 * time.Second, "5s ago"},
+		{59 * time.Second, "59s ago"},
+		{61 * time.Second, "1m ago"},
+		{90 * time.Minute, "1h ago"},
+		{49 * time.Hour, "2d ago"},
+		{-3 * time.Second, "just now"}, // future timestamp (clock skew)
+	}
+	for _, c := range cases {
+		got := relativeAge(now, now.Add(-c.delta))
+		if got != c.want {
+			t.Errorf("relativeAge(delta=%v) = %q, want %q", c.delta, got, c.want)
+		}
 	}
 }
 

@@ -923,6 +923,89 @@ func TestScenario_McpDoneRefusesDirtyAndForceMarksDone(t *testing.T) {
 	}
 }
 
+// TestScenario_AnnounceSurfacesInStatus drives bosun_announce end-to-end:
+// start `bosun mcp`, push an announcement over the Unix socket, and confirm
+// the CLI-side `bosun status` (a separate process) reads the persisted
+// record back via the JSONL events log and renders it in the Recent section.
+func TestScenario_AnnounceSurfacesInStatus(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix sockets aren't supported on Windows runners")
+	}
+
+	s := newScenario(t)
+	s.Bosun("init", "1")
+
+	socketPath := filepath.Join("/tmp", fmt.Sprintf("bosun-announce-e2e-%d.sock", time.Now().UnixNano()))
+	t.Cleanup(func() { _ = os.Remove(socketPath) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, bosunBin, "mcp", "--socket", socketPath)
+	cmd.Dir = s.repo
+	var subOut subprocessTail
+	cmd.Stdout = &subOut
+	cmd.Stderr = &subOut
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start bosun mcp: %v", err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}()
+
+	if err := waitForSocket(socketPath, 3*time.Second); err != nil {
+		t.Fatalf("socket never appeared: %v\nsubprocess output:\n%s", err, subOut.String())
+	}
+
+	netConn, err := net.Dial("unix", socketPath)
+	if err != nil {
+		t.Fatalf("dial socket: %v", err)
+	}
+	defer netConn.Close()
+
+	client := mcpsdk.NewClient(&mcpsdk.Implementation{
+		Name:    "bosun-announce-e2e-client",
+		Version: "test",
+	}, nil)
+	session, err := client.Connect(ctx, &netConnTransport{conn: netConn}, nil)
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	defer session.Close()
+
+	result, err := session.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name: "bosun_announce",
+		Arguments: map[string]any{
+			"session": "session-1",
+			"message": "kicking off the storage layer",
+			"kind":    "progress",
+		},
+	})
+	if err != nil {
+		t.Fatalf("call bosun_announce: %v", err)
+	}
+	if result.IsError {
+		errText := ""
+		for _, c := range result.Content {
+			if tc, ok := c.(*mcpsdk.TextContent); ok {
+				errText += tc.Text
+			}
+		}
+		t.Fatalf("bosun_announce IsError: %s", errText)
+	}
+
+	// The CLI-side `bosun status` runs in its own process and must read
+	// the announcement back via the JSONL persistence file.
+	out := s.Bosun("status")
+	s.AssertContainsAll(out,
+		"Recent:",
+		"session-1",
+		"[progress]",
+		"kicking off the storage layer",
+	)
+}
+
 // --- helpers (test-local) ---
 
 func readFile(t *testing.T, path string) string {

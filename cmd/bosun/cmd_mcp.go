@@ -11,10 +11,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// defaultSocketRelative is where bosun keeps its MCP socket when --socket
-// isn't passed explicitly. Lives under .bosun/ so it's auto-gitignored.
-const defaultSocketRelative = ".bosun/mcp.sock"
-
 func newMcpCmd() *cobra.Command {
 	var socketPath string
 
@@ -48,7 +44,9 @@ func runMcp(_ *cobra.Command, socketPath string) error {
 	}
 
 	if socketPath == "" {
-		socketPath = filepath.Join(rc.repoRoot, defaultSocketRelative)
+		// DefaultSocketPath handles the 100-byte limit by falling back to
+		// /tmp/bosun-<hash>.sock for deeply-nested repos.
+		socketPath = bosunmcp.DefaultSocketPath(rc.repoRoot)
 	} else {
 		// Resolve to absolute up-front so the printed log line is portable.
 		abs, err := filepath.Abs(socketPath)
@@ -56,6 +54,9 @@ func runMcp(_ *cobra.Command, socketPath string) error {
 			return userErr("resolve socket path: %v", err)
 		}
 		socketPath = abs
+		if len(socketPath) > bosunmcp.MaxSocketPathLen {
+			return userErr("socket path is %d bytes (Unix-domain max ≈%d): %s\n  workaround: pass --socket /tmp/bosun-<repo>.sock or shorten the repo path", len(socketPath), bosunmcp.MaxSocketPathLen, socketPath)
+		}
 	}
 
 	// Ensure the parent directory exists (default lives under .bosun/, which
@@ -82,6 +83,13 @@ func runMcp(_ *cobra.Command, socketPath string) error {
 		return userErr("bind socket: %v", err)
 	}
 	defer srv.Stop()
+
+	// Drop a pidfile so subsequent `bosun init --launch` runs can detect
+	// us and reuse the socket instead of spawning a duplicate daemon.
+	if err := writeMcpPidfile(rc.repoRoot, os.Getpid(), socketPath); err != nil {
+		fmt.Fprintf(os.Stderr, "bosun mcp: warning: write pidfile: %v\n", err)
+	}
+	defer removeMcpPidfile(rc.repoRoot)
 
 	fmt.Fprintf(os.Stdout, "bosun mcp: listening on %s\n", socketPath)
 	fmt.Fprintf(os.Stdout, "bosun mcp: agents reach the server via %s=%s\n", bosunmcp.SocketEnv, socketPath)

@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	bosunmcp "github.com/jasondillingham/bosun/internal/mcp"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -138,6 +139,42 @@ func TestScenario_InitLaunchExplicitInitialPrompt(t *testing.T) {
 
 	out := s.Bosun("init", "1", "--launch", "--initial-prompt", "custom kickoff")
 	s.AssertContains(out, "'custom kickoff'")
+}
+
+func TestScenario_InitLaunchAutoExportsBosunMcpSock(t *testing.T) {
+	// Round-1 discovery contract: when --launch is set and no
+	// BOSUN_MCP_SOCK is in the parent env, bosun init auto-starts an MCP
+	// daemon and injects the socket path into every session it launches.
+	// Drive launcher=print so we can grep the printed env prefix for the
+	// var (and so we don't actually open terminal windows).
+	if runtime.GOOS == "windows" {
+		t.Skip("MCP daemon spawn path uses Unix-domain sockets")
+	}
+	s := newScenario(t)
+	s.WriteFile(".bosun/config.json", `{"launcher":"print"}`)
+
+	// Ensure the subprocess doesn't inherit a pre-set var from the test
+	// harness — ensureMcp would short-circuit through the reuse branch
+	// and we'd miss the spawn path entirely.
+	t.Setenv(bosunmcp.SocketEnv, "")
+
+	out := s.Bosun("init", "1", "--launch")
+	// The print fallback formats env as `KEY='value' command ...`, so the
+	// var name on the launched line proves the injection.
+	s.AssertContains(out, bosunmcp.SocketEnv+"=")
+	// The daemon-status line should announce a fresh spawn (or reuse
+	// from a sibling test that survived t.Cleanup ordering on a busy
+	// machine — either way "MCP server" must appear).
+	if !strings.Contains(out, "MCP server") {
+		t.Fatalf("expected MCP server status line in init output:\n%s", out)
+	}
+	// And the pidfile the daemon writes should be readable by the time
+	// init returns — that's the contract a subsequent init relies on
+	// to detect "already running."
+	pidfile := filepath.Join(s.repo, ".bosun", "mcp.pid")
+	if _, err := os.Stat(pidfile); err != nil {
+		t.Fatalf("expected pidfile at %s after init --launch: %v", pidfile, err)
+	}
 }
 
 func TestScenario_InitBriefAutoGitignoresPlanFile(t *testing.T) {

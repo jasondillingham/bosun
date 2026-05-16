@@ -8,7 +8,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -72,7 +74,35 @@ func newScenario(t *testing.T) *scenario {
 
 	s := &scenario{t: t, repo: repo, parent: parent, name: "myproj"}
 	s.gitInit()
+	// Any test that runs `bosun init --launch` will auto-spawn an MCP
+	// daemon detached from the test process. Kill it on cleanup so we
+	// don't leak processes (or sockets under /tmp for long repo paths).
+	t.Cleanup(func() { killSpawnedMcpDaemon(repo) })
 	return s
+}
+
+// killSpawnedMcpDaemon reads .bosun/mcp.pid in repoRoot, sends SIGTERM
+// to whatever pid it names, and removes the socket file (which may live
+// under /tmp for fallback paths). Safe to call when no daemon was
+// spawned — missing files and dead pids are silently ignored.
+func killSpawnedMcpDaemon(repoRoot string) {
+	data, err := os.ReadFile(filepath.Join(repoRoot, ".bosun", "mcp.pid"))
+	if err != nil {
+		return
+	}
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	if len(lines) < 1 {
+		return
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(lines[0]))
+	if err == nil && pid > 0 {
+		if p, err := os.FindProcess(pid); err == nil {
+			_ = p.Signal(syscall.SIGTERM)
+		}
+	}
+	if len(lines) >= 2 {
+		_ = os.Remove(strings.TrimSpace(lines[1]))
+	}
 }
 
 // gitInit sets up an empty repo on `main` with a single commit.

@@ -74,6 +74,12 @@ const WorkflowPreamble = "## How to work this session\n\n" +
 	"Steps 3–6 are not optional — bosun won't squash-merge your work until you've\n" +
 	"committed AND marked the session done. The operator monitors progress via\n" +
 	"`bosun status` so the **DONE** signal is how they know you're finished.\n\n" +
+	"### MCP coordination (when available)\n\n" +
+	"When `BOSUN_MCP_SOCK` is set in your environment — `bosun init --launch`\n" +
+	"exports it automatically — prefer the MCP tools (`bosun_claim`, `bosun_done`,\n" +
+	"`bosun_check`, …) over the shell commands above. The MCP path is the\n" +
+	"primary contract; the CLI commands remain a working fallback if the\n" +
+	"server is unreachable.\n\n" +
 	"---\n\n"
 
 // WriteToWorktree writes the brief body as BOSUN_BRIEF.md into worktreePath,

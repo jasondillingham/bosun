@@ -26,11 +26,25 @@ socket.
 BOSUN_MCP_SOCK=/path/to/repo/.bosun/mcp.sock
 ```
 
-Round 0 establishes the convention but does **not** auto-export the
-variable. Round 1's session-4 wires `bosun init --launch` to inject
-`BOSUN_MCP_SOCK` into each launched child process. Until that lands,
-operators must set the variable manually in each session's terminal
-(or in their global shell init when running bosun mcp persistently).
+`bosun init --launch` auto-exports this variable for every session it
+launches. Resolution order at init time:
+
+1. If `BOSUN_MCP_SOCK` is set in the parent environment and the socket
+   accepts connections, reuse it.
+2. Otherwise, if `<repo>/.bosun/mcp.pid` names a live process *and* its
+   recorded socket accepts connections, reuse that.
+3. Otherwise, spawn a detached `bosun mcp` daemon and wait for its
+   socket to bind (3s timeout).
+
+Socket-path policy: the default is `<repo>/.bosun/mcp.sock`. If the
+repo path is long enough that the in-repo socket would exceed the
+~100-byte Unix-domain limit, bosun falls back to
+`/tmp/bosun-<sha256(repo_abs_path)[:12]>.sock`. The hash is
+deterministic, so the same repo always resolves to the same fallback
+socket and reconnects after a restart land on the same address.
+
+Running `bosun mcp` manually also writes the pidfile, so a hand-rolled
+daemon is auto-detected by a later `bosun init --launch`.
 
 ## Transport
 
@@ -89,8 +103,10 @@ Each is one parallel session's deliverable:
 - **`bosun_announce`** (session-3) — push a string into a per-server
   event channel so the operator's `bosun status` (or future TUI) can
   surface "I'm slow but not stuck" type signals.
-- **Discovery wiring** (session-4) — export `BOSUN_MCP_SOCK` from
-  `bosun init --launch` into each launched child.
+- **Discovery wiring** (session-4) — `bosun init --launch` auto-starts
+  (or attaches to) a `bosun mcp` daemon and exports `BOSUN_MCP_SOCK`
+  into each launched session. See the **Discovery contract** section
+  above for the resolution order and socket-path policy. ✅ shipped
 
 ## Compatibility with filesystem coordination
 

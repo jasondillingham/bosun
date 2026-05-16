@@ -21,23 +21,23 @@ func TestServer_ClaimAndRelease(t *testing.T) {
 	tmp := t.TempDir()
 	cstore := claims.NewStore(tmp)
 	sstore := state.NewStore(tmp)
-	srv := NewServer(cstore, sstore)
+	srv := NewServer(cstore, sstore, nil)
 
 	session, cancel, serverDone := startTestSession(t, srv)
 	defer cancel()
 	defer session.Close()
 
-	// Sanity: all three tools (check, claim, release) are advertised. The
-	// registration order is alphabetical-by-filename inside the package.
+	// Sanity: this round's tools are advertised. Loose contains-check so
+	// adding a tool in a sibling file doesn't force this test to update
+	// its expected count.
 	tools, err := session.ListTools(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("list tools: %v", err)
 	}
-	names := toolNames(tools.Tools)
-	sort.Strings(names)
-	wantNames := []string{"bosun_check", "bosun_claim", "bosun_release"}
-	if !equalStrings(names, wantNames) {
-		t.Fatalf("tool names = %v, want %v", names, wantNames)
+	for _, want := range []string{"bosun_check", "bosun_claim", "bosun_release"} {
+		if !hasTool(tools.Tools, want) {
+			t.Fatalf("%s not advertised, got: %v", want, toolNames(tools.Tools))
+		}
 	}
 
 	ctx := context.Background()

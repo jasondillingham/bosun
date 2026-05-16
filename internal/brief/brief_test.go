@@ -101,6 +101,10 @@ func TestWriteToWorktree_IncludesWorkflowPreamble(t *testing.T) {
 		"bosun done session-3",
 		"## Your assignment",
 		"implement X",
+		// Round-1 MCP discovery contract: agents should know the env
+		// var is set and prefer MCP tools over the CLI.
+		"BOSUN_MCP_SOCK",
+		"bosun_claim",
 	} {
 		if !strings.Contains(content, want) {
 			t.Errorf("brief missing %q\n--- full content ---\n%s", want, content)

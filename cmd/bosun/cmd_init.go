@@ -9,6 +9,7 @@ import (
 
 	"github.com/jasondillingham/bosun/internal/brief"
 	"github.com/jasondillingham/bosun/internal/launcher"
+	bosunmcp "github.com/jasondillingham/bosun/internal/mcp"
 	"github.com/jasondillingham/bosun/internal/session"
 	"github.com/spf13/cobra"
 )
@@ -215,11 +216,33 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 			prompt = "Read BOSUN_BRIEF.md in this directory — it's your assignment. Read it in full, then follow the workflow it describes."
 		}
 
+		// Bring up (or attach to) the MCP daemon and capture the socket
+		// path so each launched session gets BOSUN_MCP_SOCK injected
+		// into its environment. A failure here is non-fatal: sessions
+		// still launch, they just fall back to filesystem coordination.
+		mcpSocket := ""
+		if info, err := ensureMcp(rc.repoRoot); err != nil {
+			fmt.Fprintf(os.Stderr, "bosun: warning: MCP autostart failed: %v\n", err)
+		} else {
+			mcpSocket = info.socketPath
+			switch {
+			case info.spawned:
+				fmt.Fprintf(os.Stdout, "Started MCP server (pid %d) on %s\n", info.pid, info.socketPath)
+			case info.pid != 0:
+				fmt.Fprintf(os.Stdout, "Reusing MCP server (pid %d) on %s\n", info.pid, info.socketPath)
+			default:
+				fmt.Fprintf(os.Stdout, "Using MCP server from %s=%s\n", bosunmcp.SocketEnv, info.socketPath)
+			}
+		}
+
 		fmt.Fprintln(os.Stdout, "\nLaunching sessions:")
 		for i, c := range made {
 			env := map[string]string{}
 			if opts.isolateCache {
 				env = launcher.IsolateCacheEnv(c.path)
+			}
+			if mcpSocket != "" {
+				env[bosunmcp.SocketEnv] = mcpSocket
 			}
 			strategy, err := launcher.Launch(launcher.Options{
 				Strategy:      launcher.Strategy(rc.cfg.Launcher),

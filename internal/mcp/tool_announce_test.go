@@ -151,7 +151,7 @@ func newPipedSession(t *testing.T) (*Server, *mcpsdk.ClientSession, func()) {
 	tmp := t.TempDir()
 	cstore := claims.NewStore(tmp)
 	sstore := state.NewStore(tmp)
-	srv := NewServer(cstore, sstore)
+	srv := NewServer(cstore, sstore, nil)
 
 	clientReader, serverWriter := io.Pipe()
 	serverReader, clientWriter := io.Pipe()

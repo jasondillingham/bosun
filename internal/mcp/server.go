@@ -15,10 +15,13 @@ package mcp
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/jasondillingham/bosun/internal/claims"
@@ -36,10 +39,36 @@ const ServerName = "bosun"
 const ServerVersion = "0.2.0-alpha"
 
 // SocketEnv is the environment variable agent sessions read to discover
-// where the bosun MCP server is listening. Convention chosen so a session
-// inside a worktree doesn't have to guess; bosun init wires it up
-// automatically (planned for round 1).
+// where the bosun MCP server is listening. `bosun init --launch` injects
+// this into every launched session's environment so the agent doesn't
+// have to guess at the path.
 const SocketEnv = "BOSUN_MCP_SOCK"
+
+// MaxSocketPathLen is a conservative cap on Unix-domain socket path
+// length. Darwin's `struct sockaddr_un.sun_path` is 104 bytes; Linux is
+// 108. Leaving a few bytes of headroom for trailing NUL and ergonomic
+// margin lands at 100. Paths above this trigger the /tmp fallback.
+const MaxSocketPathLen = 100
+
+// DefaultSocketPath returns the path bosun should bind its Unix socket
+// to for repoRoot. Prefers `<repoRoot>/.bosun/mcp.sock` (auto-gitignored
+// via the existing `.bosun/` pattern) when that fits inside
+// MaxSocketPathLen; otherwise falls back to a deterministic
+// `/tmp/bosun-<hash>.sock` keyed by the absolute repo path, so the same
+// repo always resolves to the same fallback socket and reconnects after
+// a restart land back on the same address.
+func DefaultSocketPath(repoRoot string) string {
+	primary := filepath.Join(repoRoot, ".bosun", "mcp.sock")
+	if len(primary) <= MaxSocketPathLen {
+		return primary
+	}
+	abs, err := filepath.Abs(repoRoot)
+	if err != nil {
+		abs = repoRoot
+	}
+	sum := sha256.Sum256([]byte(abs))
+	return filepath.Join("/tmp", fmt.Sprintf("bosun-%s.sock", hex.EncodeToString(sum[:])[:12]))
+}
 
 // Server wraps the MCP server with a Unix-socket listener and the bosun
 // stores it operates against. Multiple concurrent client connections share

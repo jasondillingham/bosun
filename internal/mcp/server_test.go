@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -138,6 +140,44 @@ func hasTool(tools []*mcpsdk.Tool, name string) bool {
 		}
 	}
 	return false
+}
+
+// TestDefaultSocketPath covers both branches: short repo paths use the
+// in-repo `.bosun/mcp.sock`, long ones fall back to `/tmp/bosun-<hash>.sock`
+// with a stable, deterministic hash so reconnects line up after restarts.
+func TestDefaultSocketPath(t *testing.T) {
+	// Short path: in-repo socket.
+	got := DefaultSocketPath("/tmp/short-repo")
+	want := filepath.Join("/tmp/short-repo", ".bosun", "mcp.sock")
+	if got != want {
+		t.Errorf("short repo path: got %q, want %q", got, want)
+	}
+	if len(got) > MaxSocketPathLen {
+		t.Errorf("short repo path %q exceeds %d-byte limit", got, MaxSocketPathLen)
+	}
+
+	// Long path: should fall back to /tmp/bosun-<hash>.sock and stay
+	// well under the limit.
+	longRepo := "/tmp/" + strings.Repeat("a", 200)
+	got = DefaultSocketPath(longRepo)
+	if !strings.HasPrefix(got, "/tmp/bosun-") || !strings.HasSuffix(got, ".sock") {
+		t.Errorf("long repo path: got %q, want /tmp/bosun-<hash>.sock", got)
+	}
+	if len(got) > MaxSocketPathLen {
+		t.Errorf("fallback path %q exceeds %d-byte limit", got, MaxSocketPathLen)
+	}
+
+	// Deterministic: same input → same output (reconnect after restart
+	// must land on the same socket).
+	if again := DefaultSocketPath(longRepo); again != got {
+		t.Errorf("fallback not deterministic: %q vs %q", got, again)
+	}
+
+	// Different inputs → different sockets.
+	other := DefaultSocketPath(longRepo + "x")
+	if other == got {
+		t.Errorf("expected distinct fallback for distinct repo path, got %q twice", got)
+	}
 }
 
 // pipeTransport adapts an io.Reader/io.Writer pair into an mcp.Transport.

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1231,6 +1232,103 @@ func TestScenario_TuiHelpListsSubcommandAndKeybinds(t *testing.T) {
 		"--no-color",
 		"j/k", "merge", "cleanup", "remove", "launch", "brief",
 	)
+}
+
+// --- serve ---
+
+// TestScenario_ServeExposesStatusOverHTTP starts `bosun serve` against
+// a real two-session repo, GETs /api/status, and verifies the payload
+// matches the same shape `bosun status --json` returns. Mirrors the MCP
+// scenarios' strategy — drive the subcommand end-to-end via the compiled
+// binary so handler registration and ctx cancellation both get exercised.
+func TestScenario_ServeExposesStatusOverHTTP(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("scenario tests use POSIX shell helpers")
+	}
+
+	s := newScenario(t)
+	s.Bosun("init", "2")
+
+	port := pickFreePort(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, bosunBin, "serve", "--port", itoa(port), "--bind", "127.0.0.1", "--interval", "1")
+	cmd.Dir = s.repo
+	var subOut subprocessTail
+	cmd.Stdout = &subOut
+	cmd.Stderr = &subOut
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start bosun serve: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Signal(os.Interrupt)
+		_ = cmd.Wait()
+	})
+
+	url := fmt.Sprintf("http://127.0.0.1:%d/api/status", port)
+	body := waitForHTTP200(t, url, 5*time.Second, &subOut)
+
+	var payload struct {
+		Sessions []struct {
+			Name   string `json:"name"`
+			Number int    `json:"number"`
+			Branch string `json:"branch"`
+			State  string `json:"state"`
+		} `json:"sessions"`
+	}
+	if err := json.Unmarshal([]byte(body), &payload); err != nil {
+		t.Fatalf("decode /api/status: %v\nbody=%s", err, body)
+	}
+	if len(payload.Sessions) != 2 {
+		t.Fatalf("/api/status sessions = %d, want 2\nbody=%s", len(payload.Sessions), body)
+	}
+	for _, sess := range payload.Sessions {
+		if sess.Name == "" || sess.Branch == "" || sess.State == "" {
+			t.Errorf("session has empty required field: %+v", sess)
+		}
+	}
+}
+
+// pickFreePort asks the kernel for an unused localhost port, releases it,
+// and returns the number. The bound-then-closed pattern is the standard
+// "free port" trick — there's a small race window where another process
+// could grab it, but in a single-machine test environment it's reliable.
+func pickFreePort(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("pick free port: %v", err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	_ = ln.Close()
+	return port
+}
+
+// waitForHTTP200 polls url until it returns 200 OK or the deadline
+// expires. Returns the body on success. Used to bridge the "serve is
+// starting up" gap between Start() and the listener being ready to
+// accept connections.
+func waitForHTTP200(t *testing.T, url string, timeout time.Duration, log *subprocessTail) string {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	client := &http.Client{Timeout: 1 * time.Second}
+	for time.Now().Before(deadline) {
+		resp, err := client.Get(url)
+		if err == nil {
+			if resp.StatusCode == http.StatusOK {
+				buf := make([]byte, 64*1024)
+				n, _ := resp.Body.Read(buf)
+				resp.Body.Close()
+				return string(buf[:n])
+			}
+			resp.Body.Close()
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("never got 200 from %s within %s\nsubprocess output:\n%s", url, timeout, log.String())
+	return ""
 }
 
 // --- helpers (test-local) ---

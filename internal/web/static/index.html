@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bosun</title>
+<style>
+  :root {
+    --fg: #1f2328;
+    --muted: #6b7280;
+    --bg: #f7f7f8;
+    --card: #ffffff;
+    --border: #e5e7eb;
+    --accent: #6366f1;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    margin: 0; padding: 1.25rem;
+    color: var(--fg); background: var(--bg);
+  }
+  header { display: flex; align-items: baseline; gap: 1rem; margin-bottom: 0.75rem; }
+  h1 { font-size: 1.15rem; margin: 0; }
+  h2 { font-size: 0.95rem; margin: 1.5rem 0 0.5rem; }
+  .muted { color: var(--muted); font-size: 0.85rem; }
+  table {
+    width: 100%; border-collapse: collapse;
+    background: var(--card);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+    border-radius: 6px; overflow: hidden;
+  }
+  th, td {
+    padding: 0.5rem 0.7rem; text-align: left;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.88rem;
+  }
+  th { background: #f3f4f6; font-weight: 600; }
+  tr:last-child td { border-bottom: none; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.last { color: var(--muted); }
+  .state { font-weight: 600; }
+  .state-DONE { color: #15803d; }
+  .state-WORKING { color: #1d4ed8; }
+  .state-STUCK { color: #b91c1c; }
+  .state-EMPTY { color: var(--muted); font-weight: normal; }
+  .events { display: flex; flex-direction: column; gap: 0.3rem; }
+  .event {
+    background: var(--card);
+    border-left: 3px solid var(--accent);
+    border-radius: 0 6px 6px 0;
+    padding: 0.45rem 0.7rem;
+    font-size: 0.85rem;
+    display: flex; gap: 0.5rem; align-items: baseline;
+  }
+  .event .ts { color: var(--muted); font-variant-numeric: tabular-nums; margin-left: auto; font-size: 0.78rem; }
+  .event .session { color: #374151; font-weight: 500; }
+  .event .kind { color: var(--accent); font-weight: 600; }
+  .empty { color: var(--muted); font-style: italic; padding: 0.4rem 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>bosun</h1>
+  <span class="muted" id="updated">connecting&hellip;</span>
+</header>
+
+<table>
+  <thead><tr>
+    <th>Session</th>
+    <th>State</th>
+    <th>Branch</th>
+    <th class="num">Ahead</th>
+    <th class="num">Dirty</th>
+    <th class="num">Claimed</th>
+    <th>Last commit</th>
+  </tr></thead>
+  <tbody id="rows"><tr><td colspan="7" class="empty">loading&hellip;</td></tr></tbody>
+</table>
+
+<h2>Events</h2>
+<div id="events" class="events"><div class="empty">no events yet</div></div>
+
+<script>
+  function escapeHTML(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function(c) {
+      return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c];
+    });
+  }
+
+  async function refresh() {
+    try {
+      const r = await fetch("/api/status", { cache: "no-store" });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      render(await r.json());
+      document.getElementById("updated").textContent =
+        "updated " + new Date().toLocaleTimeString();
+    } catch (e) {
+      document.getElementById("updated").textContent = "error: " + e.message;
+    }
+  }
+
+  function render(p) {
+    const tbody = document.getElementById("rows");
+    tbody.innerHTML = "";
+    const sessions = (p && p.sessions) || [];
+    if (sessions.length === 0) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = '<td colspan="7" class="empty">no sessions</td>';
+      tbody.appendChild(tr);
+      return;
+    }
+    for (const s of sessions) {
+      const tr = document.createElement("tr");
+      const last = s.last_subject
+        ? `${escapeHTML(s.last_sha || "")} ${escapeHTML(s.last_subject)} <span class="muted">(${escapeHTML(s.last_relative || "")})</span>`
+        : "";
+      tr.innerHTML =
+        `<td>${escapeHTML(s.name)}</td>` +
+        `<td class="state state-${escapeHTML(s.state)}">${escapeHTML(s.state)}</td>` +
+        `<td>${escapeHTML(s.branch)}</td>` +
+        `<td class="num">${Number(s.ahead) || 0}</td>` +
+        `<td class="num">${Number(s.dirty) || 0}</td>` +
+        `<td class="num">${Number(s.claimed) || 0}</td>` +
+        `<td class="last">${last}</td>`;
+      tbody.appendChild(tr);
+    }
+  }
+
+  const evtsBox = document.getElementById("events");
+  let firstEvent = true;
+  function appendEvent(e) {
+    if (firstEvent) {
+      evtsBox.innerHTML = "";
+      firstEvent = false;
+    }
+    const ts = e.at ? new Date(e.at).toLocaleTimeString() : "";
+    const div = document.createElement("div");
+    div.className = "event";
+    div.innerHTML =
+      `<span class="session">${escapeHTML(e.session || "")}</span>` +
+      `<span class="kind">[${escapeHTML(e.kind || "event")}]</span>` +
+      `<span>${escapeHTML(e.message || "")}</span>` +
+      `<span class="ts">${escapeHTML(ts)}</span>`;
+    evtsBox.prepend(div);
+    while (evtsBox.children.length > 50) evtsBox.removeChild(evtsBox.lastChild);
+  }
+
+  const es = new EventSource("/api/events");
+  es.onmessage = (msg) => {
+    try { appendEvent(JSON.parse(msg.data)); } catch (_) { /* ignore */ }
+  };
+
+  refresh();
+  setInterval(refresh, 2000);
+</script>
+</body>
+</html>

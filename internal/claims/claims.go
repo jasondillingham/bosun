@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -27,8 +28,15 @@ type Claim struct {
 }
 
 // Store reads and writes claim files under repoRoot/.bosun/claims/.
+//
+// Concurrent callers (the MCP server fans every connection's tool calls
+// onto the same Store) must not race on the read-modify-write paths:
+// Add/Remove/Replace/Clear all do read → mutate → write and would
+// otherwise lose updates and produce torn JSON files. mu serializes
+// every public method that touches the on-disk representation.
 type Store struct {
 	repoRoot string
+	mu       sync.Mutex
 }
 
 // NewStore returns a Store rooted at repoRoot.
@@ -42,10 +50,12 @@ func (s *Store) file(session string) string {
 // Add merges the given paths into session's claim file, deduplicating.
 // Creates the file (and parent dir) if needed.
 func (s *Store) Add(session string, paths []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := os.MkdirAll(s.dir(), 0o755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", s.dir(), err)
 	}
-	existing, err := s.Read(session)
+	existing, err := s.readLocked(session)
 	if err != nil {
 		return err
 	}
@@ -61,6 +71,8 @@ func (s *Store) Add(session string, paths []string) error {
 
 // Replace overwrites session's claim file with exactly these paths.
 func (s *Store) Replace(session string, paths []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := os.MkdirAll(s.dir(), 0o755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", s.dir(), err)
 	}
@@ -75,7 +87,9 @@ func (s *Store) Replace(session string, paths []string) error {
 // file is removed (mirrors Clear). A missing claim file is not an error.
 // Returns the number of paths actually removed.
 func (s *Store) Remove(session string, paths []string) (int, error) {
-	existing, err := s.Read(session)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	existing, err := s.readLocked(session)
 	if err != nil {
 		return 0, err
 	}
@@ -99,7 +113,7 @@ func (s *Store) Remove(session string, paths []string) (int, error) {
 		return 0, nil
 	}
 	if len(kept) == 0 {
-		if err := s.Clear(session); err != nil {
+		if err := s.clearLocked(session); err != nil {
 			return 0, err
 		}
 		return removed, nil
@@ -115,6 +129,14 @@ func (s *Store) Remove(session string, paths []string) (int, error) {
 
 // Clear removes session's claim file. Missing is not an error.
 func (s *Store) Clear(session string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.clearLocked(session)
+}
+
+// clearLocked is Clear's body without taking the lock — for callers like
+// Remove that already hold mu.
+func (s *Store) clearLocked(session string) error {
 	err := os.Remove(s.file(session))
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("remove %s: %w", s.file(session), err)
@@ -125,6 +147,14 @@ func (s *Store) Clear(session string) error {
 // Read returns session's claim, or nil if there is no file. Returns an error
 // if the file exists but cannot be parsed.
 func (s *Store) Read(session string) (*Claim, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.readLocked(session)
+}
+
+// readLocked is Read's body without taking the lock — for callers like
+// Add/Remove that already hold mu and need to read-modify-write.
+func (s *Store) readLocked(session string) (*Claim, error) {
 	data, err := os.ReadFile(s.file(session))
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -243,7 +273,31 @@ func (s *Store) write(c *Claim) error {
 	if err != nil {
 		return fmt.Errorf("marshal claim: %w", err)
 	}
-	return os.WriteFile(s.file(c.Session), data, 0o644)
+	// Write atomically via temp + rename so a reader (e.g. the CLI process
+	// running `bosun status` while the MCP daemon writes) never sees a
+	// half-written file. os.WriteFile truncates and writes in chunks, which
+	// produced "unexpected end of JSON input" parse errors under load.
+	final := s.file(c.Session)
+	tmp, err := os.CreateTemp(s.dir(), filepath.Base(final)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("temp claim: %w", err)
+	}
+	tmpName := tmp.Name()
+	cleanup := func() { _ = os.Remove(tmpName) }
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return fmt.Errorf("write temp claim: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		cleanup()
+		return fmt.Errorf("close temp claim: %w", err)
+	}
+	if err := os.Rename(tmpName, final); err != nil {
+		cleanup()
+		return fmt.Errorf("rename claim: %w", err)
+	}
+	return nil
 }
 
 func normalizeAll(paths []string) []string {

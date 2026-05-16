@@ -82,7 +82,15 @@ func runMcp(_ *cobra.Command, socketPath string) error {
 	if err := srv.Listen(socketPath); err != nil {
 		return userErr("bind socket: %v", err)
 	}
-	defer srv.Stop()
+	// Listener.Close() does not unlink the socket file on POSIX, so on
+	// SIGINT/SIGTERM the file would otherwise linger and confuse the next
+	// `bosun init --launch` (it'd see a regular file at the expected path
+	// and refuse to overwrite via removeIfSocket). Defer an explicit
+	// remove after the listener stops.
+	defer func() {
+		_ = srv.Stop()
+		_ = os.Remove(socketPath)
+	}()
 
 	// Drop a pidfile so subsequent `bosun init --launch` runs can detect
 	// us and reuse the socket instead of spawning a duplicate daemon.

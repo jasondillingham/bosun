@@ -30,6 +30,13 @@ type mcpServerInfo struct {
 // returns the socket path agent sessions should set BOSUN_MCP_SOCK to.
 // Reuse order: env var (only if it belongs to this repo) → pidfile →
 // fresh spawn.
+//
+// The pidfile-check + spawn sequence is wrapped in a process-wide flock
+// on .bosun/mcp.lock so two near-simultaneous `bosun init --launch`
+// invocations don't both spawn a daemon (which would race on socket
+// bind and clobber each other's pidfile entries). The env-var fast
+// path runs outside the lock — if the operator pre-exported a socket,
+// no on-disk coordination is needed.
 func ensureMcp(repoRoot string) (mcpServerInfo, error) {
 	// Operator may have an inherited BOSUN_MCP_SOCK from a parent process
 	// that's running bosun against a *different* repo. Reusing that
@@ -42,13 +49,14 @@ func ensureMcp(repoRoot string) (mcpServerInfo, error) {
 			return mcpServerInfo{socketPath: sock}, nil
 		}
 	}
-	// A prior `bosun mcp` / `bosun init --launch` left a pidfile behind.
-	// Reuse it only if both the process *and* the socket are live —
-	// either being stale means the daemon crashed without cleaning up.
-	if info, ok := readMcpPidfile(repoRoot); ok && isProcessAlive(info.pid) && isSocketAlive(info.socketPath) {
-		return mcpServerInfo{socketPath: info.socketPath, pid: info.pid}, nil
-	}
-	return spawnMcpDaemon(repoRoot)
+	return withMcpSpawnLock(repoRoot, func() (mcpServerInfo, error) {
+		// Re-check inside the lock: another caller may have spawned a
+		// daemon while we were waiting for the flock.
+		if info, ok := readMcpPidfile(repoRoot); ok && isProcessAlive(info.pid) && isSocketAlive(info.socketPath) {
+			return mcpServerInfo{socketPath: info.socketPath, pid: info.pid}, nil
+		}
+		return spawnMcpDaemon(repoRoot)
+	})
 }
 
 // inheritedSocketBelongsToRepo reports whether an inherited BOSUN_MCP_SOCK

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jasondillingham/bosun/internal/session"
@@ -18,8 +19,14 @@ import (
 const dirRelative = ".bosun/state"
 
 // Store reads and writes session state markers under repoRoot/.bosun/state/.
+//
+// MarkDone/MarkStuck each do write-then-remove on the opposite marker;
+// without a lock, an interleaving of two concurrent calls can clear
+// both markers (leaving the session as WORKING when the operator
+// expected DONE or STUCK). mu serializes every public write/clear.
 type Store struct {
 	repoRoot string
+	mu       sync.Mutex
 }
 
 func NewStore(repoRoot string) *Store { return &Store{repoRoot: repoRoot} }
@@ -38,6 +45,8 @@ func (s *Store) path(sessionName string, suffix string) string {
 // MarkDone writes a `.done` marker for sessionName with an optional message.
 // Removes any prior `.stuck` marker on the same session.
 func (s *Store) MarkDone(sessionName, message string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := os.MkdirAll(s.dir(), 0o755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", s.dir(), err)
 	}
@@ -52,6 +61,8 @@ func (s *Store) MarkDone(sessionName, message string) error {
 // MarkStuck writes a `.stuck` marker with an optional message. Removes any
 // prior `.done` marker.
 func (s *Store) MarkStuck(sessionName, message string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := os.MkdirAll(s.dir(), 0o755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", s.dir(), err)
 	}
@@ -65,6 +76,8 @@ func (s *Store) MarkStuck(sessionName, message string) error {
 
 // Clear removes both done and stuck markers for sessionName. Missing is OK.
 func (s *Store) Clear(sessionName string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for _, suffix := range []string{"done", "stuck"} {
 		err := os.Remove(s.path(sessionName, suffix))
 		if err != nil && !errors.Is(err, fs.ErrNotExist) {

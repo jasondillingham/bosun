@@ -33,7 +33,7 @@ type DoneResult struct {
 }
 
 func (s *Server) toolDone(ctx context.Context, _ *mcp.CallToolRequest, args DoneArgs) (*mcp.CallToolResult, DoneResult, error) {
-	n, err := session.ParseName(args.Session)
+	label, err := session.ParseLabel(args.Session)
 	if err != nil {
 		return errResult(err), DoneResult{}, nil
 	}
@@ -43,7 +43,6 @@ func (s *Server) toolDone(ctx context.Context, _ *mcp.CallToolRequest, args Done
 	if err != nil {
 		return errResult(fmt.Errorf("load config: %w", err)), DoneResult{}, nil
 	}
-	name := cfg.SessionName(n)
 
 	if !args.Force {
 		// Validation needs git to compute Dirty/Ahead. force=true skips
@@ -51,38 +50,38 @@ func (s *Server) toolDone(ctx context.Context, _ *mcp.CallToolRequest, args Done
 		if s.gitClient == nil {
 			return errResult(errors.New("bosun_done requires a git client to validate; pass force=true to skip")), DoneResult{}, nil
 		}
-		sess, err := findSession(ctx, s, cfg, repoRoot, n)
+		sess, err := findSessionByLabel(ctx, s, cfg, repoRoot, label)
 		if err != nil {
 			return errResult(err), DoneResult{}, nil
 		}
 		if sess == nil {
-			return errResult(fmt.Errorf("%s not found", name)), DoneResult{}, nil
+			return errResult(fmt.Errorf("%s not found", label)), DoneResult{}, nil
 		}
 		if err := session.ValidateDoneable(*sess, cfg.BaseBranch); err != nil {
 			return errResult(err), DoneResult{}, nil
 		}
 	}
 
-	if err := s.state.MarkDone(name, args.Message); err != nil {
+	if err := s.state.MarkDone(label, args.Message); err != nil {
 		return errResult(fmt.Errorf("mark done: %w", err)), DoneResult{}, nil
 	}
 
-	summary := fmt.Sprintf("%s marked DONE", name)
+	summary := fmt.Sprintf("%s marked DONE", label)
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{&mcp.TextContent{Text: summary}},
 	}, DoneResult{State: string(session.StateDone), Message: summary}, nil
 }
 
-// findSession returns the bosun-managed Session with the given number, or nil
-// if it doesn't exist. Shared between tool_done.go and any future tool that
-// needs to look up a session's git-derived state.
-func findSession(ctx context.Context, s *Server, cfg config.Config, repoRoot string, n int) (*session.Session, error) {
+// findSessionByLabel returns the bosun-managed Session with the given
+// canonical label, or nil if it doesn't exist. Shared between tool_done.go
+// and any future tool that needs a session's git-derived state.
+func findSessionByLabel(ctx context.Context, s *Server, cfg config.Config, repoRoot string, label string) (*session.Session, error) {
 	sessions, err := session.Derive(ctx, s.gitClient, cfg, repoRoot, s.state, s.claims)
 	if err != nil {
 		return nil, fmt.Errorf("derive sessions: %w", err)
 	}
 	for i := range sessions {
-		if sessions[i].Number == n {
+		if sessions[i].Label == label {
 			return &sessions[i], nil
 		}
 	}

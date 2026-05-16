@@ -62,20 +62,20 @@ func runMerge(cmd *cobra.Command, args []string, opts mergeOpts) error {
 	}
 
 	// Build the candidate list.
-	var requested map[int]bool
+	var requested map[string]bool
 	if len(args) > 0 {
-		requested = map[int]bool{}
+		requested = map[string]bool{}
 		for _, a := range args {
-			n, err := session.ParseName(a)
+			label, err := session.ParseLabel(a)
 			if err != nil {
 				return userErr("%v", err)
 			}
-			requested[n] = true
+			requested[label] = true
 		}
 	}
 
 	// Dependency-aware ordering: re-parse the archived plan to pick up
-	// any `## session-N (depends: session-M)` declarations. Missing or
+	// any `## <label> (depends: <other-label>)` declarations. Missing or
 	// unparseable plan → empty map (no-deps fallback). Within the loop
 	// we skip a session whose declared deps aren't merged yet.
 	depMap, err := brief.LoadArchivedDeps(rc.repoRoot)
@@ -83,7 +83,7 @@ func runMerge(cmd *cobra.Command, args []string, opts mergeOpts) error {
 		return internalErr("load archived deps", err)
 	}
 	sessions = topoOrderForMerge(sessions, depMap)
-	mergedThisRun := make(map[int]bool, len(sessions))
+	mergedThisRun := make(map[string]bool, len(sessions))
 
 	type result struct {
 		name   string
@@ -94,7 +94,7 @@ func runMerge(cmd *cobra.Command, args []string, opts mergeOpts) error {
 	conflictHit := false
 
 	for _, s := range sessions {
-		if requested != nil && !requested[s.Number] {
+		if requested != nil && !requested[s.Label] {
 			continue
 		}
 		if !opts.all && requested == nil && s.State != session.StateDone {
@@ -105,8 +105,8 @@ func runMerge(cmd *cobra.Command, args []string, opts mergeOpts) error {
 		// this run or as a previously-merged session whose branch is now
 		// patch-equivalent to base. We check per-dep so the reason names the
 		// blocker the operator needs to resolve.
-		if blocker, ok := blockingDep(s.Number, depMap, sessions, mergedThisRun, rc); ok {
-			results = append(results, result{name: s.Name, status: mergeStatusSkipped, reason: fmt.Sprintf("depends on session-%d (not merged yet)", blocker)})
+		if blocker, ok := blockingDep(s.Label, depMap, sessions, mergedThisRun, rc); ok {
+			results = append(results, result{name: s.Name, status: mergeStatusSkipped, reason: fmt.Sprintf("depends on %s (not merged yet)", blocker)})
 			continue
 		}
 
@@ -120,7 +120,7 @@ func runMerge(cmd *cobra.Command, args []string, opts mergeOpts) error {
 			break
 		}
 		if status == mergeStatusMerged {
-			mergedThisRun[s.Number] = true
+			mergedThisRun[s.Label] = true
 		}
 	}
 
@@ -233,63 +233,63 @@ func isMergeConflict(err error) bool {
 
 // topoOrderForMerge returns sessions reordered so that any session listed
 // as a dependency of another comes first. Sessions outside the dep graph
-// keep their original (numeric) position. Cycles fall back to the input
-// order — bosun merge will still skip dependent sessions until their
+// keep their original (numeric/named) position. Cycles fall back to the
+// input order — bosun merge will still skip dependent sessions until their
 // blockers clear, so a cycle just means none of the cyclic group can
 // progress, which the operator will see in the output.
-func topoOrderForMerge(sessions []session.Session, depMap map[int][]int) []session.Session {
+func topoOrderForMerge(sessions []session.Session, depMap map[string][]string) []session.Session {
 	if len(depMap) == 0 {
 		return sessions
 	}
-	indexOf := make(map[int]int, len(sessions))
+	indexOf := make(map[string]int, len(sessions))
 	for i, s := range sessions {
-		indexOf[s.Number] = i
+		indexOf[s.Label] = i
 	}
 	out := make([]session.Session, 0, len(sessions))
-	visited := make(map[int]bool, len(sessions))
-	visiting := make(map[int]bool, len(sessions))
+	visited := make(map[string]bool, len(sessions))
+	visiting := make(map[string]bool, len(sessions))
 
-	var visit func(n int)
-	visit = func(n int) {
-		if visited[n] || visiting[n] {
+	var visit func(label string)
+	visit = func(label string) {
+		if visited[label] || visiting[label] {
 			return
 		}
-		visiting[n] = true
-		for _, dep := range depMap[n] {
+		visiting[label] = true
+		for _, dep := range depMap[label] {
 			if _, ok := indexOf[dep]; ok {
 				visit(dep)
 			}
 		}
-		visiting[n] = false
-		if i, ok := indexOf[n]; ok {
+		visiting[label] = false
+		if i, ok := indexOf[label]; ok {
 			out = append(out, sessions[i])
-			visited[n] = true
+			visited[label] = true
 		}
 	}
 	for _, s := range sessions {
-		visit(s.Number)
+		visit(s.Label)
 	}
 	return out
 }
 
-// blockingDep returns the first unmerged dependency of session n, if any.
-// "Merged" means: merged earlier in this run, OR the session no longer
-// exists in the candidate list (already cleaned up), OR its branch is
-// patch-equivalent to base (zero unmerged patches via git cherry).
-func blockingDep(n int, depMap map[int][]int, sessions []session.Session, mergedThisRun map[int]bool, rc *runCtx) (int, bool) {
-	deps, ok := depMap[n]
+// blockingDep returns the first unmerged dependency of the given session
+// label, if any. "Merged" means: merged earlier in this run, OR the session
+// no longer exists in the candidate list (already cleaned up), OR its
+// branch is patch-equivalent to base (zero unmerged patches via git cherry).
+func blockingDep(label string, depMap map[string][]string, sessions []session.Session, mergedThisRun map[string]bool, rc *runCtx) (string, bool) {
+	deps, ok := depMap[label]
 	if !ok || len(deps) == 0 {
-		return 0, false
+		return "", false
 	}
-	byNumber := make(map[int]*session.Session, len(sessions))
+	byLabel := make(map[string]*session.Session, len(sessions))
 	for i := range sessions {
-		byNumber[sessions[i].Number] = &sessions[i]
+		byLabel[sessions[i].Label] = &sessions[i]
 	}
 	for _, d := range deps {
 		if mergedThisRun[d] {
 			continue
 		}
-		dep, present := byNumber[d]
+		dep, present := byLabel[d]
 		if !present {
 			// Dep session no longer exists — assume operator cleaned it up
 			// after a successful merge.
@@ -302,6 +302,6 @@ func blockingDep(n int, depMap map[int][]int, sessions []session.Session, merged
 		}
 		return d, true
 	}
-	return 0, false
+	return "", false
 }
 

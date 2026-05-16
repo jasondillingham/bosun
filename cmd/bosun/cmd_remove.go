@@ -27,25 +27,18 @@ func runRemove(cmd *cobra.Command, sessionArg string, force bool) error {
 	if err != nil {
 		return err
 	}
-	n, err := session.ParseName(sessionArg)
+	label, err := session.ParseLabel(sessionArg)
 	if err != nil {
 		return userErr("%v", err)
 	}
-	name := rc.cfg.SessionName(n)
 
 	sessions, err := session.Derive(rc.ctx, rc.git, rc.cfg, rc.repoRoot, rc.state, rc.claims)
 	if err != nil {
 		return gitErr("derive sessions", err)
 	}
-	var s *session.Session
-	for i := range sessions {
-		if sessions[i].Number == n {
-			s = &sessions[i]
-			break
-		}
-	}
+	s := findSessionByLabel(sessions, label)
 	if s == nil {
-		return userErr("%s not found", name)
+		return userErr("%s not found", label)
 	}
 
 	// destructive controls whether we let git's own safety checks (`branch -d`,
@@ -55,7 +48,7 @@ func runRemove(cmd *cobra.Command, sessionArg string, force bool) error {
 	destructive := force
 	if !force {
 		if s.Dirty > 0 {
-			return userErr("%s has %d uncommitted change(s); commit or stash, or pass --force", name, s.Dirty)
+			return userErr("%s has %d uncommitted change(s); commit or stash, or pass --force", label, s.Dirty)
 		}
 		if s.Ahead > 0 {
 			unmerged, err := rc.git.UnmergedPatches(rc.ctx, rc.repoRoot, rc.cfg.BaseBranch, s.Branch)
@@ -63,7 +56,7 @@ func runRemove(cmd *cobra.Command, sessionArg string, force bool) error {
 				return gitErr("check unmerged patches for "+s.Branch, err)
 			}
 			if unmerged > 0 {
-				return userErr("%s has %d commit(s) ahead of %s that aren't merged; pass --force to discard", name, unmerged, rc.cfg.BaseBranch)
+				return userErr("%s has %d commit(s) ahead of %s that aren't merged; pass --force to discard", label, unmerged, rc.cfg.BaseBranch)
 			}
 			// All ahead-commits are patch-equivalent to base — squash-merged.
 			// git itself won't accept `branch -d` here because the tip SHA isn't
@@ -78,9 +71,9 @@ func runRemove(cmd *cobra.Command, sessionArg string, force bool) error {
 	if err := rc.git.DeleteBranch(rc.ctx, rc.repoRoot, s.Branch, destructive); err != nil {
 		return gitErr("delete branch "+s.Branch, err)
 	}
-	_ = rc.claims.Clear(name)
-	_ = rc.state.Clear(name)
+	_ = rc.claims.Clear(label)
+	_ = rc.state.Clear(label)
 
-	printf("bosun: removed %s (worktree + branch + state)\n", name)
+	printf("bosun: removed %s (worktree + branch + state)\n", label)
 	return nil
 }

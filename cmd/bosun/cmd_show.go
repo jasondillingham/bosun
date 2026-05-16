@@ -27,7 +27,7 @@ func runShow(cmd *cobra.Command, sessionArg string) error {
 	if err != nil {
 		return err
 	}
-	n, err := session.ParseName(sessionArg)
+	label, err := session.ParseLabel(sessionArg)
 	if err != nil {
 		return userErr("%v", err)
 	}
@@ -35,15 +35,9 @@ func runShow(cmd *cobra.Command, sessionArg string) error {
 	if err != nil {
 		return gitErr("derive sessions", err)
 	}
-	var s *session.Session
-	for i := range sessions {
-		if sessions[i].Number == n {
-			s = &sessions[i]
-			break
-		}
-	}
+	s := findSessionByLabel(sessions, label)
 	if s == nil {
-		return userErr("session-%d not found (use `bosun list` to see active sessions)", n)
+		return userErr("%s not found (use `bosun list` to see active sessions)", label)
 	}
 
 	fmt.Fprintf(os.Stdout, "Session:  %s\n", s.Name)

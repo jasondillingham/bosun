@@ -82,7 +82,7 @@ func TestWriteToWorktree_IncludesWorkflowPreamble(t *testing.T) {
 	// implementation but skipped commit + claim + done. The preamble
 	// makes the lifecycle explicit in the brief.
 	wt := t.TempDir()
-	b := Brief{Session: 3, Body: "implement X"}
+	b := Brief{Session: 3, Label: "session-3", Body: "implement X"}
 	if err := WriteToWorktree(wt, b, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -105,6 +105,26 @@ func TestWriteToWorktree_IncludesWorkflowPreamble(t *testing.T) {
 		// var is set and prefer MCP tools over the CLI.
 		"BOSUN_MCP_SOCK",
 		"bosun_claim",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("brief missing %q\n--- full content ---\n%s", want, content)
+		}
+	}
+}
+
+func TestWriteToWorktree_NamedLabelInPreamble(t *testing.T) {
+	wt := t.TempDir()
+	b := Brief{Label: "auth", Body: "wire login"}
+	if err := WriteToWorktree(wt, b, ""); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(filepath.Join(wt, "BOSUN_BRIEF.md"))
+	content := string(data)
+	for _, want := range []string{
+		"# Bosun brief — auth",
+		"bosun claim auth",
+		"bosun done auth",
+		"wire login",
 	} {
 		if !strings.Contains(content, want) {
 			t.Errorf("brief missing %q\n--- full content ---\n%s", want, content)
@@ -151,7 +171,7 @@ func TestWriteToWorktree_DefaultsToMakeCheck(t *testing.T) {
 
 func TestWriteSessionPointer(t *testing.T) {
 	wt := t.TempDir()
-	if err := WriteSessionPointer(wt, 4); err != nil {
+	if err := WriteSessionPointer(wt, "session-4"); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(filepath.Join(wt, ".claude", "CLAUDE.md"))
@@ -163,6 +183,21 @@ func TestWriteSessionPointer(t *testing.T) {
 		if !strings.Contains(content, want) {
 			t.Errorf("pointer missing %q\n--- full content ---\n%s", want, content)
 		}
+	}
+}
+
+func TestWriteSessionPointer_NamedLabel(t *testing.T) {
+	wt := t.TempDir()
+	if err := WriteSessionPointer(wt, "storage"); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(filepath.Join(wt, ".claude", "CLAUDE.md"))
+	content := string(data)
+	if !strings.Contains(content, "(storage)") {
+		t.Errorf("pointer missing named label:\n%s", content)
+	}
+	if strings.Contains(content, "session-") {
+		t.Errorf("pointer should not mention session-N for named session:\n%s", content)
 	}
 }
 
@@ -185,7 +220,7 @@ func TestArchivePlan(t *testing.T) {
 }
 
 func TestLookupBrief(t *testing.T) {
-	briefs := []Brief{{Session: 1, Body: "a"}, {Session: 3, Body: "c"}}
+	briefs := []Brief{{Session: 1, Label: "session-1", Body: "a"}, {Session: 3, Label: "session-3", Body: "c"}}
 	if got := LookupBrief(briefs, 3); got == nil || got.Body != "c" {
 		t.Fatalf("LookupBrief(3) = %+v", got)
 	}
@@ -194,18 +229,35 @@ func TestLookupBrief(t *testing.T) {
 	}
 }
 
+func TestLookupBriefByLabel(t *testing.T) {
+	briefs := []Brief{
+		{Session: 1, Label: "session-1", Body: "a"},
+		{Label: "auth", Body: "wire login"},
+	}
+	if got := LookupBriefByLabel(briefs, "auth"); got == nil || got.Body != "wire login" {
+		t.Fatalf("LookupBriefByLabel(auth) = %+v", got)
+	}
+	if got := LookupBriefByLabel(briefs, "session-1"); got == nil || got.Body != "a" {
+		t.Fatalf("LookupBriefByLabel(session-1) = %+v", got)
+	}
+	if got := LookupBriefByLabel(briefs, "missing"); got != nil {
+		t.Fatalf("LookupBriefByLabel(missing) = %+v, want nil", got)
+	}
+}
+
 func TestParse_DependsClause(t *testing.T) {
 	cases := []struct {
 		name     string
 		heading  string
-		wantDeps []int
+		wantDeps []string
 	}{
 		{"no clause", "## session-2", nil},
-		{"single dep", "## session-2 (depends: session-1)", []int{1}},
-		{"multiple deps", "## session-3 (depends: session-1, session-2)", []int{1, 2}},
-		{"bare numeric form", "## session-3 (depends: 1, 2)", []int{1, 2}},
-		{"extra whitespace", "## session-4 (depends:  session-1 , session-3 )", []int{1, 3}},
-		{"unparseable entries skipped", "## session-2 (depends: session-1, garbage)", []int{1}},
+		{"single dep", "## session-2 (depends: session-1)", []string{"session-1"}},
+		{"multiple deps", "## session-3 (depends: session-1, session-2)", []string{"session-1", "session-2"}},
+		{"bare numeric form", "## session-3 (depends: 1, 2)", []string{"session-1", "session-2"}},
+		{"extra whitespace", "## session-4 (depends:  session-1 , session-3 )", []string{"session-1", "session-3"}},
+		{"unparseable entries skipped", "## session-2 (depends: session-1, GARBAGE!)", []string{"session-1"}},
+		{"named dep", "## auth (depends: storage, http)", []string{"storage", "http"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -220,7 +272,7 @@ func TestParse_DependsClause(t *testing.T) {
 			}
 			for i, d := range tc.wantDeps {
 				if got[i] != d {
-					t.Errorf("Depends[%d] = %d, want %d", i, got[i], d)
+					t.Errorf("Depends[%d] = %q, want %q", i, got[i], d)
 				}
 			}
 		})
@@ -229,7 +281,7 @@ func TestParse_DependsClause(t *testing.T) {
 
 func TestWriteToWorktree_IncludesDependsBlock(t *testing.T) {
 	wt := t.TempDir()
-	b := Brief{Session: 3, Body: "the assignment", Depends: []int{1, 2}}
+	b := Brief{Session: 3, Label: "session-3", Body: "the assignment", Depends: []string{"session-1", "session-2"}}
 	if err := WriteToWorktree(wt, b, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -285,14 +337,14 @@ last
 	if err != nil {
 		t.Fatalf("LoadArchivedDeps: %v", err)
 	}
-	if len(got[2]) != 1 || got[2][0] != 1 {
-		t.Errorf("deps[2] = %v, want [1]", got[2])
+	if d := got["session-2"]; len(d) != 1 || d[0] != "session-1" {
+		t.Errorf("deps[session-2] = %v, want [session-1]", d)
 	}
-	if len(got[3]) != 2 || got[3][0] != 1 || got[3][1] != 2 {
-		t.Errorf("deps[3] = %v, want [1 2]", got[3])
+	if d := got["session-3"]; len(d) != 2 || d[0] != "session-1" || d[1] != "session-2" {
+		t.Errorf("deps[session-3] = %v, want [session-1 session-2]", d)
 	}
-	if _, has := got[1]; has {
-		t.Errorf("deps[1] should be absent (no deps declared), got %v", got[1])
+	if _, has := got["session-1"]; has {
+		t.Errorf("deps[session-1] should be absent (no deps declared), got %v", got["session-1"])
 	}
 }
 

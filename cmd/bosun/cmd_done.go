@@ -39,33 +39,26 @@ func runDone(cmd *cobra.Command, sessionArg string, opts doneOpts) error {
 	if err != nil {
 		return err
 	}
-	n, err := session.ParseName(sessionArg)
+	label, err := session.ParseLabel(sessionArg)
 	if err != nil {
 		return userErr("%v", err)
 	}
-	name := rc.cfg.SessionName(n)
 
 	// Locate the session to validate dirty/ahead.
 	sessions, err := session.Derive(rc.ctx, rc.git, rc.cfg, rc.repoRoot, rc.state, rc.claims)
 	if err != nil {
 		return gitErr("derive sessions", err)
 	}
-	var s *session.Session
-	for i := range sessions {
-		if sessions[i].Number == n {
-			s = &sessions[i]
-			break
-		}
-	}
+	s := findSessionByLabel(sessions, label)
 	if s == nil {
-		return userErr("%s not found", name)
+		return userErr("%s not found", label)
 	}
 
 	if opts.stuck {
-		if err := rc.state.MarkStuck(name, opts.message); err != nil {
+		if err := rc.state.MarkStuck(label, opts.message); err != nil {
 			return internalErr("mark stuck", err)
 		}
-		printf("bosun: %s marked STUCK\n", name)
+		printf("bosun: %s marked STUCK\n", label)
 		return nil
 	}
 
@@ -75,9 +68,21 @@ func runDone(cmd *cobra.Command, sessionArg string, opts doneOpts) error {
 		}
 	}
 
-	if err := rc.state.MarkDone(name, opts.message); err != nil {
+	if err := rc.state.MarkDone(label, opts.message); err != nil {
 		return internalErr("mark done", err)
 	}
-	printf("bosun: %s marked DONE (%d commits ready)\n", name, s.Ahead)
+	printf("bosun: %s marked DONE (%d commits ready)\n", label, s.Ahead)
+	return nil
+}
+
+// findSessionByLabel returns the session whose Label matches, or nil.
+// Shared by claim/done/show/merge/remove/launch for CLI lookups so they all
+// agree on the canonical-label match semantics.
+func findSessionByLabel(sessions []session.Session, label string) *session.Session {
+	for i := range sessions {
+		if sessions[i].Label == label {
+			return &sessions[i]
+		}
+	}
 	return nil
 }

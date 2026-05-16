@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/jasondillingham/bosun/internal/brief"
+	"github.com/jasondillingham/bosun/internal/config"
 	"github.com/jasondillingham/bosun/internal/launcher"
 	bosunmcp "github.com/jasondillingham/bosun/internal/mcp"
 	"github.com/jasondillingham/bosun/internal/session"
@@ -25,9 +26,17 @@ func newInitCmd() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "init [N]",
-		Short: "Create N parallel worktrees + branches",
-		Args:  cobra.MaximumNArgs(1),
+		Use:   "init [N | <label> ...]",
+		Short: "Create N numbered (or one-per-label named) worktrees + branches",
+		Long: `Without args, creates default_session_count numbered sessions.
+
+A single integer N creates session-1..session-N.
+
+Two or more non-numeric args create named sessions (e.g. ` + "`bosun init auth http storage`" + `
+produces branches bosun/auth, bosun/http, bosun/storage with worktrees and briefs to match).
+
+Mixing integers with names in the same invocation is a usage error.`,
+		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runInit(cmd, args, initOpts{
 				brief:         briefPath,
@@ -40,7 +49,7 @@ func newInitCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&briefPath, "brief", "", "path to a plan markdown with '## session-N' sections")
+	cmd.Flags().StringVar(&briefPath, "brief", "", "path to a plan markdown with '## <label>' sections (e.g. '## session-1' or '## auth')")
 	cmd.Flags().BoolVar(&launch, "launch", false, "spawn an agent session in each worktree")
 	cmd.Flags().BoolVar(&isolateCache, "isolate-cache", false, "set per-worktree build-cache env vars when launching")
 	cmd.Flags().BoolVar(&force, "force", false, "overwrite existing bosun worktrees")
@@ -65,13 +74,9 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 		return err
 	}
 
-	count := rc.cfg.DefaultSessionCount
-	if len(args) == 1 {
-		n, err := strconv.Atoi(args[0])
-		if err != nil || n < 1 {
-			return userErr("N must be a positive integer, got %q", args[0])
-		}
-		count = n
+	labels, err := resolveInitLabels(args, rc.cfg)
+	if err != nil {
+		return err
 	}
 
 	base := opts.fromBranch
@@ -96,13 +101,13 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 			return userErr("parse brief: %v", err)
 		}
 		if len(briefs) == 0 {
-			return userErr("brief %s contains no `## session-N` sections", opts.brief)
+			return userErr("brief %s contains no `## <label>` sections", opts.brief)
 		}
 	}
 
 	// Pre-flight: check for existing worktree paths.
-	for i := 1; i <= count; i++ {
-		path := session.WorktreePath(rc.repoRoot, rc.cfg, i)
+	for _, label := range labels {
+		path := session.WorktreePathForLabel(rc.repoRoot, rc.cfg, label)
 		if _, err := os.Stat(path); err == nil {
 			if !opts.force {
 				return userErr("worktree path already exists: %s (use --force to overwrite)", path)
@@ -116,8 +121,8 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 		if err != nil {
 			return gitErr("list worktrees", err)
 		}
-		for i := 1; i <= count; i++ {
-			branch := rc.cfg.BranchFor(i)
+		for _, label := range labels {
+			branch := rc.cfg.BranchForLabel(label)
 			for _, wt := range existing {
 				if wt.Branch == "refs/heads/"+branch {
 					if err := rc.git.RemoveWorktree(rc.ctx, rc.repoRoot, wt.Path, true); err != nil {
@@ -135,16 +140,15 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 
 	// Create branches + worktrees.
 	type created struct {
-		name   string
+		label  string
 		branch string
 		path   string
 	}
 	var made []created
 
-	for i := 1; i <= count; i++ {
-		name := rc.cfg.SessionName(i)
-		branch := rc.cfg.BranchFor(i)
-		path := session.WorktreePath(rc.repoRoot, rc.cfg, i)
+	for _, label := range labels {
+		branch := rc.cfg.BranchForLabel(label)
+		path := session.WorktreePathForLabel(rc.repoRoot, rc.cfg, label)
 
 		exists, err := rc.git.BranchExists(rc.ctx, rc.repoRoot, branch)
 		if err != nil {
@@ -158,25 +162,25 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 		if err := rc.git.AddWorktree(rc.ctx, rc.repoRoot, path, branch); err != nil {
 			return gitErr("add worktree "+path, err)
 		}
-		made = append(made, created{name: name, branch: branch, path: path})
+		made = append(made, created{label: label, branch: branch, path: path})
 
 		// Always exclude BOSUN_BRIEF.md and .claude/CLAUDE.md from the
 		// worktree's index, even when no brief is written this run — that
 		// way a brief authored later stays out of commits without bosun
 		// having to remember.
 		if err := rc.git.AppendWorktreeExclude(rc.ctx, path, "BOSUN_BRIEF.md"); err != nil {
-			fmt.Fprintf(os.Stderr, "bosun: warning: update %s exclude: %v\n", name, err)
+			fmt.Fprintf(os.Stderr, "bosun: warning: update %s exclude: %v\n", label, err)
 		}
 		if err := rc.git.AppendWorktreeExclude(rc.ctx, path, ".claude/CLAUDE.md"); err != nil {
-			fmt.Fprintf(os.Stderr, "bosun: warning: update %s exclude: %v\n", name, err)
+			fmt.Fprintf(os.Stderr, "bosun: warning: update %s exclude: %v\n", label, err)
 		}
 
-		if b := brief.LookupBrief(briefs, i); b != nil {
+		if b := brief.LookupBriefByLabel(briefs, label); b != nil {
 			if err := brief.WriteToWorktree(path, *b, rc.cfg.VerifyCmd); err != nil {
-				return internalErr("write brief for "+name, err)
+				return internalErr("write brief for "+label, err)
 			}
-			if err := brief.WriteSessionPointer(path, i); err != nil {
-				return internalErr("write session pointer for "+name, err)
+			if err := brief.WriteSessionPointer(path, label); err != nil {
+				return internalErr("write session pointer for "+label, err)
 			}
 		}
 	}
@@ -201,9 +205,9 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 	}
 
 	// Print summary.
-	fmt.Fprintf(os.Stdout, "Created %d session(s):\n", count)
+	fmt.Fprintf(os.Stdout, "Created %d session(s):\n", len(made))
 	for _, c := range made {
-		fmt.Fprintf(os.Stdout, "  %-10s → %s  (branch: %s)\n", c.name, c.path, c.branch)
+		fmt.Fprintf(os.Stdout, "  %-10s → %s  (branch: %s)\n", c.label, c.path, c.branch)
 	}
 
 	// Optional launch.
@@ -247,7 +251,7 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 			strategy, err := launcher.Launch(launcher.Options{
 				Strategy:      launcher.Strategy(rc.cfg.Launcher),
 				WorktreePath:  c.path,
-				SessionName:   c.name,
+				SessionName:   c.label,
 				Command:       "claude",
 				InitialPrompt: prompt,
 				// First session creates a window; subsequent ones land as
@@ -256,14 +260,65 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 				Env:       env,
 			})
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "  %s: launch failed: %v\n", c.name, err)
+				fmt.Fprintf(os.Stderr, "  %s: launch failed: %v\n", c.label, err)
 				continue
 			}
-			fmt.Fprintf(os.Stdout, "  %-10s via %s\n", c.name, strategy)
+			fmt.Fprintf(os.Stdout, "  %-10s via %s\n", c.label, strategy)
 		}
 	}
 
 	return nil
+}
+
+// resolveInitLabels classifies the positional args into either numbered or
+// named mode and returns the canonical label list bosun init should create.
+//
+// Rules:
+//   - No args                 → numbered, count = cfg.DefaultSessionCount
+//   - One positive integer    → numbered, count = arg
+//   - 1+ non-numeric labels   → named, validated against the label charset
+//   - Anything mixed          → usage error
+func resolveInitLabels(args []string, cfg config.Config) ([]string, error) {
+	if len(args) == 0 {
+		return numberedLabels(cfg.DefaultSessionCount, cfg), nil
+	}
+
+	// Single integer arg → count form.
+	if len(args) == 1 {
+		if n, err := strconv.Atoi(args[0]); err == nil {
+			if n < 1 {
+				return nil, userErr("N must be a positive integer, got %q", args[0])
+			}
+			return numberedLabels(n, cfg), nil
+		}
+	}
+
+	// At this point every arg must be a non-numeric label. Mixed is rejected.
+	var labels []string
+	seen := map[string]bool{}
+	for _, a := range args {
+		if _, err := strconv.Atoi(a); err == nil {
+			return nil, userErr("init: cannot mix integer counts with named labels (got %q alongside named args)", a)
+		}
+		if err := session.ValidateLabel(a); err != nil {
+			return nil, userErr("%v", err)
+		}
+		if seen[a] {
+			return nil, userErr("duplicate session label %q", a)
+		}
+		seen[a] = true
+		labels = append(labels, a)
+	}
+	return labels, nil
+}
+
+// numberedLabels returns ["session-1", ..., "session-N"].
+func numberedLabels(n int, cfg config.Config) []string {
+	out := make([]string, 0, n)
+	for i := 1; i <= n; i++ {
+		out = append(out, cfg.SessionName(i))
+	}
+	return out
 }
 
 // canonicalAbs returns an absolute path with symlinks resolved. On macOS,

@@ -206,6 +206,12 @@ func (s *scenario) WorktreePath(n int) string {
 	return filepath.Join(s.parent, fmt.Sprintf("%s-bosun-%d", s.name, n))
 }
 
+// WorktreePathLabel returns the canonical worktree path for a named
+// session label. Used by named-session scenarios.
+func (s *scenario) WorktreePathLabel(label string) string {
+	return filepath.Join(s.parent, fmt.Sprintf("%s-bosun-%s", s.name, label))
+}
+
 // --- assertions ---
 
 func (s *scenario) AssertContains(output, want string) {

@@ -61,7 +61,7 @@ func runLaunch(sessionArg string, opts launchOpts) error {
 	if err != nil {
 		return err
 	}
-	n, err := session.ParseName(sessionArg)
+	label, err := session.ParseLabel(sessionArg)
 	if err != nil {
 		return userErr("%v", err)
 	}
@@ -69,15 +69,9 @@ func runLaunch(sessionArg string, opts launchOpts) error {
 	if err != nil {
 		return gitErr("derive sessions", err)
 	}
-	var s *session.Session
-	for i := range sessions {
-		if sessions[i].Number == n {
-			s = &sessions[i]
-			break
-		}
-	}
+	s := findSessionByLabel(sessions, label)
 	if s == nil {
-		return userErr("session-%d not found (use `bosun list` to see active sessions)", n)
+		return userErr("%s not found (use `bosun list` to see active sessions)", label)
 	}
 
 	// Reuse the MCP daemon when one's already up, otherwise spawn one so
@@ -103,15 +97,15 @@ func runLaunch(sessionArg string, opts launchOpts) error {
 	strategy, err := launcher.Launch(launcher.Options{
 		Strategy:      launcher.Strategy(rc.cfg.Launcher),
 		WorktreePath:  s.Path,
-		SessionName:   s.Name,
+		SessionName:   s.Label,
 		Command:       opts.command,
 		InitialPrompt: opts.initialPrompt,
 		OpenAsTab:     opts.openAsTab,
 		Env:           env,
 	})
 	if err != nil {
-		return internalErr("launch "+s.Name, err)
+		return internalErr("launch "+s.Label, err)
 	}
-	fmt.Fprintf(os.Stdout, "Launched %s via %s\n", s.Name, strategy)
+	fmt.Fprintf(os.Stdout, "Launched %s via %s\n", s.Label, strategy)
 	return nil
 }

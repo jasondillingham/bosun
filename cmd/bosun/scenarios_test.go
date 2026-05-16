@@ -1291,6 +1291,121 @@ func TestScenario_ServeExposesStatusOverHTTP(t *testing.T) {
 	}
 }
 
+// --- named sessions (v0.2: `bosun init auth http storage`) ---
+
+func TestScenario_InitNamedSessionsCreatesLabeledWorktreesAndBranches(t *testing.T) {
+	s := newScenario(t)
+	out := s.Bosun("init", "auth", "http", "storage")
+
+	s.AssertContainsAll(out, "Created 3 session(s)", "auth", "http", "storage")
+	for _, label := range []string{"auth", "http", "storage"} {
+		path := s.WorktreePathLabel(label)
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("worktree %s missing: %v", path, err)
+		}
+		s.AssertBranchExists("bosun/" + label)
+	}
+	// Named sessions should NOT create numbered branches.
+	cmd := exec.Command("git", "show-ref", "--verify", "--quiet", "refs/heads/bosun/session-1")
+	cmd.Dir = s.repo
+	if err := cmd.Run(); err == nil {
+		t.Fatal("named init unexpectedly created bosun/session-1")
+	}
+}
+
+func TestScenario_InitMixedNumericAndNamedErrors(t *testing.T) {
+	s := newScenario(t)
+	out, err := s.BosunErr("init", "auth", "2")
+	if err == nil {
+		t.Fatalf("mixing integer count with named labels should error; got:\n%s", out)
+	}
+	if !strings.Contains(out, "mix") {
+		t.Errorf("expected diagnostic about mixed args, got:\n%s", out)
+	}
+}
+
+func TestScenario_InitRejectsInvalidLabel(t *testing.T) {
+	s := newScenario(t)
+	_, err := s.BosunErr("init", "Auth", "Http")
+	if err == nil {
+		t.Fatal("uppercase label should be rejected")
+	}
+}
+
+func TestScenario_InitNamedWithBriefWritesPerSessionFile(t *testing.T) {
+	s := newScenario(t)
+	plan := `# Plan
+
+## auth
+Wire login.
+
+## http
+Add routing.
+
+## storage
+Migrate pgx.
+`
+	s.WriteFile("plan.md", plan)
+	s.Bosun("init", "auth", "http", "storage", "--brief", "plan.md")
+
+	for _, label := range []string{"auth", "http", "storage"} {
+		path := filepath.Join(s.WorktreePathLabel(label), "BOSUN_BRIEF.md")
+		data := readFile(t, path)
+		if !strings.Contains(data, "# Bosun brief — "+label) {
+			t.Errorf("BOSUN_BRIEF.md for %s missing labeled heading:\n%s", label, data)
+		}
+	}
+}
+
+func TestScenario_InitNamedWritesSessionPointerWithLabel(t *testing.T) {
+	s := newScenario(t)
+	s.WriteFile("plan.md", "## auth\nbody\n")
+	s.Bosun("init", "auth", "--brief", "plan.md")
+
+	pointer := filepath.Join(s.WorktreePathLabel("auth"), ".claude", "CLAUDE.md")
+	data := readFile(t, pointer)
+	if !strings.Contains(data, "(auth)") {
+		t.Errorf(".claude/CLAUDE.md should mention the named label:\n%s", data)
+	}
+	// Named pointers must not reference a synthetic session number.
+	if strings.Contains(data, "session-") {
+		t.Errorf(".claude/CLAUDE.md unexpectedly references session-N for named session:\n%s", data)
+	}
+}
+
+func TestScenario_NamedSessionClaimAndDone(t *testing.T) {
+	s := newScenario(t)
+	s.Bosun("init", "auth", "http")
+
+	// Claim works against the bare label.
+	s.Bosun("claim", "auth", "internal/auth.go")
+	// And do a commit so `done` won't refuse for "no commits".
+	wt := s.WorktreePathLabel("auth")
+	s.WriteFileIn(wt, "internal/auth.go", "package auth\n")
+	s.GitIn(wt, "add", "internal/auth.go")
+	s.CommitIn(wt, "wire login")
+
+	out := s.Bosun("done", "auth")
+	s.AssertContains(out, "auth marked DONE")
+}
+
+func TestScenario_NamedSessionMergeRoundTrips(t *testing.T) {
+	s := newScenario(t)
+	s.Bosun("init", "auth")
+
+	wt := s.WorktreePathLabel("auth")
+	s.WriteFileIn(wt, "auth.txt", "auth feature\n")
+	s.GitIn(wt, "add", "auth.txt")
+	s.CommitIn(wt, "add auth feature")
+	s.Bosun("done", "auth")
+
+	out := s.Bosun("merge", "auth")
+	s.AssertContainsAll(out, "auth", "merged")
+	s.AssertFileOnMain("auth.txt")
+}
+
+// --- serve helpers ---
+
 // pickFreePort asks the kernel for an unused localhost port, releases it,
 // and returns the number. The bound-then-closed pattern is the standard
 // "free port" trick — there's a small race window where another process

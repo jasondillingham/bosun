@@ -25,17 +25,23 @@ const (
 )
 
 // Session is the aggregated view of one bosun-managed session.
+//
+// Numbered sessions (e.g. `bosun init 3`): Number=1..N, Name="session-N",
+// Label==Name. Named sessions (e.g. `bosun init auth`): Number=0,
+// Name=="auth", Label=="auth". The two forms share the same Session struct
+// so downstream callers can keep operating on a single Session slice.
 type Session struct {
-	Number      int           // 1-based session number
-	Name        string        // e.g. "session-1"
-	Branch      string        // e.g. "bosun/session-1"
-	Path        string        // absolute worktree path
-	Ahead       int           // commits ahead of base
-	Dirty       int           // count of tracked-file changes
-	Claimed     int           // count of distinct claimed paths
-	State       State         // WORKING / DONE / STUCK
-	StateMsg    string        // optional body of the state file
-	Last        *git.LogEntry // last commit ahead of base (nil if none)
+	Number   int           // 1-based session number; 0 for named sessions
+	Name     string        // e.g. "session-1" or "auth"
+	Label    string        // canonical label (matches Name)
+	Branch   string        // e.g. "bosun/session-1" or "bosun/auth"
+	Path     string        // absolute worktree path
+	Ahead    int           // commits ahead of base
+	Dirty    int           // count of tracked-file changes
+	Claimed  int           // count of distinct claimed paths
+	State    State         // WORKING / DONE / STUCK
+	StateMsg string        // optional body of the state file
+	Last     *git.LogEntry // last commit ahead of base (nil if none)
 }
 
 // Derive computes the Session list for repoRoot. It calls into the git
@@ -60,7 +66,10 @@ func Derive(ctx context.Context, c *git.Client, cfg config.Config, repoRoot stri
 		return nil, fmt.Errorf("list worktrees: %w", err)
 	}
 
-	branchRe := regexp.MustCompile(`^refs/heads/` + regexp.QuoteMeta(cfg.SessionPrefix) + `/session-(\d+)$`)
+	// Matches any bosun-managed branch: numeric session-N form or a bare
+	// label. The label charset (lower ASCII, digits, dashes, must start
+	// with a letter) is also enforced on init via ValidateLabel.
+	branchRe := regexp.MustCompile(`^refs/heads/` + regexp.QuoteMeta(cfg.SessionPrefix) + `/([a-z][a-z0-9-]*)$`)
 
 	var result []Session
 	for _, wt := range worktrees {
@@ -68,13 +77,20 @@ func Derive(ctx context.Context, c *git.Client, cfg config.Config, repoRoot stri
 		if m == nil {
 			continue
 		}
-		n, err := strconv.Atoi(m[1])
-		if err != nil || n < 1 {
-			continue
+		label := m[1]
+		// Numbered sessions populate Number; named sessions leave it at 0
+		// (and ParseLabel rejects "session-0"/"session-" forms upstream).
+		number := 0
+		if rest, ok := strings.CutPrefix(label, "session-"); ok {
+			if n, err := strconv.Atoi(rest); err == nil && n >= 1 {
+				number = n
+			} else {
+				// "session-foo" or "session-0" — not a bosun-managed branch.
+				continue
+			}
 		}
-
-		name := cfg.SessionName(n)
-		branch := cfg.BranchFor(n)
+		name := label
+		branch := cfg.BranchForLabel(label)
 
 		ahead, err := c.RevListCount(ctx, wt.Path, cfg.BaseBranch)
 		if err != nil {
@@ -102,8 +118,9 @@ func Derive(ctx context.Context, c *git.Client, cfg config.Config, repoRoot stri
 		}
 
 		result = append(result, Session{
-			Number:   n,
+			Number:   number,
 			Name:     name,
+			Label:    label,
 			Branch:   branch,
 			Path:     wt.Path,
 			Ahead:    ahead,
@@ -115,12 +132,25 @@ func Derive(ctx context.Context, c *git.Client, cfg config.Config, repoRoot stri
 		})
 	}
 
-	sort.Slice(result, func(i, j int) bool { return result[i].Number < result[j].Number })
+	// Numeric sessions sort by number; named sessions land after numerics in
+	// label-alphabetical order so the operator gets a stable, scannable list.
+	sort.SliceStable(result, func(i, j int) bool {
+		if result[i].Number != 0 && result[j].Number != 0 {
+			return result[i].Number < result[j].Number
+		}
+		if result[i].Number != 0 {
+			return true
+		}
+		if result[j].Number != 0 {
+			return false
+		}
+		return result[i].Label < result[j].Label
+	})
 	return result, nil
 }
 
 // ParseName accepts either "session-N" or "N" and returns the integer N.
-// Returns an error on anything else.
+// Returns an error on anything else — named labels go through ParseLabel.
 func ParseName(s string) (int, error) {
 	s = strings.TrimSpace(s)
 	if strings.HasPrefix(s, "session-") {
@@ -133,11 +163,67 @@ func ParseName(s string) (int, error) {
 	return n, nil
 }
 
-// WorktreePath returns the canonical worktree path for session N relative to
-// the repo's parent dir. Example: WorktreePath("/code/myproj", cfg, 3) =>
-// "/code/myproj-bosun-3".
+// labelRe matches valid bosun session labels: lowercase ASCII, digits, and
+// dashes; must start with a letter. Same charset as the brief headingRe.
+var labelRe = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
+
+// ValidateLabel returns nil if s is a valid bosun label. Used at init time
+// to reject malformed named-session args before any branches are created.
+func ValidateLabel(s string) error {
+	if !labelRe.MatchString(s) {
+		return fmt.Errorf("invalid session label %q (want lowercase letters/digits/dashes, starting with a letter)", s)
+	}
+	return nil
+}
+
+// ParseLabel canonicalizes a session reference into its label form. It
+// accepts numeric input ("3" → "session-3"), the "session-N" form
+// (unchanged), or a bare label ("auth" → "auth"). Returns an error only
+// for empty input or strings that don't match the label charset.
+func ParseLabel(s string) (string, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", fmt.Errorf("invalid session reference %q (empty)", s)
+	}
+	// Numeric ("3") → "session-3". A bare integer always means the numeric
+	// session form; callers preserving numeric behavior route through
+	// ParseName, which rejects everything else.
+	if n, err := strconv.Atoi(s); err == nil {
+		if n < 1 {
+			return "", fmt.Errorf("invalid session reference %q (want N >= 1 or a label)", s)
+		}
+		return fmt.Sprintf("session-%d", n), nil
+	}
+	if err := ValidateLabel(s); err != nil {
+		return "", err
+	}
+	return s, nil
+}
+
+// IsNumericLabel reports whether label is the "session-N" form. Callers
+// that need to switch behavior between numeric and named sessions (e.g.
+// cleanup --orphans) use this rather than re-parsing the label themselves.
+func IsNumericLabel(label string) bool {
+	if rest, ok := strings.CutPrefix(label, "session-"); ok {
+		n, err := strconv.Atoi(rest)
+		return err == nil && n >= 1
+	}
+	return false
+}
+
+// WorktreePath returns the canonical worktree path for numeric session N
+// relative to the repo's parent dir.
+// Example: WorktreePath("/code/myproj", cfg, 3) => "/code/myproj-bosun-3".
 func WorktreePath(repoRoot string, cfg config.Config, n int) string {
+	return WorktreePathForLabel(repoRoot, cfg, cfg.SessionName(n))
+}
+
+// WorktreePathForLabel returns the canonical worktree path for a session
+// label. Numeric ("session-3") and named ("auth") labels share the same
+// computation — only the suffix differs.
+// Example: WorktreePathForLabel("/code/myproj", cfg, "auth") => "/code/myproj-bosun-auth".
+func WorktreePathForLabel(repoRoot string, cfg config.Config, label string) string {
 	parent := filepath.Dir(repoRoot)
 	base := filepath.Base(repoRoot)
-	return filepath.Join(parent, base+cfg.WorktreeSuffix(n))
+	return filepath.Join(parent, base+cfg.WorktreeSuffixForLabel(label))
 }

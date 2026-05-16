@@ -17,12 +17,13 @@ const archivedPlanRelative = ".bosun/briefs/plan.last.md"
 
 // Brief is the parsed body for a single session.
 type Brief struct {
-	Session int    // 1-based
+	Session int    // 1-based; 0 for named-session briefs
+	Label   string // canonical session label: "session-1" or "auth"
 	Body    string // verbatim markdown between this heading and the next
-	// Depends lists session numbers this brief depends on, parsed from
-	// the optional `(depends: session-1, session-3)` clause on the
-	// heading line. Empty when no clause was given.
-	Depends []int
+	// Depends lists session labels this brief depends on, parsed from
+	// the optional `(depends: session-1, auth)` clause on the heading
+	// line. Empty when no clause was given.
+	Depends []string
 }
 
 // Parse reads a plan markdown file and returns a Brief for every `## session-N`
@@ -37,13 +38,14 @@ func Parse(path string) ([]Brief, error) {
 	return parseContent(string(data)), nil
 }
 
-// headingRe captures the session number and an optional depends clause.
+// headingRe captures the session label (either `session-N` or a bare name
+// matching the bosun label charset) and an optional depends clause.
 // Match groups:
 //
-//	1: session number
+//	1: session label (e.g. "session-3" or "auth")
 //	2: full "(depends: …)" clause including the parens
 //	3: just the comma-separated body inside the parens
-var headingRe = regexp.MustCompile(`(?mi)^##\s+session-(\d+)(\s*\(depends:\s*([^)]+)\))?\s*$`)
+var headingRe = regexp.MustCompile(`(?m)^##\s+([a-z][a-z0-9-]*)(\s*\(depends:\s*([^)]+)\))?\s*$`)
 
 func parseContent(s string) []Brief {
 	// Normalize line endings.
@@ -58,7 +60,13 @@ func parseContent(s string) []Brief {
 		if i+1 < len(matches) {
 			end = matches[i+1][0]
 		}
-		n, _ := strconv.Atoi(s[m[2]:m[3]])
+		label := s[m[2]:m[3]]
+		number := 0
+		if rest, ok := strings.CutPrefix(label, "session-"); ok {
+			if n, err := strconv.Atoi(rest); err == nil && n >= 1 {
+				number = n
+			}
+		}
 		// Body starts after the heading line.
 		bodyStart := m[1]
 		for bodyStart < end && s[bodyStart] == '\n' {
@@ -68,37 +76,47 @@ func parseContent(s string) []Brief {
 
 		// m[6]/m[7] frame the comma-separated dependency list (the third
 		// capture group). -1 when the optional clause is absent.
-		var depends []int
+		var depends []string
 		if m[6] >= 0 && m[7] > m[6] {
 			depends = parseDepList(s[m[6]:m[7]])
 		}
 
-		briefs = append(briefs, Brief{Session: n, Body: body, Depends: depends})
+		briefs = append(briefs, Brief{Session: number, Label: label, Body: body, Depends: depends})
 	}
 	return briefs
 }
 
 // parseDepList accepts a comma-separated list of session references
-// ("session-1, session-3" or "1, 3") and returns the integer session
-// numbers in order. Unparseable entries are silently skipped — the
-// parser is lenient because the brief plan is human-authored.
-func parseDepList(s string) []int {
+// ("session-1, auth" or "1, 3") and returns the canonical session labels
+// in order. Unparseable entries are silently skipped — the parser is
+// lenient because the brief plan is human-authored. A bare integer "1"
+// canonicalizes to "session-1".
+func parseDepList(s string) []string {
 	parts := strings.Split(s, ",")
-	out := make([]int, 0, len(parts))
+	out := make([]string, 0, len(parts))
 	for _, p := range parts {
 		p = strings.TrimSpace(p)
-		p = strings.TrimPrefix(p, "session-")
 		if p == "" {
 			continue
 		}
-		n, err := strconv.Atoi(p)
-		if err != nil || n < 1 {
+		// Bare integer → session-N.
+		if n, err := strconv.Atoi(p); err == nil && n >= 1 {
+			out = append(out, fmt.Sprintf("session-%d", n))
 			continue
 		}
-		out = append(out, n)
+		// Otherwise must match the label charset (which is also what
+		// `session-N` matches).
+		if !labelDepRe.MatchString(p) {
+			continue
+		}
+		out = append(out, p)
 	}
 	return out
 }
+
+// labelDepRe matches a bare label or a `session-N` literal as it appears
+// inside a brief's depends clause.
+var labelDepRe = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 
 // WorkflowPreamble is the standard "how to work this session" block prepended
 // to every BOSUN_BRIEF.md. Without it, agents tend to implement the work
@@ -106,7 +124,7 @@ func parseDepList(s string) []int {
 // v0.1 dogfood session where 3 of 4 sessions "finished" but never committed.
 //
 // Placeholders substituted at write time:
-//   {N}          → the session number
+//   {label}      → the session label (e.g. "session-1" or "auth")
 //   {verifyCmd}  → the verification command (default `make check`; override
 //                  via .bosun/config.json `verify_cmd` so non-bosun projects
 //                  can use their own target like `make test` or `go test ./...`)
@@ -115,8 +133,8 @@ const WorkflowPreamble = "## How to work this session\n\n" +
 	"2. Implement the work. Keep changes minimal; don't refactor adjacent code.\n" +
 	"3. Run `{verifyCmd}` from the worktree root to validate.\n" +
 	"4. Stage and commit: `git add . && git commit -m \"...\"` — descriptive message.\n" +
-	"5. Declare what you touched: `bosun claim session-{N} <paths...>` (run from this worktree).\n" +
-	"6. Mark ready to merge: `bosun done session-{N} -m \"summary\"`.\n\n" +
+	"5. Declare what you touched: `bosun claim {label} <paths...>` (run from this worktree).\n" +
+	"6. Mark ready to merge: `bosun done {label} -m \"summary\"`.\n\n" +
 	"Steps 3–6 are not optional — bosun won't squash-merge your work until you've\n" +
 	"committed AND marked the session done. The operator monitors progress via\n" +
 	"`bosun status` so the **DONE** signal is how they know you're finished.\n\n" +
@@ -128,6 +146,16 @@ const WorkflowPreamble = "## How to work this session\n\n" +
 	"server is unreachable.\n\n" +
 	"---\n\n"
 
+// briefLabel returns the canonical label for a Brief, falling back to the
+// numbered form when only Session is set (older callers that don't yet
+// populate Label).
+func briefLabel(b Brief) string {
+	if b.Label != "" {
+		return b.Label
+	}
+	return fmt.Sprintf("session-%d", b.Session)
+}
+
 // WriteToWorktree writes the brief body as BOSUN_BRIEF.md into worktreePath,
 // prefixed by the standard workflow preamble. verifyCmd is substituted into
 // the preamble's "run this to validate" step; pass an empty string to use
@@ -138,19 +166,16 @@ func WriteToWorktree(worktreePath string, b Brief, verifyCmd string) error {
 	if verifyCmd == "" {
 		verifyCmd = "make check"
 	}
+	label := briefLabel(b)
 	target := filepath.Join(worktreePath, "BOSUN_BRIEF.md")
-	header := fmt.Sprintf("# Bosun brief — session-%d\n\n", b.Session)
-	preamble := strings.ReplaceAll(WorkflowPreamble, "{N}", fmt.Sprintf("%d", b.Session))
+	header := fmt.Sprintf("# Bosun brief — %s\n\n", label)
+	preamble := strings.ReplaceAll(WorkflowPreamble, "{label}", label)
 	preamble = strings.ReplaceAll(preamble, "{verifyCmd}", verifyCmd)
 
 	var depsBlock string
 	if len(b.Depends) > 0 {
-		names := make([]string, len(b.Depends))
-		for i, d := range b.Depends {
-			names[i] = fmt.Sprintf("session-%d", d)
-		}
 		depsBlock = "## Depends on\n\n" +
-			strings.Join(names, ", ") + "\n\n" +
+			strings.Join(b.Depends, ", ") + "\n\n" +
 			"`bosun merge` will hold this session until its dependencies " +
 			"are merged. Don't start touching paths another session owns; " +
 			"use `bosun_check` to verify before editing.\n\n"
@@ -163,16 +188,17 @@ func WriteToWorktree(worktreePath string, b Brief, verifyCmd string) error {
 // WriteSessionPointer writes .claude/CLAUDE.md inside worktreePath. Claude
 // Code reads that file automatically at session start, so it acts as an
 // auto-loader that points the agent at BOSUN_BRIEF.md even when --launch
-// wasn't used and no --initial-prompt was passed.
-func WriteSessionPointer(worktreePath string, session int) error {
+// wasn't used and no --initial-prompt was passed. label is the session
+// label ("session-1" or "auth") rendered into the pointer text.
+func WriteSessionPointer(worktreePath string, label string) error {
 	dir := filepath.Join(worktreePath, ".claude")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", dir, err)
 	}
-	content := fmt.Sprintf("**You're in a bosun-managed worktree (session-%d).**\n\n"+
+	content := fmt.Sprintf("**You're in a bosun-managed worktree (%s).**\n\n"+
 		"Your assignment is in `BOSUN_BRIEF.md` at the worktree root. Read it\n"+
 		"first. The brief explains the bosun lifecycle (commit → claim → done)\n"+
-		"you should follow when ready to hand off.\n", session)
+		"you should follow when ready to hand off.\n", label)
 	return os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte(content), 0o644)
 }
 
@@ -190,7 +216,9 @@ func ArchivePlan(repoRoot, planPath string) error {
 	return os.WriteFile(dest, data, 0o644)
 }
 
-// LookupBrief returns the brief for session n, or nil if not present.
+// LookupBrief returns the brief for numeric session n, or nil if not present.
+// Kept for backwards compat with numeric-only callers; named-session callers
+// should use LookupBriefByLabel.
 func LookupBrief(briefs []Brief, n int) *Brief {
 	for i := range briefs {
 		if briefs[i].Session == n {
@@ -200,24 +228,35 @@ func LookupBrief(briefs []Brief, n int) *Brief {
 	return nil
 }
 
-// LoadArchivedDeps returns a session-number → dependency-numbers map by
+// LookupBriefByLabel returns the brief whose canonical label matches, or nil
+// if not present.
+func LookupBriefByLabel(briefs []Brief, label string) *Brief {
+	for i := range briefs {
+		if briefLabel(briefs[i]) == label {
+			return &briefs[i]
+		}
+	}
+	return nil
+}
+
+// LoadArchivedDeps returns a session-label → dependency-labels map by
 // re-parsing the archived plan at .bosun/briefs/plan.last.md. A missing
 // or unparseable plan returns an empty map with no error — bosun merge's
 // caller treats "no deps known" the same as "no deps declared."
-func LoadArchivedDeps(repoRoot string) (map[int][]int, error) {
+func LoadArchivedDeps(repoRoot string) (map[string][]string, error) {
 	plan := filepath.Join(repoRoot, archivedPlanRelative)
 	data, err := os.ReadFile(plan)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return map[int][]int{}, nil
+			return map[string][]string{}, nil
 		}
 		return nil, fmt.Errorf("read archived plan %s: %w", plan, err)
 	}
 	briefs := parseContent(string(data))
-	out := make(map[int][]int, len(briefs))
+	out := make(map[string][]string, len(briefs))
 	for _, b := range briefs {
 		if len(b.Depends) > 0 {
-			out[b.Session] = append([]int(nil), b.Depends...)
+			out[briefLabel(b)] = append([]string(nil), b.Depends...)
 		}
 	}
 	return out, nil

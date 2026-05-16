@@ -95,13 +95,16 @@ func TestServer_DoneToolForce(t *testing.T) {
 
 // TestServer_DoneToolBadSession surfaces parse errors as IsError instead of
 // transport failures. Callers (agents) need a structured error to recover.
+// "Not-A-Session" violates the lowercase label charset, so ParseLabel rejects
+// it. Without this guard, force=true would silently MarkDone an arbitrary
+// session-name string and never surface the typo to the agent.
 func TestServer_DoneToolBadSession(t *testing.T) {
 	session := startInProcServer(t, t.TempDir(), nil)
 
 	result, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
 		Name: "bosun_done",
 		Arguments: map[string]any{
-			"session": "not-a-session",
+			"session": "Not-A-Session",
 			"force":   true,
 		},
 	})

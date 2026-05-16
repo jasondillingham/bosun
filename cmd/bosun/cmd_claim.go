@@ -22,20 +22,19 @@ func runClaim(cmd *cobra.Command, sessionArg string, paths []string) error {
 	if err != nil {
 		return err
 	}
-	n, err := session.ParseName(sessionArg)
+	label, err := session.ParseLabel(sessionArg)
 	if err != nil {
 		return userErr("%v", err)
 	}
-	name := rc.cfg.SessionName(n)
 
-	if err := rc.claims.Add(name, paths); err != nil {
+	if err := rc.claims.Add(label, paths); err != nil {
 		return internalErr("write claims", err)
 	}
-	c, _ := rc.claims.Read(name)
+	c, _ := rc.claims.Read(label)
 	count := 0
 	if c != nil {
 		count = len(c.Paths)
 	}
-	printf("bosun: %s now claims %d path(s)\n", name, count)
+	printf("bosun: %s now claims %d path(s)\n", label, count)
 	return nil
 }

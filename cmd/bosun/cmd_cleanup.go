@@ -120,11 +120,18 @@ func planCleanup(sessions []session.Session, opts cleanupOpts, isSquashed squash
 
 // filterOrphans returns only those sessions whose number is greater than
 // keep — the sessions that should not exist after the operator's most
-// recent `bosun init`. Caller-supplied keep < 0 is treated as a usage
-// error upstream; here we trust it's non-negative.
+// recent `bosun init N`. Named sessions (Number == 0) are passed through
+// untouched: --orphans is a numeric-mode concept ("trim the trailing
+// numbered sessions"), so when a named session co-exists with numbered
+// ones we leave it alone unless the operator removes it explicitly.
+// Caller-supplied keep < 0 is treated as a usage error upstream; here we
+// trust it's non-negative.
 func filterOrphans(sessions []session.Session, keep int) []session.Session {
 	out := make([]session.Session, 0, len(sessions))
 	for _, s := range sessions {
+		if s.Number == 0 {
+			continue
+		}
 		if s.Number > keep {
 			out = append(out, s)
 		}

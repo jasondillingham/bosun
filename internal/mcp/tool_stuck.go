@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/jasondillingham/bosun/internal/config"
 	"github.com/jasondillingham/bosun/internal/session"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -30,21 +29,16 @@ type StuckResult struct {
 }
 
 func (s *Server) toolStuck(_ context.Context, _ *mcp.CallToolRequest, args StuckArgs) (*mcp.CallToolResult, StuckResult, error) {
-	n, err := session.ParseName(args.Session)
+	label, err := session.ParseLabel(args.Session)
 	if err != nil {
 		return errResult(err), StuckResult{}, nil
 	}
-	cfg, err := config.Load(s.state.RepoRoot())
-	if err != nil {
-		return errResult(fmt.Errorf("load config: %w", err)), StuckResult{}, nil
-	}
-	name := cfg.SessionName(n)
 
-	if err := s.state.MarkStuck(name, args.Message); err != nil {
+	if err := s.state.MarkStuck(label, args.Message); err != nil {
 		return errResult(fmt.Errorf("mark stuck: %w", err)), StuckResult{}, nil
 	}
 
-	summary := fmt.Sprintf("%s marked STUCK", name)
+	summary := fmt.Sprintf("%s marked STUCK", label)
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{&mcp.TextContent{Text: summary}},
 	}, StuckResult{State: string(session.StateStuck)}, nil

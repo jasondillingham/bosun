@@ -117,13 +117,35 @@ func (c Config) Validate() error {
 // WorktreeSuffix substitutes the session number into the configured pattern.
 // Example: WorktreeSuffix(3) => "-bosun-3" with the default pattern.
 func (c Config) WorktreeSuffix(n int) string {
-	return strings.ReplaceAll(c.WorktreeSuffixPattern, "{N}", fmt.Sprintf("%d", n))
+	return c.WorktreeSuffixForLabel(fmt.Sprintf("%d", n))
 }
 
-// BranchFor returns the bosun branch name for session N.
+// WorktreeSuffixForLabel substitutes a session label into the configured
+// pattern. `{N}` accepts either form: a bare integer ("3") substitutes
+// directly; a "session-N" label substitutes just the integer to stay
+// byte-identical with the v0.1 numeric form; any other label substitutes
+// the whole label (e.g. "auth" → "-bosun-auth").
+func (c Config) WorktreeSuffixForLabel(label string) string {
+	sub := label
+	if rest, ok := strings.CutPrefix(label, "session-"); ok {
+		// Strip the "session-" prefix so a "session-3" label still
+		// produces "-bosun-3" rather than "-bosun-session-3" — keeping
+		// numeric-mode paths byte-identical with v0.1.
+		sub = rest
+	}
+	return strings.ReplaceAll(c.WorktreeSuffixPattern, "{N}", sub)
+}
+
+// BranchFor returns the bosun branch name for numeric session N.
 // Example: BranchFor(2) => "bosun/session-2".
 func (c Config) BranchFor(n int) string {
-	return fmt.Sprintf("%s/session-%d", c.SessionPrefix, n)
+	return c.BranchForLabel(c.SessionName(n))
+}
+
+// BranchForLabel returns the bosun branch name for a session label.
+// Example: BranchForLabel("auth") => "bosun/auth".
+func (c Config) BranchForLabel(label string) string {
+	return c.SessionPrefix + "/" + label
 }
 
 // SessionName returns the short session name for N: "session-N".

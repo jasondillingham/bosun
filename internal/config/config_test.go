@@ -135,3 +135,46 @@ func TestSuffixAndBranch(t *testing.T) {
 		t.Errorf("SessionName(2) = %q", got)
 	}
 }
+
+func TestBranchForLabel(t *testing.T) {
+	c := Defaults()
+	cases := map[string]string{
+		"auth":      "bosun/auth",
+		"session-2": "bosun/session-2",
+		"http":      "bosun/http",
+	}
+	for label, want := range cases {
+		if got := c.BranchForLabel(label); got != want {
+			t.Errorf("BranchForLabel(%q) = %q, want %q", label, got, want)
+		}
+	}
+}
+
+func TestWorktreeSuffixForLabel(t *testing.T) {
+	c := Defaults()
+	cases := map[string]string{
+		"auth":      "-bosun-auth",
+		"3":         "-bosun-3",
+		"http":      "-bosun-http",
+		"session-3": "-bosun-3", // "session-N" labels collapse to N for byte-identical numeric paths
+		"session-1": "-bosun-1",
+	}
+	for label, want := range cases {
+		if got := c.WorktreeSuffixForLabel(label); got != want {
+			t.Errorf("WorktreeSuffixForLabel(%q) = %q, want %q", label, got, want)
+		}
+	}
+	// BranchFor(n) must equal BranchForLabel(SessionName(n)) — the wrapper
+	// contract that keeps numeric callers byte-identical.
+	if c.BranchFor(5) != c.BranchForLabel(c.SessionName(5)) {
+		t.Errorf("BranchFor wrapper drifted from BranchForLabel(SessionName)")
+	}
+	// Both forms must produce the same suffix for numeric sessions so
+	// existing worktrees on disk keep their paths after the refactor.
+	if c.WorktreeSuffix(4) != c.WorktreeSuffixForLabel("session-4") {
+		t.Errorf("WorktreeSuffix wrapper drifted from WorktreeSuffixForLabel(session-N)")
+	}
+	if c.WorktreeSuffix(4) != c.WorktreeSuffixForLabel("4") {
+		t.Errorf("WorktreeSuffix wrapper drifted from WorktreeSuffixForLabel(N)")
+	}
+}

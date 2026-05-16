@@ -101,17 +101,17 @@ func tuiMergeAllReady(rc *runCtx) ([]control.ActionResult, error) {
 		return nil, internalErr("load archived deps", err)
 	}
 	sessions = topoOrderForMerge(sessions, depMap)
-	mergedThisRun := make(map[int]bool, len(sessions))
+	mergedThisRun := make(map[string]bool, len(sessions))
 
 	var results []control.ActionResult
 	for _, s := range sessions {
 		if s.State != session.StateDone {
 			continue
 		}
-		if blocker, ok := blockingDep(s.Number, depMap, sessions, mergedThisRun, rc); ok {
+		if blocker, ok := blockingDep(s.Label, depMap, sessions, mergedThisRun, rc); ok {
 			results = append(results, control.ActionResult{
 				Session: s.Name, Status: mergeStatusSkipped,
-				Reason: fmt.Sprintf("depends on session-%d", blocker),
+				Reason: fmt.Sprintf("depends on %s", blocker),
 			})
 			continue
 		}
@@ -123,7 +123,7 @@ func tuiMergeAllReady(rc *runCtx) ([]control.ActionResult, error) {
 			Session: s.Name, Status: statusStr, Reason: reason,
 		})
 		if statusStr == mergeStatusMerged {
-			mergedThisRun[s.Number] = true
+			mergedThisRun[s.Label] = true
 		}
 		if statusStr == mergeStatusConflict {
 			break

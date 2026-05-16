@@ -82,6 +82,9 @@ func runMerge(cmd *cobra.Command, args []string, opts mergeOpts) error {
 	if err != nil {
 		return internalErr("load archived deps", err)
 	}
+	if cycle := brief.FindDependencyCycle(depMap); cycle != nil {
+		return userErr("dependency cycle detected: %s — edit the plan, run `bosun init`, then retry", strings.Join(cycle, " → "))
+	}
 	sessions = topoOrderForMerge(sessions, depMap)
 	mergedThisRun := make(map[string]bool, len(sessions))
 
@@ -249,10 +252,9 @@ func isMergeConflict(err error) bool {
 
 // topoOrderForMerge returns sessions reordered so that any session listed
 // as a dependency of another comes first. Sessions outside the dep graph
-// keep their original (numeric/named) position. Cycles fall back to the
-// input order — bosun merge will still skip dependent sessions until their
-// blockers clear, so a cycle just means none of the cyclic group can
-// progress, which the operator will see in the output.
+// keep their original (numeric/named) position. Callers must run
+// brief.FindDependencyCycle first — this function assumes an acyclic
+// dep graph and silently falls back to input order if one exists.
 func topoOrderForMerge(sessions []session.Session, depMap map[string][]string) []session.Session {
 	if len(depMap) == 0 {
 		return sessions

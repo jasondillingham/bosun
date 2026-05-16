@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/jasondillingham/bosun/internal/brief"
@@ -99,6 +100,9 @@ func tuiMergeAllReady(rc *runCtx) ([]control.ActionResult, error) {
 	depMap, err := brief.LoadArchivedDeps(rc.repoRoot)
 	if err != nil {
 		return nil, internalErr("load archived deps", err)
+	}
+	if cycle := brief.FindDependencyCycle(depMap); cycle != nil {
+		return nil, userErr("dependency cycle detected: %s — edit the plan, run `bosun init`, then retry", strings.Join(cycle, " → "))
 	}
 	sessions = topoOrderForMerge(sessions, depMap)
 	mergedThisRun := make(map[string]bool, len(sessions))

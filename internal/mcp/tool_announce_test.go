@@ -120,6 +120,35 @@ func TestAnnounce_RejectsEmptyMessage(t *testing.T) {
 	}
 }
 
+func TestAnnounce_RejectsOversizedMessage(t *testing.T) {
+	// A runaway agent dumping a diff into the events log would blow past
+	// 4KB easily and choke `bosun status`'s recent-events tail. Reject
+	// loudly so the agent learns to summarize.
+	ResetEventsForTest()
+	t.Cleanup(ResetEventsForTest)
+
+	_, sess, cancel := newPipedSession(t)
+	defer cancel()
+
+	huge := make([]byte, maxAnnounceMessageBytes+1)
+	for i := range huge {
+		huge[i] = 'a'
+	}
+	result, err := sess.CallTool(context.Background(), &mcpsdk.CallToolParams{
+		Name: "bosun_announce",
+		Arguments: map[string]any{
+			"session": "session-1",
+			"message": string(huge),
+		},
+	})
+	if err == nil && !result.IsError {
+		t.Fatalf("oversized message should be rejected, got %+v", result)
+	}
+	if len(Recent(5)) != 0 {
+		t.Errorf("buffer should remain empty when message is rejected")
+	}
+}
+
 func TestAnnounce_AdvertisesTool(t *testing.T) {
 	ResetEventsForTest()
 	t.Cleanup(ResetEventsForTest)

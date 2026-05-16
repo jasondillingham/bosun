@@ -348,6 +348,209 @@ last
 	}
 }
 
+func TestValidateBriefs(t *testing.T) {
+	cases := []struct {
+		name    string
+		briefs  []Brief
+		wantErr string // substring of expected error; "" = expect nil
+	}{
+		{
+			name:    "no headings is fine",
+			briefs:  nil,
+			wantErr: "",
+		},
+		{
+			name:    "single numeric session ok",
+			briefs:  []Brief{{Session: 1, Label: "session-1"}},
+			wantErr: "",
+		},
+		{
+			name:    "single named session ok",
+			briefs:  []Brief{{Label: "auth"}},
+			wantErr: "",
+		},
+		{
+			name: "duplicate numeric heading rejected",
+			briefs: []Brief{
+				{Session: 1, Label: "session-1", Body: "first"},
+				{Session: 1, Label: "session-1", Body: "second"},
+			},
+			wantErr: `duplicate session heading "session-1"`,
+		},
+		{
+			name: "duplicate named heading rejected",
+			briefs: []Brief{
+				{Label: "auth", Body: "first"},
+				{Label: "auth", Body: "second"},
+			},
+			wantErr: `duplicate session heading "auth"`,
+		},
+		{
+			name:    "session-0 rejected",
+			briefs:  []Brief{{Session: 0, Label: "session-0", Body: "should not exist"}},
+			wantErr: "session-0",
+		},
+		{
+			name: "self-dependency rejected (named)",
+			briefs: []Brief{
+				{Label: "auth", Depends: []string{"auth"}},
+			},
+			wantErr: `"auth" depends on itself`,
+		},
+		{
+			name: "self-dependency rejected (numeric)",
+			briefs: []Brief{
+				{Session: 1, Label: "session-1", Depends: []string{"session-1"}},
+			},
+			wantErr: `"session-1" depends on itself`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateBriefs(tc.briefs)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("ValidateBriefs returned %v, want nil", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("ValidateBriefs returned nil, want error containing %q", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("ValidateBriefs error = %q, want substring %q", err.Error(), tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestParse_RejectsDuplicateHeadings(t *testing.T) {
+	dir := t.TempDir()
+	plan := filepath.Join(dir, "plan.md")
+	if err := os.WriteFile(plan, []byte("## session-1\nfirst\n\n## session-1\nsecond\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Parse(plan); err == nil {
+		t.Fatal("expected error for duplicate ## session-1 headings, got nil")
+	}
+}
+
+func TestParse_RejectsSessionZero(t *testing.T) {
+	dir := t.TempDir()
+	plan := filepath.Join(dir, "plan.md")
+	if err := os.WriteFile(plan, []byte("## session-0\noops\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Parse(plan); err == nil {
+		t.Fatal("expected error for ## session-0, got nil")
+	}
+}
+
+func TestParse_RejectsSelfDependency(t *testing.T) {
+	dir := t.TempDir()
+	plan := filepath.Join(dir, "plan.md")
+	if err := os.WriteFile(plan, []byte("## session-1 (depends: session-1)\noops\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Parse(plan); err == nil {
+		t.Fatal("expected error for self-dependency, got nil")
+	}
+}
+
+func TestParse_RejectsMultiStepCycle(t *testing.T) {
+	// session-1 depends on session-2, session-2 depends on session-1: a
+	// cycle the per-brief self-dep check can't catch. Parse must refuse
+	// before init creates worktrees neither side could ever merge.
+	dir := t.TempDir()
+	plan := filepath.Join(dir, "plan.md")
+	body := "## session-1 (depends: session-2)\nfoo\n\n## session-2 (depends: session-1)\nbar\n"
+	if err := os.WriteFile(plan, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Parse(plan)
+	if err == nil {
+		t.Fatal("expected error for multi-step cycle, got nil")
+	}
+	if !strings.Contains(err.Error(), "cycle") {
+		t.Errorf("error should mention 'cycle': %v", err)
+	}
+}
+
+func TestFindDependencyCycle(t *testing.T) {
+	cases := []struct {
+		name      string
+		depMap    map[string][]string
+		wantCycle bool
+		wantHas   []string // substring labels expected in the reported cycle
+	}{
+		{
+			name:      "empty graph",
+			depMap:    map[string][]string{},
+			wantCycle: false,
+		},
+		{
+			name:      "linear chain is acyclic",
+			depMap:    map[string][]string{"c": {"b"}, "b": {"a"}},
+			wantCycle: false,
+		},
+		{
+			name:      "diamond is acyclic",
+			depMap:    map[string][]string{"d": {"b", "c"}, "b": {"a"}, "c": {"a"}},
+			wantCycle: false,
+		},
+		{
+			name:      "two-node cycle detected",
+			depMap:    map[string][]string{"a": {"b"}, "b": {"a"}},
+			wantCycle: true,
+			wantHas:   []string{"a", "b"},
+		},
+		{
+			name:      "three-node cycle detected",
+			depMap:    map[string][]string{"a": {"b"}, "b": {"c"}, "c": {"a"}},
+			wantCycle: true,
+			wantHas:   []string{"a", "b", "c"},
+		},
+		{
+			name:      "cycle outside main chain still found",
+			depMap:    map[string][]string{"root": {"a"}, "a": {"b"}, "b": {"a"}},
+			wantCycle: true,
+			wantHas:   []string{"a", "b"},
+		},
+		{
+			name:      "dep pointing at missing label is not a cycle",
+			depMap:    map[string][]string{"a": {"missing"}},
+			wantCycle: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := FindDependencyCycle(tc.depMap)
+			if tc.wantCycle && got == nil {
+				t.Fatalf("FindDependencyCycle = nil, want a cycle")
+			}
+			if !tc.wantCycle && got != nil {
+				t.Fatalf("FindDependencyCycle = %v, want nil", got)
+			}
+			if !tc.wantCycle {
+				return
+			}
+			// First and last entry are the same (cycle closes back on itself).
+			if len(got) < 3 || got[0] != got[len(got)-1] {
+				t.Errorf("cycle %v should start and end with the same label", got)
+			}
+			seen := map[string]bool{}
+			for _, l := range got {
+				seen[l] = true
+			}
+			for _, want := range tc.wantHas {
+				if !seen[want] {
+					t.Errorf("cycle %v missing expected label %q", got, want)
+				}
+			}
+		})
+	}
+}
+
 func TestLoadArchivedDeps_MissingPlanReturnsEmpty(t *testing.T) {
 	repo := t.TempDir()
 	got, err := LoadArchivedDeps(repo)

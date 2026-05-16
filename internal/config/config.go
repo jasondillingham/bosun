@@ -103,8 +103,24 @@ func (c Config) Validate() error {
 	if c.DefaultSessionCount < 1 {
 		return fmt.Errorf("default_session_count must be ≥ 1, got %d", c.DefaultSessionCount)
 	}
+	if c.SessionPrefix == "" {
+		return fmt.Errorf("session_prefix must not be empty")
+	}
+	if strings.ContainsAny(c.SessionPrefix, "/ \t") {
+		// `/` would collide with the prefix/label separator in branch names
+		// (bosun/<label>); whitespace breaks shell-quoted CLI args downstream.
+		return fmt.Errorf("session_prefix must not contain '/' or whitespace, got %q", c.SessionPrefix)
+	}
 	if !strings.Contains(c.WorktreeSuffixPattern, "{N}") {
 		return fmt.Errorf("worktree_suffix_pattern must contain {N}, got %q", c.WorktreeSuffixPattern)
+	}
+	if strings.HasPrefix(c.WorktreeSuffixPattern, "{N}") {
+		// A pattern starting with {N} (e.g. "{N}" or "{N}-bosun") would yield
+		// a worktree path like ".../myproj3" — collapsed onto repos whose
+		// names happen to end in a digit and impossible to distinguish from
+		// a non-bosun sibling directory. Require at least one literal byte
+		// before the substitution point.
+		return fmt.Errorf("worktree_suffix_pattern must not start with {N}, got %q", c.WorktreeSuffixPattern)
 	}
 	switch c.Launcher {
 	case "auto", "tmux", "terminal", "print":

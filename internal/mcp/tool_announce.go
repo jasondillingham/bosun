@@ -34,6 +34,13 @@ type AnnounceResult struct {
 	Recorded bool `json:"recorded"`
 }
 
+// maxAnnounceMessageBytes caps an announcement's message length. The
+// events log is a JSONL stream the operator greps from a terminal — a
+// runaway 1MB diff dump from an over-eager agent would shove every prior
+// announcement off-screen and bloat .bosun/events.log without bound. 4KB
+// is comfortable for "starting on storage layer", short stack traces, etc.
+const maxAnnounceMessageBytes = 4096
+
 // toolAnnounce implements bosun_announce. Validates the input, normalizes
 // Kind to "info" when blank, and pushes onto the shared events buffer (which
 // also persists to .bosun/events.log when the MCP daemon was started inside
@@ -42,6 +49,9 @@ func (s *Server) toolAnnounce(_ context.Context, _ *mcp.CallToolRequest, args An
 	msg := strings.TrimSpace(args.Message)
 	if msg == "" {
 		return nil, AnnounceResult{}, errors.New("message is required")
+	}
+	if len(msg) > maxAnnounceMessageBytes {
+		return nil, AnnounceResult{}, fmt.Errorf("message length %d exceeds limit %d bytes", len(msg), maxAnnounceMessageBytes)
 	}
 	sess := strings.TrimSpace(args.Session)
 	if sess == "" {

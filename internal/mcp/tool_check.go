@@ -33,10 +33,20 @@ type CheckConflict struct {
 	Sessions []string `json:"sessions" jsonschema:"sessions currently claiming this path"`
 }
 
+// maxCheckPaths caps the number of paths a single bosun_check call may
+// supply. The cost is O(paths × total-claimed-paths) string compares;
+// even at the cap it's microseconds, but rejecting absurd inputs early
+// is friendlier than letting an agent silently send the equivalent of a
+// directory listing.
+const maxCheckPaths = 1024
+
 // toolCheck implements bosun_check. Queries the shared claims store and
 // reports any caller-supplied path that overlaps an existing claim.
 // Overlap rules mirror claims.matches(): equality + directory containment.
 func (s *Server) toolCheck(_ context.Context, _ *mcp.CallToolRequest, args CheckArgs) (*mcp.CallToolResult, CheckResult, error) {
+	if len(args.Paths) > maxCheckPaths {
+		return nil, CheckResult{}, fmt.Errorf("paths length %d exceeds limit %d", len(args.Paths), maxCheckPaths)
+	}
 	all, err := s.claims.All()
 	if err != nil {
 		return nil, CheckResult{}, fmt.Errorf("read claims: %w", err)

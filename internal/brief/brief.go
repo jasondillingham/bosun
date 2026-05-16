@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -30,12 +31,21 @@ type Brief struct {
 // section it contains. The optional `(depends: session-X, session-Y)` clause
 // on a heading sets the session's Depends list — bosun merge honors the
 // order so a dependent session waits until its dependencies are merged.
+//
+// Plan-level errors (duplicate headings, `session-0`, self-dependency) are
+// returned here rather than silently producing a degenerate brief list —
+// init writes one brief per worktree and would otherwise drop the second
+// occurrence on the floor.
 func Parse(path string) ([]Brief, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read brief plan %s: %w", path, err)
 	}
-	return parseContent(string(data)), nil
+	briefs := parseContent(string(data))
+	if err := ValidateBriefs(briefs); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return briefs, nil
 }
 
 // headingRe captures the session label (either `session-N` or a bare name
@@ -115,8 +125,112 @@ func parseDepList(s string) []string {
 }
 
 // labelDepRe matches a bare label or a `session-N` literal as it appears
-// inside a brief's depends clause.
+// inside a brief's depends clause. Looser than the heading-label form so a
+// human-typed `depends: foo` still parses; the dependency target is
+// re-validated when its own heading is checked.
 var labelDepRe = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
+
+// strictLabelRe mirrors session.ValidateLabel's regex — kept inline to
+// avoid a brief → session import. Tightens the brief heading's loose
+// `[a-z][a-z0-9-]*` capture by forbidding trailing dashes and consecutive
+// dashes that result in awkward branch names (`bosun/auth-` etc.).
+var strictLabelRe = regexp.MustCompile(`^[a-z][a-z0-9]*(-[a-z0-9]+)*$`)
+
+// ValidateBriefs reports plan-level errors that parseContent's regex can't
+// catch on its own: duplicate session headings (init writes one brief per
+// worktree — the second silently shadowed the first), `## session-0` (the
+// numeric-session form requires N >= 1; "session-0" would parse as a named
+// session and collide with any real "session-0" label), self-dependencies,
+// and multi-step dependency cycles (`a → b → a`) that would otherwise stall
+// `bosun merge` forever.
+func ValidateBriefs(briefs []Brief) error {
+	seen := make(map[string]struct{}, len(briefs))
+	depMap := make(map[string][]string, len(briefs))
+	for _, b := range briefs {
+		label := briefLabel(b)
+		if label == "session-0" {
+			return fmt.Errorf("invalid heading `## session-0`: numeric sessions start at 1")
+		}
+		if !strictLabelRe.MatchString(label) {
+			return fmt.Errorf("invalid session heading %q (want lowercase letters/digits separated by single dashes, starting with a letter and not ending with a dash)", label)
+		}
+		if _, dup := seen[label]; dup {
+			return fmt.Errorf("duplicate session heading %q: each label may appear once", label)
+		}
+		seen[label] = struct{}{}
+		for _, dep := range b.Depends {
+			if dep == label {
+				return fmt.Errorf("session %q depends on itself", label)
+			}
+		}
+		if len(b.Depends) > 0 {
+			depMap[label] = append([]string(nil), b.Depends...)
+		}
+	}
+	if cycle := FindDependencyCycle(depMap); cycle != nil {
+		return fmt.Errorf("dependency cycle detected: %s", strings.Join(cycle, " → "))
+	}
+	return nil
+}
+
+// FindDependencyCycle returns the labels in the first dependency cycle it
+// finds (starting and ending at the same label so the path reads as
+// `a → b → a`), or nil when the graph is acyclic. Inputs are the
+// label → dependency-labels map produced by Parse / LoadArchivedDeps.
+//
+// Detection is iterative DFS with an on-stack marker — O(V+E) and safe
+// against nodes whose deps point at labels not present in the map.
+func FindDependencyCycle(depMap map[string][]string) []string {
+	if len(depMap) == 0 {
+		return nil
+	}
+	visited := make(map[string]bool)
+	onStack := make(map[string]bool)
+	stack := make([]string, 0, len(depMap))
+
+	// Deterministic iteration order keeps the reported cycle stable across
+	// runs (map iteration would otherwise pick a different starting node
+	// each time and surface a different rotation of the same cycle).
+	roots := make([]string, 0, len(depMap))
+	for label := range depMap {
+		roots = append(roots, label)
+	}
+	sort.Strings(roots)
+
+	var dfs func(label string) []string
+	dfs = func(label string) []string {
+		visited[label] = true
+		onStack[label] = true
+		stack = append(stack, label)
+		for _, dep := range depMap[label] {
+			if onStack[dep] {
+				for i, l := range stack {
+					if l == dep {
+						cycle := append([]string{}, stack[i:]...)
+						return append(cycle, dep)
+					}
+				}
+			}
+			if !visited[dep] {
+				if c := dfs(dep); c != nil {
+					return c
+				}
+			}
+		}
+		onStack[label] = false
+		stack = stack[:len(stack)-1]
+		return nil
+	}
+	for _, label := range roots {
+		if visited[label] {
+			continue
+		}
+		if c := dfs(label); c != nil {
+			return c
+		}
+	}
+	return nil
+}
 
 // WorkflowPreamble is the standard "how to work this session" block prepended
 // to every BOSUN_BRIEF.md. Without it, agents tend to implement the work

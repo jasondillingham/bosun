@@ -1,5 +1,50 @@
 package status
 
+// The JSON output below is the stable contract behind both
+// `bosun status --json` and the web `/api/status` endpoint. Both surfaces
+// share this one payload — anything shipped here ships everywhere a
+// script or dashboard can see it.
+//
+// Schema (v0.1, stable). Top-level object:
+//
+//	{
+//	  "sessions": [ <session>, ... ],   // always present, may be empty
+//	  "overlaps": [ <overlap>, ... ]    // omitted unless requested
+//	}
+//
+// session object (every field present unless marked optional):
+//
+//	name            string  e.g. "session-1" or "auth"
+//	number          int     1-based session number; 0 for named sessions
+//	branch          string  e.g. "bosun/session-1"
+//	path            string  absolute worktree path
+//	state           string  "WORKING" | "DONE" | "STUCK"
+//	ahead           int     commits ahead of base branch
+//	dirty           int     count of uncommitted tracked-file changes
+//	claimed         int     count of distinct claimed paths
+//	running         bool    true when an agent process lives in the worktree
+//	running_pid     int     pid; omitted when running=false (omitempty)
+//	last_sha        string  short SHA of the last commit; omitted when ahead=0
+//	last_subject    string  subject line of the last commit; omitted when ahead=0
+//	last_relative   string  human relative time, e.g. "3 minutes ago"; omitted when ahead=0
+//	last_unix       int64   unix timestamp of the last commit; omitted when ahead=0
+//	state_message   string  body of the .done/.stuck marker file; omitted when blank
+//
+// overlap object:
+//
+//	path      string    repo-relative path claimed by multiple sessions
+//	sessions  []string  session names that claim the path
+//
+// Stability promise:
+//   - Keys and types above will not change within the v0.1 line.
+//   - New fields may be added (additive); consumers should ignore unknown keys.
+//   - `omitempty` keys disappear when zero-valued; a typed-struct consumer
+//     gets the zero value, a raw-map consumer must handle absence. Don't
+//     change a non-omitempty key to omitempty without bumping the version.
+//   - Removing or renaming a key is a breaking change reserved for v0.2+.
+//   - `sessions` order matches session.Derive's sort: numeric sessions
+//     ascend by number, named sessions follow in label-alphabetical order.
+
 import (
 	"encoding/json"
 	"io"
@@ -8,6 +53,8 @@ import (
 	"github.com/jasondillingham/bosun/internal/session"
 )
 
+// sessionJSON is the per-session row in the public payload. Field tags are
+// the stable wire names — see the package doc above before renaming.
 type sessionJSON struct {
 	Name        string `json:"name"`
 	Number      int    `json:"number"`

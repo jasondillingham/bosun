@@ -110,6 +110,12 @@ func TestValidate(t *testing.T) {
 		{"missing {N}", func(c *Config) { c.WorktreeSuffixPattern = "-bosun" }, true},
 		{"unknown launcher", func(c *Config) { c.Launcher = "weird" }, true},
 		{"launcher tmux ok", func(c *Config) { c.Launcher = "tmux" }, false},
+		{"empty session prefix", func(c *Config) { c.SessionPrefix = "" }, true},
+		{"session prefix with slash", func(c *Config) { c.SessionPrefix = "team/bosun" }, true},
+		{"session prefix with space", func(c *Config) { c.SessionPrefix = "team bosun" }, true},
+		{"session prefix with tab", func(c *Config) { c.SessionPrefix = "team\tbosun" }, true},
+		{"suffix starts with {N}", func(c *Config) { c.WorktreeSuffixPattern = "{N}-bosun" }, true},
+		{"suffix is only {N}", func(c *Config) { c.WorktreeSuffixPattern = "{N}" }, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

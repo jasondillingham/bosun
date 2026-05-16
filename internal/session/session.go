@@ -181,15 +181,21 @@ func ParseName(s string) (int, error) {
 	return n, nil
 }
 
-// labelRe matches valid bosun session labels: lowercase ASCII, digits, and
-// dashes; must start with a letter. Same charset as the brief headingRe.
-var labelRe = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
+// labelRe matches valid bosun session labels: lowercase ASCII alphanumerics
+// optionally joined by single dashes. Must start with a letter and may not
+// end with a dash or contain `--`. Branches derived from a label end up in
+// `bosun/<label>`; trailing-dash and consecutive-dash forms are syntactically
+// valid git refs but consistently bite operators (shell tab-completion eats
+// the dash, brief headings ambiguous, no human types them on purpose).
+var labelRe = regexp.MustCompile(`^[a-z][a-z0-9]*(-[a-z0-9]+)*$`)
 
 // ValidateLabel returns nil if s is a valid bosun label. Used at init time
 // to reject malformed named-session args before any branches are created.
+// Also enforced for label-derived heading parsing in the brief package via
+// its own regex (kept in sync deliberately — see internal/brief/brief.go).
 func ValidateLabel(s string) error {
 	if !labelRe.MatchString(s) {
-		return fmt.Errorf("invalid session label %q (want lowercase letters/digits/dashes, starting with a letter)", s)
+		return fmt.Errorf("invalid session label %q (want lowercase letters/digits separated by single dashes, starting with a letter and not ending with a dash)", s)
 	}
 	return nil
 }

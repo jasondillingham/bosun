@@ -28,6 +28,11 @@ type ClaimResult struct {
 	Claimed int `json:"claimed" jsonschema:"total number of paths the session claims after the merge"`
 }
 
+// maxClaimPaths caps the number of paths accepted in a single bosun_claim
+// call. Real briefs touch single-digit path counts; anything above this is
+// almost certainly an agent mistakenly handing the tool a directory listing.
+const maxClaimPaths = 256
+
 // toolClaim implements bosun_claim. Wraps claims.Store.Add — all
 // normalization, dedupe, and merge semantics live in the claims package
 // so the CLI and MCP paths stay byte-identical on disk.
@@ -35,6 +40,20 @@ func (s *Server) toolClaim(_ context.Context, _ *mcp.CallToolRequest, args Claim
 	session := strings.TrimSpace(args.Session)
 	if session == "" {
 		return nil, ClaimResult{}, fmt.Errorf("session is required")
+	}
+	// Count entries that aren't blank-after-trim so a paths=[" "] payload
+	// reports as "no paths" instead of silently no-oping.
+	nonBlank := 0
+	for _, p := range args.Paths {
+		if strings.TrimSpace(p) != "" {
+			nonBlank++
+		}
+	}
+	if nonBlank == 0 {
+		return nil, ClaimResult{}, fmt.Errorf("paths must contain at least one non-empty entry")
+	}
+	if nonBlank > maxClaimPaths {
+		return nil, ClaimResult{}, fmt.Errorf("paths length %d exceeds limit %d", nonBlank, maxClaimPaths)
 	}
 	if err := s.claims.Add(session, args.Paths); err != nil {
 		return nil, ClaimResult{}, fmt.Errorf("add claim: %w", err)

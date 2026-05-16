@@ -92,6 +92,29 @@ func TestServer_ClaimAndRelease(t *testing.T) {
 		t.Fatalf("bosun_release with empty session should report IsError")
 	}
 
+	// --- Case 7: empty paths array is rejected — Add() would have silently
+	// no-op'd, which surfaced no signal that the agent had misformed the
+	// call (saw this round-1 with agents calling claim with paths: []). ---
+	_, isErr = callClaimRaw(t, ctx, session, "session-1", []string{})
+	if !isErr {
+		t.Fatalf("bosun_claim with empty paths array should report IsError")
+	}
+	// All-blank entries collapse to "no paths" too.
+	_, isErr = callClaimRaw(t, ctx, session, "session-1", []string{"", "   "})
+	if !isErr {
+		t.Fatalf("bosun_claim with all-blank paths should report IsError")
+	}
+
+	// --- Case 8: oversized paths array is rejected before we touch disk. ---
+	huge := make([]string, maxClaimPaths+1)
+	for i := range huge {
+		huge[i] = "f.go"
+	}
+	_, isErr = callClaimRaw(t, ctx, session, "session-1", huge)
+	if !isErr {
+		t.Fatalf("bosun_claim with %d paths should report IsError (cap=%d)", len(huge), maxClaimPaths)
+	}
+
 	// Clean shutdown so the server goroutine doesn't leak past the test.
 	session.Close()
 	cancel()

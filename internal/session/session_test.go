@@ -71,11 +71,19 @@ func TestParseLabel(t *testing.T) {
 		{"http-storage", "http-storage", false},
 		{"session-12", "session-12", false},
 		{"", "", true},
+		{"   ", "", true}, // whitespace-only collapses to empty
 		{"0", "", true},
+		{"-1", "", true},                  // negative number
 		{"Auth", "", true},                // uppercase
+		{"AUTH", "", true},                // all caps
+		{"café", "", true},                // unicode
 		{"1auth", "", true},               // mixed digits/letters; must start with letter
 		{"-auth", "", true},               // leading dash
+		{"auth-", "", true},               // trailing dash
+		{"auth--storage", "", true},       // consecutive dashes
+		{"auth_storage", "", true},        // underscore not allowed
 		{"auth!", "", true},               // bang
+		{"session-", "", true},            // numeric-looking but no integer
 		{"session-x", "session-x", false}, // bare label is valid charset; not a numeric session
 	}
 	for _, tc := range cases {
@@ -92,19 +100,30 @@ func TestParseLabel(t *testing.T) {
 }
 
 func TestValidateLabel(t *testing.T) {
-	good := []string{"auth", "http", "storage", "session-1", "a", "auth-2", "a1b2c3"}
-	// Bad list explicitly covers shell-meta characters, non-ASCII letters
-	// (Ωmega), and Windows-illegal filename chars — anything that would
-	// have caused trouble for the filesystem path bosun derives from the
-	// label (`<repo>-bosun-<label>`) is rejected up front.
+	good := []string{"auth", "http", "storage", "session-1", "a", "auth-2", "a1b2c3", "a-b-c"}
+	// Bad list covers structural issues (empty, leading/trailing/consecutive
+	// dashes, bare "session-"), case issues, and shell- or filesystem-hostile
+	// characters that would tangle the derived `<repo>-bosun-<label>` path
+	// or any shell call site downstream.
 	bad := []string{
-		"", "Auth", "1auth", "-auth", "auth!", "auth_storage", "AUTH", "5", "0",
-		"Ωmega",       // non-ASCII letter — would survive on macOS/Linux but tangle git-for-windows
-		"café",   // "café" — same concern
-		"path/with",   // slash — would split into a subdir
-		"path\\with",  // backslash — Windows separator
-		"with space",  // would need quoting in every shell call site
-		"with:colon",  // Windows drive separator
+		"",                 // empty
+		"Auth",             // uppercase
+		"AUTH",             // all caps
+		"1auth",            // starts with digit
+		"-auth",            // leading dash
+		"auth-",            // trailing dash
+		"auth--storage",    // consecutive dashes
+		"session-",         // trailing dash via "session-" prefix
+		"auth!",            // disallowed punctuation
+		"auth_storage",     // underscore
+		"5",                // bare number (route through ParseLabel)
+		"0",
+		"Ωmega",            // non-ASCII letter — survives on macOS/Linux but tangles git-for-windows
+		"café",             // accented — same concern
+		"path/with",        // slash — would split into a subdir
+		"path\\with",       // backslash — Windows separator
+		"with space",       // would need quoting in every shell call site
+		"with:colon",       // Windows drive separator
 		"emoji-\U0001F600", // grinning face — outside the label charset
 	}
 	for _, s := range good {

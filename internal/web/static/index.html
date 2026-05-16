@@ -36,6 +36,9 @@
   }
   th { background: #f3f4f6; font-weight: 600; }
   tr:last-child td { border-bottom: none; }
+  tr.session-row { cursor: pointer; }
+  tr.session-row:hover td { background: #f9fafb; }
+  tr.session-row.selected td { background: #eef2ff; }
   td.num { text-align: right; font-variant-numeric: tabular-nums; }
   td.last { color: var(--muted); }
   .state { font-weight: 600; }
@@ -56,6 +59,39 @@
   .event .session { color: #374151; font-weight: 500; }
   .event .kind { color: var(--accent); font-weight: 600; }
   .empty { color: var(--muted); font-style: italic; padding: 0.4rem 0; }
+
+  .brief {
+    background: var(--card);
+    border-radius: 6px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+    padding: 0.85rem 1rem;
+    font-size: 0.85rem;
+  }
+  .brief .meta {
+    display: flex; flex-wrap: wrap; gap: 0.5rem 1rem;
+    color: var(--muted); margin-bottom: 0.6rem;
+    font-size: 0.82rem;
+  }
+  .brief .meta strong { color: var(--fg); font-weight: 600; }
+  .brief .paths {
+    margin: 0.4rem 0; padding-left: 1.2rem;
+    color: #374151;
+  }
+  .brief .paths li {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.8rem;
+  }
+  .brief pre {
+    background: #f3f4f6;
+    border-radius: 4px;
+    padding: 0.6rem 0.8rem;
+    overflow-x: auto;
+    font-size: 0.78rem;
+    margin: 0.5rem 0 0;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    max-height: 24rem;
+  }
 </style>
 </head>
 <body>
@@ -77,6 +113,9 @@
   <tbody id="rows"><tr><td colspan="7" class="empty">loading&hellip;</td></tr></tbody>
 </table>
 
+<h2>Brief preview</h2>
+<div id="brief" class="brief"><div class="empty">click a session row to preview its brief</div></div>
+
 <h2>Events</h2>
 <div id="events" class="events"><div class="empty">no events yet</div></div>
 
@@ -87,6 +126,11 @@
     });
   }
 
+  // selectedSession is the session label currently open in the brief
+  // preview pane. We re-fetch it on every status refresh so claim counts
+  // and state stay live without the operator clicking again.
+  let selectedSession = null;
+
   async function refresh() {
     try {
       const r = await fetch("/api/status", { cache: "no-store" });
@@ -94,6 +138,9 @@
       render(await r.json());
       document.getElementById("updated").textContent =
         "updated " + new Date().toLocaleTimeString();
+      if (selectedSession) {
+        loadBrief(selectedSession, /*silent*/ true);
+      }
     } catch (e) {
       document.getElementById("updated").textContent = "error: " + e.message;
     }
@@ -111,6 +158,9 @@
     }
     for (const s of sessions) {
       const tr = document.createElement("tr");
+      tr.className = "session-row";
+      if (s.name === selectedSession) tr.classList.add("selected");
+      tr.dataset.session = s.name;
       const last = s.last_subject
         ? `${escapeHTML(s.last_sha || "")} ${escapeHTML(s.last_subject)} <span class="muted">(${escapeHTML(s.last_relative || "")})</span>`
         : "";
@@ -122,8 +172,52 @@
         `<td class="num">${Number(s.dirty) || 0}</td>` +
         `<td class="num">${Number(s.claimed) || 0}</td>` +
         `<td class="last">${last}</td>`;
+      tr.addEventListener("click", () => {
+        selectedSession = s.name;
+        document.querySelectorAll("tr.session-row").forEach((el) => {
+          el.classList.toggle("selected", el.dataset.session === s.name);
+        });
+        loadBrief(s.name, /*silent*/ false);
+      });
       tbody.appendChild(tr);
     }
+  }
+
+  async function loadBrief(name, silent) {
+    const box = document.getElementById("brief");
+    if (!silent) {
+      box.innerHTML = '<div class="empty">loading&hellip;</div>';
+    }
+    try {
+      const r = await fetch("/api/show/" + encodeURIComponent(name), { cache: "no-store" });
+      if (r.status === 404) {
+        box.innerHTML = `<div class="empty">${escapeHTML(name)} not found</div>`;
+        return;
+      }
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      renderBrief(await r.json());
+    } catch (e) {
+      box.innerHTML = `<div class="empty">error: ${escapeHTML(e.message)}</div>`;
+    }
+  }
+
+  function renderBrief(d) {
+    const box = document.getElementById("brief");
+    const meta =
+      `<span><strong>${escapeHTML(d.name || "")}</strong></span>` +
+      `<span>state <strong class="state-${escapeHTML(d.state || "")}">${escapeHTML(d.state || "")}</strong></span>` +
+      `<span>branch <strong>${escapeHTML(d.branch || "")}</strong></span>` +
+      `<span>ahead <strong>${Number(d.ahead) || 0}</strong></span>` +
+      `<span>dirty <strong>${Number(d.dirty) || 0}</strong></span>` +
+      `<span>claimed <strong>${Number(d.claimed) || 0}</strong></span>`;
+    const paths = (d.claimed_paths || []);
+    const pathsHTML = paths.length
+      ? `<ul class="paths">${paths.map((p) => `<li>${escapeHTML(p)}</li>`).join("")}</ul>`
+      : "";
+    const briefBody = d.brief
+      ? `<pre>${escapeHTML(d.brief)}</pre>`
+      : `<div class="empty">no BOSUN_BRIEF.md in worktree</div>`;
+    box.innerHTML = `<div class="meta">${meta}</div>${pathsHTML}${briefBody}`;
   }
 
   const evtsBox = document.getElementById("events");

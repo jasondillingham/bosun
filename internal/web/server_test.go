@@ -72,6 +72,127 @@ func TestServer_RoutesEndToEnd(t *testing.T) {
 	}
 }
 
+// TestServer_Show_Present boots a real Server against a repo with one
+// initialized bosun session, claims a path, writes a BOSUN_BRIEF.md, and
+// proves /api/show/<session> returns the expected JSON: identifying
+// fields from session.Derive plus the brief body and claimed paths the
+// dashboard's preview pane needs.
+func TestServer_Show_Present(t *testing.T) {
+	repo := newTestRepo(t)
+	addBosunSession(t, repo, "session-1")
+
+	// Claim a path so the show payload exercises the claims branch — not
+	// just the empty fallback.
+	store := claims.NewStore(repo)
+	if err := store.Add("session-1", []string{"internal/web/handlers.go"}); err != nil {
+		t.Fatalf("claims.Add: %v", err)
+	}
+
+	// Write a BOSUN_BRIEF.md into the worktree so the brief field has
+	// content to round-trip.
+	cfg, err := config.Load(repo)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	wt := filepath.Join(filepath.Dir(repo), filepath.Base(repo)+cfg.WorktreeSuffixForLabel("session-1"))
+	briefBody := "# Bosun brief — session-1\n\n## Your assignment\n\nDo the thing.\n"
+	if err := os.WriteFile(filepath.Join(wt, "BOSUN_BRIEF.md"), []byte(briefBody), 0o644); err != nil {
+		t.Fatalf("write brief: %v", err)
+	}
+
+	srv := startTestServer(t, repo)
+	body := getOK(t, "http://"+srv.Addr()+"/api/show/session-1")
+
+	var got struct {
+		Name         string   `json:"name"`
+		Branch       string   `json:"branch"`
+		State        string   `json:"state"`
+		Claimed      int      `json:"claimed"`
+		ClaimedPaths []string `json:"claimed_paths"`
+		Brief        string   `json:"brief"`
+	}
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatalf("decode /api/show: %v\nbody=%s", err, body)
+	}
+	if got.Name != "session-1" {
+		t.Errorf("name = %q, want session-1", got.Name)
+	}
+	if got.Branch != "bosun/session-1" {
+		t.Errorf("branch = %q, want bosun/session-1", got.Branch)
+	}
+	if got.State != "WORKING" {
+		t.Errorf("state = %q, want WORKING (default for a session with no marker)", got.State)
+	}
+	if got.Claimed != 1 || len(got.ClaimedPaths) != 1 || got.ClaimedPaths[0] != "internal/web/handlers.go" {
+		t.Errorf("claimed_paths = %v (count=%d), want [internal/web/handlers.go]", got.ClaimedPaths, got.Claimed)
+	}
+	if got.Brief != briefBody {
+		t.Errorf("brief mismatch:\n got: %q\nwant: %q", got.Brief, briefBody)
+	}
+}
+
+// TestServer_Show_Absent proves /api/show/<unknown> returns 404 — the
+// dashboard renders an "unknown session" message rather than a stale
+// preview when this happens, so the status code matters.
+func TestServer_Show_Absent(t *testing.T) {
+	repo := newTestRepo(t)
+	srv := startTestServer(t, repo)
+
+	resp, err := http.Get("http://" + srv.Addr() + "/api/show/session-9")
+	if err != nil {
+		t.Fatalf("GET /api/show/session-9: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("GET /api/show/session-9 = %d, want 404", resp.StatusCode)
+	}
+
+	// A malformed label is a client-side error (400), not a 404 — distinct
+	// status so a script can tell "your input was wrong" from "not here".
+	resp2, err := http.Get("http://" + srv.Addr() + "/api/show/Not-A-Valid-Label")
+	if err != nil {
+		t.Fatalf("GET /api/show/Not-A-Valid-Label: %v", err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusBadRequest {
+		t.Errorf("GET /api/show/Not-A-Valid-Label = %d, want 400", resp2.StatusCode)
+	}
+
+	// Trailing-segment paths shouldn't silently match the first segment.
+	resp3, err := http.Get("http://" + srv.Addr() + "/api/show/session-1/extra")
+	if err != nil {
+		t.Fatalf("GET /api/show/session-1/extra: %v", err)
+	}
+	defer resp3.Body.Close()
+	if resp3.StatusCode != http.StatusNotFound {
+		t.Errorf("GET /api/show/session-1/extra = %d, want 404", resp3.StatusCode)
+	}
+}
+
+// addBosunSession creates a real bosun-style branch + worktree at
+// the canonical `<repo>-bosun-<label>` path so session.Derive surfaces
+// it. Mirrors the steps `bosun init` takes minus the brief writing —
+// tests that need a brief write it explicitly.
+func addBosunSession(t *testing.T, repo, label string) {
+	t.Helper()
+	cfg, err := config.Load(repo)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	branch := cfg.BranchForLabel(label)
+	cmd := exec.Command("git", "branch", branch, "main")
+	cmd.Dir = repo
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git branch %s: %v\n%s", branch, err, out)
+	}
+	worktreePath := filepath.Join(filepath.Dir(repo), filepath.Base(repo)+cfg.WorktreeSuffixForLabel(label))
+	cmd = exec.Command("git", "worktree", "add", worktreePath, branch)
+	cmd.Dir = repo
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git worktree add: %v\n%s", err, out)
+	}
+}
+
 // TestServer_StatusMethodNotAllowed proves the handler rejects non-GET
 // methods rather than silently returning the cached body. Keeps the API
 // boundary tight if someone later turns this into a public-facing service.

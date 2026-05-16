@@ -23,6 +23,13 @@ const (
 	DefaultLauncherStrategy  = "auto"
 	DefaultVerifyCmd         = "make check"
 	ConfigRelativePath       = ".bosun/config.json"
+
+	// Defaults for the suggest assistant (see internal/suggest and
+	// docs/v0.5-suggest-spec.md). Kept here so config and the suggest
+	// package can both reference the same constants.
+	DefaultSuggestModel     = "claude-sonnet-4-6"
+	DefaultSuggestMaxTokens = 8000
+	DefaultSuggestAPIKeyEnv = "ANTHROPIC_API_KEY"
 )
 
 // Config is the resolved bosun config for a repo.
@@ -41,6 +48,23 @@ type Config struct {
 	// Hooks are operator-defined shell commands run at lifecycle moments
 	// (see internal/hooks for the runner and the v0.1 event set).
 	Hooks []hooks.Hook `json:"hooks,omitempty"`
+	// Suggest configures the v0.5 brief-authoring assistant. Read by
+	// internal/suggest and cmd/bosun/cmd_suggest.go.
+	Suggest SuggestConfig `json:"suggest"`
+}
+
+// SuggestConfig configures the brief-authoring assistant (`bosun suggest`).
+// All fields are overridable via CLI flags on the suggest command.
+type SuggestConfig struct {
+	// Model is the Claude model ID used by the proposer. Defaults to
+	// `claude-sonnet-4-6`.
+	Model string `json:"model"`
+	// MaxTokens caps the model's response. Defaults to 8000.
+	MaxTokens int `json:"max_tokens"`
+	// APIKeyEnv names the environment variable holding the Anthropic API
+	// key. Defaults to `ANTHROPIC_API_KEY`. Operators can rename it to
+	// keep multiple keys segregated.
+	APIKeyEnv string `json:"api_key_env"`
 }
 
 // Defaults returns a Config populated with the documented defaults.
@@ -53,6 +77,11 @@ func Defaults() Config {
 		IsolateCacheDefault:   DefaultIsolateCache,
 		Launcher:              DefaultLauncherStrategy,
 		VerifyCmd:             DefaultVerifyCmd,
+		Suggest: SuggestConfig{
+			Model:     DefaultSuggestModel,
+			MaxTokens: DefaultSuggestMaxTokens,
+			APIKeyEnv: DefaultSuggestAPIKeyEnv,
+		},
 	}
 }
 
@@ -98,6 +127,18 @@ func Load(repoRoot string) (Config, error) {
 	cfg.IsolateCacheDefault = overlay.IsolateCacheDefault
 	cfg.Hooks = overlay.Hooks
 
+	// Suggest sub-config: only override individual fields the user set,
+	// so partial config files keep the documented defaults for the rest.
+	if overlay.Suggest.Model != "" {
+		cfg.Suggest.Model = overlay.Suggest.Model
+	}
+	if overlay.Suggest.MaxTokens > 0 {
+		cfg.Suggest.MaxTokens = overlay.Suggest.MaxTokens
+	}
+	if overlay.Suggest.APIKeyEnv != "" {
+		cfg.Suggest.APIKeyEnv = overlay.Suggest.APIKeyEnv
+	}
+
 	if err := cfg.Validate(); err != nil {
 		return cfg, err
 	}
@@ -132,6 +173,9 @@ func (c Config) Validate() error {
 	case "auto", "tmux", "terminal", "print":
 	default:
 		return fmt.Errorf("launcher must be one of auto|tmux|terminal|print, got %q", c.Launcher)
+	}
+	if c.Suggest.MaxTokens < 0 {
+		return fmt.Errorf("suggest.max_tokens must be ≥ 0, got %d", c.Suggest.MaxTokens)
 	}
 	for i, h := range c.Hooks {
 		if !hooks.IsKnownEvent(h.Event) {

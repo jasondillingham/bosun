@@ -20,6 +20,15 @@ func TestDefaults(t *testing.T) {
 	if c.Launcher != "auto" {
 		t.Fatalf("Launcher = %q, want auto", c.Launcher)
 	}
+	if c.Suggest.Model != DefaultSuggestModel {
+		t.Fatalf("Suggest.Model = %q, want %q", c.Suggest.Model, DefaultSuggestModel)
+	}
+	if c.Suggest.MaxTokens != DefaultSuggestMaxTokens {
+		t.Fatalf("Suggest.MaxTokens = %d, want %d", c.Suggest.MaxTokens, DefaultSuggestMaxTokens)
+	}
+	if c.Suggest.APIKeyEnv != DefaultSuggestAPIKeyEnv {
+		t.Fatalf("Suggest.APIKeyEnv = %q, want %q", c.Suggest.APIKeyEnv, DefaultSuggestAPIKeyEnv)
+	}
 	if err := c.Validate(); err != nil {
 		t.Fatalf("Defaults().Validate() = %v", err)
 	}
@@ -86,6 +95,60 @@ func TestLoad_OverridesOnly(t *testing.T) {
 	}
 	if c.Launcher != "auto" {
 		t.Errorf("Launcher overridden unexpectedly: %q", c.Launcher)
+	}
+}
+
+func TestLoad_SuggestOverridesPartial(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".bosun"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Only override the model; max_tokens + api_key_env should keep defaults.
+	data := []byte(`{"suggest":{"model":"claude-opus-4-7"}}`)
+	if err := os.WriteFile(filepath.Join(dir, ".bosun/config.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Suggest.Model != "claude-opus-4-7" {
+		t.Errorf("Suggest.Model = %q, want claude-opus-4-7", c.Suggest.Model)
+	}
+	if c.Suggest.MaxTokens != DefaultSuggestMaxTokens {
+		t.Errorf("Suggest.MaxTokens defaulted lost: %d", c.Suggest.MaxTokens)
+	}
+	if c.Suggest.APIKeyEnv != DefaultSuggestAPIKeyEnv {
+		t.Errorf("Suggest.APIKeyEnv defaulted lost: %q", c.Suggest.APIKeyEnv)
+	}
+}
+
+func TestLoad_SuggestOverridesFull(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".bosun"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte(`{"suggest":{"model":"claude-sonnet-4-6","max_tokens":12000,"api_key_env":"ANTHROPIC_KEY_ALT"}}`)
+	if err := os.WriteFile(filepath.Join(dir, ".bosun/config.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Suggest.MaxTokens != 12000 {
+		t.Errorf("Suggest.MaxTokens = %d, want 12000", c.Suggest.MaxTokens)
+	}
+	if c.Suggest.APIKeyEnv != "ANTHROPIC_KEY_ALT" {
+		t.Errorf("Suggest.APIKeyEnv = %q, want ANTHROPIC_KEY_ALT", c.Suggest.APIKeyEnv)
+	}
+}
+
+func TestValidate_SuggestRejectsNegativeMaxTokens(t *testing.T) {
+	c := Defaults()
+	c.Suggest.MaxTokens = -1
+	if err := c.Validate(); err == nil {
+		t.Fatal("Validate with negative Suggest.MaxTokens should fail")
 	}
 }
 

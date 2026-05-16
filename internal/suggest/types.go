@@ -1,12 +1,18 @@
-// Package suggest builds the structured proposal that `bosun suggest`
-// hands to a model. Phase 1 (this file + inspect.go) gathers a compact
-// snapshot of the repo so the model has shape, recent activity, and
-// dependency hints to reason about without burning input tokens on noise.
+// Package suggest implements bosun's brief-authoring assistant: a repo
+// inspector, a Claude-backed lane proposer, a structural validator, and
+// a markdown templater that together turn a high-level goal into a plan
+// the operator can hand to `bosun init --brief`.
 //
-// The contract is intentionally narrow: RepoIntel is everything a model
-// needs to propose disjoint parallel lanes, JSON-serialized and capped
-// so the prompt stays under budget.
+// This file holds the package contract — the shared types and interfaces
+// every lane in the v0.5 round-1 plan codes against. Per the round plan:
+// the lane that lands first creates this file; later lanes import it.
+// Coordinate via `bosun_check` before changing anything here.
 package suggest
+
+import (
+	"context"
+	"time"
+)
 
 // RepoIntel is the compact snapshot the model receives. Fields are
 // ordered roughly by usefulness to the lane-planning task: language(s)
@@ -18,6 +24,17 @@ package suggest
 // fields are truncated in order (file sample first, then dependencies)
 // when the serialized payload would exceed it.
 type RepoIntel struct {
+	// Root is the absolute path to the repository root. Optional —
+	// callers that don't set it leave it empty; the proposer doesn't
+	// require it, but `bosun suggest --inspect-only` surfaces it for
+	// the operator and session-2's claude-client tests reference it.
+	Root string `json:"root,omitempty"`
+
+	// GeneratedAt is the wall-clock time the snapshot was produced.
+	// Helps reproducibility audits when the same goal yields different
+	// proposals across runs.
+	GeneratedAt time.Time `json:"generated_at,omitempty"`
+
 	// Languages lists the languages detected from manifest presence
 	// (e.g. "go" for go.mod, "node" for package.json). Multi-language
 	// repos return every language detected; ordering is stable
@@ -69,4 +86,36 @@ type ExtCount struct {
 type DirCount struct {
 	Dir   string `json:"dir"`
 	Count int    `json:"count"`
+}
+
+// LaneProposal is the structured output of the proposer — N lanes the
+// operator can review then turn into a plan markdown.
+type LaneProposal struct {
+	Version  string `json:"version"`
+	Goal     string `json:"goal"`
+	Sessions []Lane `json:"sessions"`
+}
+
+// Lane is one proposed session in a LaneProposal.
+type Lane struct {
+	Label      string   `json:"label"`
+	Scope      string   `json:"scope"`
+	OwnedFiles []string `json:"owned_files"`
+	AvoidFiles []string `json:"avoid_files"`
+	DependsOn  []string `json:"depends_on"`
+	Rationale  string   `json:"rationale"`
+	WorkToDo   []string `json:"work_to_do"`
+	Notes      string   `json:"notes"`
+}
+
+// Inspector is the interface CLI wiring depends on. Production
+// implementation lives in inspect.go; tests stub it.
+type Inspector interface {
+	Inspect(repoRoot string) (RepoIntel, error)
+}
+
+// Proposer is the interface CLI wiring depends on. Production
+// implementation lives in claude.go; tests stub it.
+type Proposer interface {
+	Propose(ctx context.Context, goal string, intel RepoIntel, n int) (LaneProposal, error)
 }

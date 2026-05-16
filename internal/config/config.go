@@ -10,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/jasondillingham/bosun/internal/hooks"
 )
 
 const (
@@ -36,6 +38,9 @@ type Config struct {
 	// convention). Projects with different test workflows set this to e.g.
 	// "make test" or "go test ./...".
 	VerifyCmd string `json:"verify_cmd"`
+	// Hooks are operator-defined shell commands run at lifecycle moments
+	// (see internal/hooks for the runner and the v0.1 event set).
+	Hooks []hooks.Hook `json:"hooks,omitempty"`
 }
 
 // Defaults returns a Config populated with the documented defaults.
@@ -91,6 +96,7 @@ func Load(repoRoot string) (Config, error) {
 	}
 	// Bool fields are tri-state-ish; we just adopt the parsed value.
 	cfg.IsolateCacheDefault = overlay.IsolateCacheDefault
+	cfg.Hooks = overlay.Hooks
 
 	if err := cfg.Validate(); err != nil {
 		return cfg, err
@@ -126,6 +132,17 @@ func (c Config) Validate() error {
 	case "auto", "tmux", "terminal", "print":
 	default:
 		return fmt.Errorf("launcher must be one of auto|tmux|terminal|print, got %q", c.Launcher)
+	}
+	for i, h := range c.Hooks {
+		if !hooks.IsKnownEvent(h.Event) {
+			return fmt.Errorf("hooks[%d]: unknown event %q (known: %s)", i, h.Event, strings.Join(hooks.KnownEvents, ", "))
+		}
+		if strings.TrimSpace(h.Command) == "" {
+			return fmt.Errorf("hooks[%d]: command must not be empty", i)
+		}
+		if h.TimeoutSeconds < 0 {
+			return fmt.Errorf("hooks[%d]: timeout_seconds must be ≥ 0, got %d", i, h.TimeoutSeconds)
+		}
 	}
 	return nil
 }

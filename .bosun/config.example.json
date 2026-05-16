@@ -4,5 +4,13 @@
   "worktree_suffix_pattern": "-bosun-{N}",
   "default_session_count": 4,
   "isolate_cache_default": false,
-  "launcher": "auto"
+  "launcher": "auto",
+  "hooks": [
+    {
+      "event": "post-init",
+      "command": "echo \"bosun: created $BOSUN_SESSION_COUNT sessions under $BOSUN_REPO_ROOT\"",
+      "fail_open": true,
+      "timeout_seconds": 30
+    }
+  ]
 }

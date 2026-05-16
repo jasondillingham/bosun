@@ -1,6 +1,9 @@
 package main
 
 import (
+	"strconv"
+
+	"github.com/jasondillingham/bosun/internal/hooks"
 	"github.com/jasondillingham/bosun/internal/session"
 	"github.com/spf13/cobra"
 )
@@ -59,6 +62,7 @@ func runDone(cmd *cobra.Command, sessionArg string, opts doneOpts) error {
 			return internalErr("mark stuck", err)
 		}
 		printf("bosun: %s marked STUCK\n", label)
+		runPostDoneHook(rc, label, "stuck", s.Ahead, opts.message)
 		return nil
 	}
 
@@ -72,7 +76,27 @@ func runDone(cmd *cobra.Command, sessionArg string, opts doneOpts) error {
 		return internalErr("mark done", err)
 	}
 	printf("bosun: %s marked DONE (%d commits ready)\n", label, s.Ahead)
+	runPostDoneHook(rc, label, "done", s.Ahead, opts.message)
 	return nil
+}
+
+// runPostDoneHook fires post-done after the state file has been written.
+// A hard hook failure surfaces as a warning rather than a non-zero exit
+// because the state has already changed; aborting now would leave the
+// operator with an unclear "did the mark land?" question. Hook authors
+// who want to gate on done should use pre-merge once that event lands
+// in v0.2.
+func runPostDoneHook(rc *runCtx, label, status string, ahead int, message string) {
+	env := map[string]string{
+		"BOSUN_REPO_ROOT":     rc.repoRoot,
+		"BOSUN_SESSION_LABEL": label,
+		"BOSUN_DONE_STATUS":   status,
+		"BOSUN_AHEAD_COUNT":   strconv.Itoa(ahead),
+		"BOSUN_DONE_MESSAGE":  message,
+	}
+	if err := hooks.Run(rc.ctx, rc.cfg.Hooks, "post-done", env); err != nil {
+		printf("bosun: warning: post-done hook: %v\n", err)
+	}
 }
 
 // findSessionByLabel returns the session whose Label matches, or nil.

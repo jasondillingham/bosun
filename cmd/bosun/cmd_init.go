@@ -9,6 +9,7 @@ import (
 
 	"github.com/jasondillingham/bosun/internal/brief"
 	"github.com/jasondillingham/bosun/internal/config"
+	"github.com/jasondillingham/bosun/internal/hooks"
 	"github.com/jasondillingham/bosun/internal/launcher"
 	bosunmcp "github.com/jasondillingham/bosun/internal/mcp"
 	"github.com/jasondillingham/bosun/internal/session"
@@ -103,6 +104,17 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 		if len(briefs) == 0 {
 			return userErr("brief %s contains no `## <label>` sections", opts.brief)
 		}
+	}
+
+	// Fire pre-init before any filesystem mutation so the operator hook
+	// can fail-closed to abort a bad run.
+	preEnv := map[string]string{
+		"BOSUN_REPO_ROOT":     rc.repoRoot,
+		"BOSUN_SESSION_COUNT": strconv.Itoa(len(labels)),
+		"BOSUN_BASE_BRANCH":   base,
+	}
+	if err := hooks.Run(rc.ctx, rc.cfg.Hooks, "pre-init", preEnv); err != nil {
+		return userErr("%v", err)
 	}
 
 	// Pre-flight: check for existing worktree paths.
@@ -202,6 +214,19 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 	// Ensure .bosun/ is in .gitignore so we don't accidentally commit it.
 	if err := ensureBosunIgnored(rc.repoRoot); err != nil {
 		fmt.Fprintf(os.Stderr, "bosun: warning: update .gitignore: %v\n", err)
+	}
+
+	// Fire post-init after every worktree exists and every brief is on
+	// disk, but before launching agents — operators wiring this hook
+	// typically want to seed/inspect the worktrees and the launch step is
+	// optional.
+	postEnv := map[string]string{
+		"BOSUN_REPO_ROOT":     rc.repoRoot,
+		"BOSUN_SESSION_COUNT": strconv.Itoa(len(made)),
+		"BOSUN_BASE_BRANCH":   base,
+	}
+	if err := hooks.Run(rc.ctx, rc.cfg.Hooks, "post-init", postEnv); err != nil {
+		return userErr("%v", err)
 	}
 
 	// Print summary.

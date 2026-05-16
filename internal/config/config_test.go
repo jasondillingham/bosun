@@ -3,7 +3,10 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
+
+	"github.com/jasondillingham/bosun/internal/hooks"
 )
 
 func TestDefaults(t *testing.T) {
@@ -28,7 +31,7 @@ func TestLoad_MissingFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load(missing) error: %v", err)
 	}
-	if c != Defaults() {
+	if !reflect.DeepEqual(c, Defaults()) {
 		t.Fatalf("Load(missing) = %+v, want defaults", c)
 	}
 }
@@ -126,6 +129,74 @@ func TestValidate(t *testing.T) {
 				t.Fatalf("Validate() err=%v, wantErr=%v", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestValidate_Hooks(t *testing.T) {
+	cases := []struct {
+		name    string
+		hooks   []hooks.Hook
+		wantErr bool
+	}{
+		{"no hooks", nil, false},
+		{"known event", []hooks.Hook{{Event: "post-init", Command: "echo hi"}}, false},
+		{"all known events", []hooks.Hook{
+			{Event: "pre-init", Command: "true"},
+			{Event: "post-init", Command: "true"},
+			{Event: "post-done", Command: "true"},
+		}, false},
+		{"unknown event", []hooks.Hook{{Event: "pre-merge", Command: "echo"}}, true},
+		{"empty event", []hooks.Hook{{Event: "", Command: "echo"}}, true},
+		{"empty command", []hooks.Hook{{Event: "pre-init", Command: ""}}, true},
+		{"whitespace command", []hooks.Hook{{Event: "pre-init", Command: "   "}}, true},
+		{"negative timeout", []hooks.Hook{{Event: "pre-init", Command: "echo", TimeoutSeconds: -1}}, true},
+		{"zero timeout ok", []hooks.Hook{{Event: "pre-init", Command: "echo", TimeoutSeconds: 0}}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := Defaults()
+			c.Hooks = tc.hooks
+			err := c.Validate()
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("Validate(hooks=%v) err=%v, wantErr=%v", tc.hooks, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestLoad_Hooks(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".bosun"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte(`{"hooks":[{"event":"post-init","command":"echo hi","fail_open":true,"timeout_seconds":5}]}`)
+	if err := os.WriteFile(filepath.Join(dir, ".bosun/config.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(c.Hooks) != 1 {
+		t.Fatalf("len(Hooks) = %d, want 1", len(c.Hooks))
+	}
+	got := c.Hooks[0]
+	if got.Event != "post-init" || got.Command != "echo hi" || !got.FailOpen || got.TimeoutSeconds != 5 {
+		t.Fatalf("Hook parsed wrong: %+v", got)
+	}
+}
+
+func TestLoad_RejectsUnknownHookEvent(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".bosun"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte(`{"hooks":[{"event":"post-merge","command":"echo hi"}]}`)
+	if err := os.WriteFile(filepath.Join(dir, ".bosun/config.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(dir); err == nil {
+		t.Fatal("Load with unknown hook event should fail")
 	}
 }
 

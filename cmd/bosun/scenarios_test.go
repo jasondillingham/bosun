@@ -1734,6 +1734,53 @@ func TestScenario_MergeDryRunNamedSessionTargetsRightBranch(t *testing.T) {
 	}
 }
 
+// --- hooks ---
+
+func TestScenario_PostInitHookSeesBosunEnv(t *testing.T) {
+	// A post-init hook should fire after worktrees + briefs are written
+	// and must see BOSUN_REPO_ROOT and BOSUN_SESSION_COUNT in its env.
+	// This is the contract operators rely on; if it drifts, every
+	// downstream hook breaks silently.
+	s := newScenario(t)
+
+	hookOut := filepath.Join(s.parent, "hook-env.txt")
+	cmdStr := `env | grep -E '^BOSUN_(REPO_ROOT|SESSION_COUNT)=' | sort > ` + shQuote(hookOut)
+
+	cfgBytes, err := json.MarshalIndent(map[string]any{
+		"hooks": []map[string]any{
+			{"event": "post-init", "command": cmdStr},
+		},
+	}, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	s.WriteFile(".bosun/config.json", string(cfgBytes))
+
+	s.Bosun("init", "2")
+
+	data, err := os.ReadFile(hookOut)
+	if err != nil {
+		t.Fatalf("post-init hook did not run (expected output at %s): %v", hookOut, err)
+	}
+	got := string(data)
+	if !strings.Contains(got, "BOSUN_SESSION_COUNT=2\n") {
+		t.Errorf("hook env missing BOSUN_SESSION_COUNT=2; got:\n%s", got)
+	}
+	// EvalSymlinks: macOS resolves /var → /private/var, so the path bosun
+	// reports may not be byte-identical with s.repo.
+	wantRoot, _ := filepath.EvalSymlinks(s.repo)
+	if !strings.Contains(got, "BOSUN_REPO_ROOT="+wantRoot+"\n") {
+		t.Errorf("hook env missing BOSUN_REPO_ROOT=%s; got:\n%s", wantRoot, got)
+	}
+}
+
+// shQuote wraps s in single quotes so it round-trips safely through `sh -c`.
+// Used to embed temp-dir paths in hook command strings without worrying
+// about spaces or shell metacharacters in the test sandbox path.
+func shQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
 // --- helpers (test-local) ---
 
 func readFile(t *testing.T, path string) string {

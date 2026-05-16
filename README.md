@@ -37,7 +37,7 @@ If you've ever run 3–4 Claude Code sessions in parallel on the same repo, you'
 - The integration step at the end reveals conflicts you could have avoided
 - When sessions step on each other, recovery costs more than the work would have
 
-Bosun solves the first three by giving each session an isolated git worktree, surfacing live state in one place, and providing clean merge-back. (Live cross-session coordination is coming in v0.2.)
+Bosun solves all four by giving each session an isolated git worktree, surfacing live state in one place, providing clean merge-back, and (since v0.2) exposing live cross-session coordination as MCP tool calls.
 
 ## Install
 
@@ -50,36 +50,48 @@ Or build from source — see `Makefile`.
 ## Commands
 
 ```
-bosun init [N] [--brief plan.md] [--launch] [--isolate-cache]
-                            Create N worktrees + branches; optionally drop
-                            per-session briefs and spawn agent sessions
-bosun status [--with-overlaps]
+bosun init [N | label...] [--brief plan.md] [--launch] [--isolate-cache]
+                            Create worktrees + branches (numeric N or named
+                            labels); optionally drop per-session briefs and
+                            spawn agent sessions
+bosun launch <session>      Spawn a launcher window for an existing session
+bosun status [--with-overlaps] [--watch] [--json] [--summary-only]
                             Print a table of session states + path collisions
-bosun show <session>        Inspect one session's brief, claims, recent commits
+bosun show <session> [--json]
+                            Inspect one session's brief, claims, recent commits
 bosun claim <session> <paths...>
                             Session declares paths it's editing (advisory)
 bosun done <session>        Session signals it is ready to merge
-bosun merge [<session>...]  Squash-merge DONE sessions back to base
+bosun merge [<session>...] [--dry-run]
+                            Squash-merge DONE sessions back to base
 bosun remove <session>      Tear down a session cleanly
-bosun list [--ready]        Print session names (--ready for DONE only)
+bosun cleanup [--orphans]   Reap sessions that no longer have work to keep
+bosun list [--ready] [--json]
+                            Print session names (--ready for DONE only)
+bosun config show|set|...   Inspect or edit .bosun/config.json
+bosun mcp [--socket path]   Run the MCP server (foreground)
+bosun tui                   Bubbletea control center
+bosun serve [--port N]      HTTP dashboard with SSE event stream
 ```
 
 ## Requirements
 
 - Git on PATH
-- Go 1.23+ to build
+- Go 1.25+ to build (the MCP SDK requires it; v0.1 was Go 1.23+)
 
 Runs on macOS, Linux, and Windows (x86_64 + arm64 binaries available).
 
 ## Status
 
-**v0.1 in development.** See `SPEC.md` for the full implementation spec and `CLAUDE.md` if you're a Claude Code session contributing to this codebase.
+**v0.4.0-rc1 shipped 2026-05-16.** See `RELEASES.md` for the full history, `SPEC.md` for the v0.1 implementation spec, and `CLAUDE.md` if you're a Claude Code session contributing to this codebase.
 
 ## Roadmap
 
-- **v0.1** *(current)* — init/status/show/claim/done/merge/remove/list. Filesystem-based coordination (claims + state). Optional brief fan-out + session launcher. Stdlib + Cobra.
-- **v0.2** — MCP server replaces `.bosun/claims/` and `.bosun/state/` with structured tool calls. Same workflow shape.
-- **v0.3** — Web dashboard for live monitoring.
+- **v0.1** — init/status/show/claim/done/merge/remove/list. Filesystem-based coordination. Optional brief fan-out + session launcher.
+- **v0.2** — MCP server interface: `bosun_claim` / `bosun_release` / `bosun_done` / `bosun_stuck` / `bosun_announce` / `bosun_check` tool calls, plus polish (`--summary-only`, `bosun launch`, `cleanup --orphans`, dependency-aware briefs, non-Ghostty tab support).
+- **v0.3** — Bubbletea TUI control center (`bosun tui`), HTTP dashboard (`bosun serve`), custom session labels, agent process detection, cross-process claims `flock`.
+- **v0.4** *(current)* — Lifecycle hooks scaffolding, `merge --dry-run`, `list/show --json`, web brief preview + events feed, orphan-dir recovery, `bosun config`.
+- **v0.5** — Remaining hook call-sites (pre-merge / post-merge / pre-cleanup / post-cleanup / pre-remove), kickoff robustness (per-op timeouts, progress reporting), predictive conflict analysis (heuristic). See `docs/v0.5-roadmap.md`.
 
 ## License
 

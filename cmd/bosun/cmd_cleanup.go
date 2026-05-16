@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/jasondillingham/bosun/internal/git"
+	"github.com/jasondillingham/bosun/internal/hooks"
 	"github.com/jasondillingham/bosun/internal/session"
 	"github.com/spf13/cobra"
 )
@@ -15,6 +17,7 @@ func newCleanupCmd() *cobra.Command {
 	var (
 		dryRun     bool
 		force      bool
+		purge      bool
 		orphansArg int
 		orphanDirs bool
 	)
@@ -22,12 +25,17 @@ func newCleanupCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "cleanup",
 		Short: "Batch-remove DONE or empty sessions",
-		Long: `Remove every bosun-managed session that is either marked DONE or has no
-work in it (no commits ahead of base, no uncommitted changes). Sessions with
-in-flight work are skipped with a reason.
+		Long: `Remove every bosun-managed session that is either marked DONE (and its
+content is on base) or has no work in it (no commits ahead of base, no
+uncommitted changes). Sessions with in-flight work are skipped with a
+reason.
 
-Pass --force to also remove dirty or unmerged sessions; pass --dry-run to
-print what would happen without changing anything.
+Pass --force to also remove sessions with uncommitted-only work. A session
+whose commits aren't yet on base ("DONE-but-unmerged" — the v0.5 round-1
+incident shape) refuses --force; the operator must either ` + "`bosun merge`" + `
+the session first or pass --purge to explicitly drop the commits.
+
+Pass --dry-run to print what would happen without changing anything.
 
 Pass --orphans=N to instead clean up sessions whose number is greater than
 N — typical after ` + "`bosun init --force`" + ` shrinks the session count and leaves
@@ -40,7 +48,7 @@ the v0.3 corruption left behind. Independent of --orphans (which filters by
 session number).`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			opts := cleanupOpts{dryRun: dryRun, force: force, orphanDirs: orphanDirs}
+			opts := cleanupOpts{dryRun: dryRun, force: force, purge: purge, orphanDirs: orphanDirs}
 			if cmd.Flags().Changed("orphans") {
 				opts.orphansMode = true
 				opts.orphansKeep = orphansArg
@@ -50,7 +58,8 @@ session number).`,
 	}
 
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print what would happen, don't act")
-	cmd.Flags().BoolVar(&force, "force", false, "also remove dirty/unmerged sessions")
+	cmd.Flags().BoolVar(&force, "force", false, "also remove sessions with uncommitted-only changes")
+	cmd.Flags().BoolVar(&purge, "purge", false, "also remove sessions whose committed work isn't on base yet — discards those commits")
 	cmd.Flags().IntVar(&orphansArg, "orphans", 0, "only act on sessions whose number is greater than this (0 means use config.default_session_count)")
 	cmd.Flags().BoolVar(&orphanDirs, "orphan-dirs", false, "also scan parent dir for worktree directories git no longer tracks and remove them")
 	// NoOptDefVal lets `--orphans` work without a value (cobra parses it as
@@ -63,7 +72,16 @@ session number).`,
 
 type cleanupOpts struct {
 	dryRun bool
-	force  bool
+	// force permits removal of sessions with uncommitted-only work.
+	// Sessions whose commits aren't on base by patch-id AND whose tree
+	// diverges from base ("would-discard-commits") are NOT covered — they
+	// require purge. The v0.5 round-1 incident proved silent loss of
+	// committed work is the worst outcome here, so the two flags split.
+	force bool
+	// purge explicitly opts in to discarding committed work that isn't
+	// on base yet. Loud and rarely needed; the recovery hint in skip
+	// reasons points operators here when they really meant it.
+	purge bool
 	// orphansMode flips planCleanup into "act on sessions with number >
 	// orphansKeep only" — for cleaning up the trailing worktrees that
 	// linger when a later `bosun init` shrinks the session count.
@@ -98,32 +116,82 @@ type cleanupPlan struct {
 // means the branch's content is on main even though git still shows it ahead.
 type squashCheck func(branch string) (bool, error)
 
-func planCleanup(sessions []session.Session, opts cleanupOpts, isSquashed squashCheck) ([]cleanupPlan, error) {
+// discardCheck reports whether removing branch would lose committed work:
+// the branch has commits not present on base by patch-id AND its tip tree
+// differs from base. A branch tree-equal to base has had its content land
+// on base by some other route (manual conflict resolution after a botched
+// squash, say) and is safe to drop even if patch-id comparison disagrees.
+//
+// This is the parallel to squashCheck that powers the v0.5 cleanup safety
+// gate: --force no longer bypasses "irrecoverable on remove" because
+// silent loss of committed work is the worst outcome we ship.
+type discardCheck func(branch string) (bool, error)
+
+func planCleanup(sessions []session.Session, opts cleanupOpts, isSquashed squashCheck, wouldDiscardCommits discardCheck) ([]cleanupPlan, error) {
 	plans := make([]cleanupPlan, 0, len(sessions))
 	for i := range sessions {
 		s := &sessions[i]
-		switch {
-		case s.State == session.StateDone:
-			plans = append(plans, cleanupPlan{s: s, action: cleanupRemove, reason: "DONE"})
-		case s.State == session.StateWorking && s.Ahead == 0 && s.Dirty == 0:
-			plans = append(plans, cleanupPlan{s: s, action: cleanupRemove, reason: "empty"})
-		case s.State == session.StateWorking && s.Ahead > 0 && s.Dirty == 0:
-			// After `bosun merge` squashes the session, the branch tip still
-			// reports `ahead=1` even though its content is on main. Treat
-			// patch-equivalent branches as removable without --force.
-			squashed, err := isSquashed(s.Branch)
+
+		// Compute the danger signal once. Sessions with no commits ahead
+		// can't lose anything on removal — skip the git calls entirely.
+		// For the rest: patch-id check first (cheap, also gives us the
+		// "squash-merged" label), then a tree compare (catches manual
+		// conflict resolution after a botched squash).
+		squashed := false
+		discard := false
+		if s.Ahead > 0 {
+			sq, err := isSquashed(s.Branch)
 			if err != nil {
 				return nil, fmt.Errorf("check unmerged patches for %s: %w", s.Branch, err)
 			}
-			if squashed {
+			squashed = sq
+			if !sq {
+				d, err := wouldDiscardCommits(s.Branch)
+				if err != nil {
+					return nil, fmt.Errorf("check tree divergence for %s: %w", s.Branch, err)
+				}
+				discard = d
+			}
+		}
+
+		// Gate: would-discard-commits is the v0.5 cleanup safety check
+		// that cuts across state. --force alone is no longer enough;
+		// --purge or a `bosun merge <session>` first is the recovery.
+		if discard && !opts.purge {
+			plans = append(plans, cleanupPlan{
+				s:      s,
+				action: cleanupSkip,
+				reason: fmt.Sprintf("would discard %s — run `bosun merge %s` first, or pass --purge to drop it", describeWork(s), s.Name),
+			})
+			continue
+		}
+
+		switch {
+		case s.State == session.StateDone:
+			reason := "DONE"
+			if discard && opts.purge {
+				reason = "DONE, --purge discards " + describeWork(s)
+			} else if squashed {
+				reason = "DONE, squash-merged"
+			}
+			plans = append(plans, cleanupPlan{s: s, action: cleanupRemove, reason: reason})
+		case s.State == session.StateWorking && s.Ahead == 0 && s.Dirty == 0:
+			plans = append(plans, cleanupPlan{s: s, action: cleanupRemove, reason: "empty"})
+		case s.State == session.StateWorking && s.Ahead > 0 && s.Dirty == 0:
+			switch {
+			case squashed:
 				plans = append(plans, cleanupPlan{s: s, action: cleanupRemove, reason: "squash-merged"})
-				continue
+			case discard && opts.purge:
+				plans = append(plans, cleanupPlan{s: s, action: cleanupRemove, reason: "--purge discards " + describeWork(s)})
+			default:
+				// !discard reaches here: unmerged > 0 but tree-equal to
+				// base, i.e. the branch's content effectively landed on
+				// base via some non-patch-id path. Removing loses
+				// nothing.
+				plans = append(plans, cleanupPlan{s: s, action: cleanupRemove, reason: "already on base"})
 			}
-			if opts.force {
-				plans = append(plans, cleanupPlan{s: s, action: cleanupRemove, reason: "force-remove, " + describeWork(s)})
-				continue
-			}
-			plans = append(plans, cleanupPlan{s: s, action: cleanupSkip, reason: describeWork(s)})
+		case opts.purge:
+			plans = append(plans, cleanupPlan{s: s, action: cleanupRemove, reason: "--purge, " + describeWork(s)})
 		case opts.force:
 			plans = append(plans, cleanupPlan{s: s, action: cleanupRemove, reason: "force-remove, " + describeWork(s)})
 		default:
@@ -196,14 +264,8 @@ func executeCleanupOne(rc *runCtx, p cleanupPlan) error {
 // the policy from runCleanup. Returns the action taken and a short reason.
 // err is non-nil only for unexpected git failures.
 func cleanupOne(rc *runCtx, s *session.Session, opts cleanupOpts) (cleanupAction, string, error) {
-	isSquashed := func(branch string) (bool, error) {
-		unmerged, err := rc.git.UnmergedPatches(rc.ctx, rc.repoRoot, rc.cfg.BaseBranch, branch)
-		if err != nil {
-			return false, err
-		}
-		return unmerged == 0, nil
-	}
-	plans, err := planCleanup([]session.Session{*s}, opts, isSquashed)
+	isSquashed, wouldDiscard := buildCleanupChecks(rc)
+	plans, err := planCleanup([]session.Session{*s}, opts, isSquashed, wouldDiscard)
 	if err != nil {
 		return cleanupSkip, "", gitErr("plan cleanup", err)
 	}
@@ -218,6 +280,35 @@ func cleanupOne(rc *runCtx, s *session.Session, opts cleanupOpts) (cleanupAction
 		return cleanupSkip, "", err
 	}
 	return cleanupRemove, p.reason, nil
+}
+
+// buildCleanupChecks wires the squashCheck + discardCheck callbacks used by
+// planCleanup against the live git client. Pulled out so cleanupOne and
+// runCleanup share the same implementation — including the wouldDiscard
+// "tree-equal counts as safe" rule.
+func buildCleanupChecks(rc *runCtx) (squashCheck, discardCheck) {
+	isSquashed := func(branch string) (bool, error) {
+		unmerged, err := rc.git.UnmergedPatches(rc.ctx, rc.repoRoot, rc.cfg.BaseBranch, branch)
+		if err != nil {
+			return false, err
+		}
+		return unmerged == 0, nil
+	}
+	wouldDiscard := func(branch string) (bool, error) {
+		unmerged, err := rc.git.UnmergedPatches(rc.ctx, rc.repoRoot, rc.cfg.BaseBranch, branch)
+		if err != nil {
+			return false, err
+		}
+		if unmerged == 0 {
+			return false, nil
+		}
+		treeEqual, err := rc.git.TreeEqualsBase(rc.ctx, rc.repoRoot, rc.cfg.BaseBranch, branch)
+		if err != nil {
+			return false, err
+		}
+		return !treeEqual, nil
+	}
+	return isSquashed, wouldDiscard
 }
 
 func runCleanup(cmd *cobra.Command, opts cleanupOpts) error {
@@ -264,15 +355,36 @@ func runCleanup(cmd *cobra.Command, opts cleanupOpts) error {
 		// nuke them if they really want.
 	}
 
-	plans, err := planCleanup(sessions, opts, func(branch string) (bool, error) {
-		unmerged, err := rc.git.UnmergedPatches(rc.ctx, rc.repoRoot, rc.cfg.BaseBranch, branch)
-		if err != nil {
-			return false, err
-		}
-		return unmerged == 0, nil
-	})
+	isSquashed, wouldDiscard := buildCleanupChecks(rc)
+	plans, err := planCleanup(sessions, opts, isSquashed, wouldDiscard)
 	if err != nil {
 		return gitErr("plan cleanup", err)
+	}
+
+	// Count what the planner staged so pre-cleanup hooks can know whether
+	// this invocation is actually going to remove anything before the work
+	// starts. Orphan-dirs candidates aren't included — they're a separate
+	// sweep below and we don't run their scan twice just for the hook env.
+	plannedRemovals := 0
+	for _, p := range plans {
+		if p.action == cleanupRemove {
+			plannedRemovals++
+		}
+	}
+
+	// Fire pre-cleanup once per invocation (not per session — operators
+	// want one Slack message, not five). Skipped in dry-run so the preview
+	// path stays side-effect-free. A non-fail-open pre-cleanup error
+	// aborts before any worktree is touched.
+	if !opts.dryRun {
+		preEnv := map[string]string{
+			"BOSUN_REPO_ROOT":      rc.repoRoot,
+			"BOSUN_CLEANUP_COUNT":  strconv.Itoa(plannedRemovals),
+			"BOSUN_CLEANUP_REASON": cleanupReason(opts),
+		}
+		if err := hooks.Run(rc.ctx, rc.cfg.Hooks, "pre-cleanup", preEnv); err != nil {
+			return userErr("%v", err)
+		}
 	}
 
 	removed, skipped := 0, 0
@@ -308,7 +420,39 @@ func runCleanup(cmd *cobra.Command, opts cleanupOpts) error {
 	} else {
 		printf("\nbosun: removed %d, skipped %d\n", removed, skipped)
 	}
+
+	// post-cleanup is non-fatal: by the time we'd report a failure the
+	// worktrees are gone and aborting wouldn't undo anything. Drop to a
+	// warning so the operator can see the hook misbehaved without losing
+	// the cleanup signal. Reason mirrors pre-cleanup so operators can
+	// filter by it in Slack/etc.
+	if !opts.dryRun {
+		postEnv := map[string]string{
+			"BOSUN_REPO_ROOT":      rc.repoRoot,
+			"BOSUN_CLEANUP_COUNT":  strconv.Itoa(removed),
+			"BOSUN_CLEANUP_REASON": cleanupReason(opts),
+		}
+		if err := hooks.Run(rc.ctx, rc.cfg.Hooks, "post-cleanup", postEnv); err != nil {
+			printf("bosun: warning: post-cleanup hook: %v\n", err)
+		}
+	}
 	return nil
+}
+
+// cleanupReason classifies the invocation for the hook env. Operators
+// wiring `pre-cleanup` over Slack want to distinguish "manual sweep"
+// from "post-init shrink trim" from "v0.3 corruption recovery." The
+// flags compose, but reporting one canonical reason avoids ambiguity in
+// the hook command. Priority: orphans-mode > orphan-dirs-mode > manual.
+func cleanupReason(opts cleanupOpts) string {
+	switch {
+	case opts.orphansMode:
+		return "orphans-mode"
+	case opts.orphanDirs:
+		return "orphan-dirs-mode"
+	default:
+		return "manual"
+	}
 }
 
 // sweepOrphanDirs implements the --orphan-dirs path: scan the repo's

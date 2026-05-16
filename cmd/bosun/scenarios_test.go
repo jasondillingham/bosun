@@ -647,11 +647,15 @@ func TestScenario_CleanupRemovesDoneAndEmptySkipsWorking(t *testing.T) {
 	s := newScenario(t)
 	s.Bosun("init", "3")
 
-	// session-1: commit + mark DONE.
+	// session-1: commit, mark DONE, merge so its content lives on base.
+	// (Post-v0.5 the planner refuses to remove a DONE-but-unmerged session
+	// without --purge — see CleanupForceRefusesDoneButUnmerged below — so
+	// this scenario tracks the realistic "happy path" DONE+merge flow.)
 	wt1 := s.WorktreePath(1)
 	s.WriteFileIn(wt1, "a.txt", "x\n")
 	s.CommitIn(wt1, "session-1 work")
 	s.Bosun("done", "session-1")
+	s.Bosun("merge")
 
 	// session-2: commit, leave WORKING.
 	wt2 := s.WorktreePath(2)
@@ -684,6 +688,9 @@ func TestScenario_CleanupDryRunChangesNothing(t *testing.T) {
 	s.WriteFileIn(wt1, "a.txt", "x\n")
 	s.CommitIn(wt1, "work")
 	s.Bosun("done", "session-1")
+	// Merge so cleanup sees a squash-merged removable session, not the
+	// post-v0.5 "DONE-but-unmerged refuses without --purge" case.
+	s.Bosun("merge")
 
 	out := s.Bosun("cleanup", "--dry-run")
 	s.AssertContainsAll(out, "would remove", "session-1", "dry-run")
@@ -714,18 +721,21 @@ func TestScenario_CleanupAfterMergeRemovesSquashed(t *testing.T) {
 	s.AssertBranchMissing("bosun/session-1")
 }
 
-func TestScenario_CleanupForceRemovesDirtyAndAhead(t *testing.T) {
+func TestScenario_CleanupForceRemovesDirty(t *testing.T) {
+	// Post-v0.5: --force only covers sessions with uncommitted-only work.
+	// Sessions whose committed work isn't on base ("would discard") need
+	// the louder --purge — see CleanupForceRefusesDoneButUnmerged.
 	s := newScenario(t)
 	s.Bosun("init", "2")
 
-	// session-1: dirty (uncommitted change).
+	// session-1: dirty (uncommitted edit to a tracked file), no commits.
 	wt1 := s.WorktreePath(1)
 	s.WriteFileIn(wt1, "README.md", "# dirty\n")
 
-	// session-2: committed, not marked DONE (would be skipped without --force).
+	// session-2: same shape — modify the tracked README so the worktree
+	// shows dirty (untracked files don't count toward Dirty).
 	wt2 := s.WorktreePath(2)
-	s.WriteFileIn(wt2, "b.txt", "y\n")
-	s.CommitIn(wt2, "ahead but not done")
+	s.WriteFileIn(wt2, "README.md", "# dirty too\n")
 
 	// Without --force, both should be skipped.
 	out := s.Bosun("cleanup")
@@ -733,7 +743,7 @@ func TestScenario_CleanupForceRemovesDirtyAndAhead(t *testing.T) {
 	s.AssertWorktreeExists(1)
 	s.AssertWorktreeExists(2)
 
-	// With --force, both go.
+	// With --force, both go — no committed work would be lost.
 	out = s.Bosun("cleanup", "--force")
 	s.AssertContainsAll(out, "session-1: removed", "session-2: removed")
 	s.AssertWorktreeMissing(1)
@@ -1148,7 +1158,8 @@ func TestScenario_CleanupOrphans_DefaultsToConfig(t *testing.T) {
 
 func TestScenario_CleanupOrphans_SkipsAheadWithoutForce(t *testing.T) {
 	// An orphan with commits ahead of base isn't auto-removed — the work
-	// might matter. The operator must explicitly --force.
+	// might matter. Post-v0.5: --force alone isn't enough either when the
+	// commits aren't on base, the operator must use --purge to discard.
 	s := newScenario(t)
 	s.Bosun("init", "4")
 	wt4 := s.WorktreePath(4)
@@ -1160,8 +1171,14 @@ func TestScenario_CleanupOrphans_SkipsAheadWithoutForce(t *testing.T) {
 	s.AssertContains(out, "1 ahead")
 	s.AssertWorktreeExists(4)
 
-	// With --force, the same session goes.
+	// --force alone still refuses — committed work isn't on base.
 	out = s.Bosun("cleanup", "--orphans=3", "--force")
+	s.AssertContains(out, "session-4: skipped")
+	s.AssertContains(out, "--purge")
+	s.AssertWorktreeExists(4)
+
+	// With --purge, the same session goes.
+	out = s.Bosun("cleanup", "--orphans=3", "--purge")
 	s.AssertContains(out, "session-4: removed")
 	s.AssertWorktreeMissing(4)
 }
@@ -2747,4 +2764,129 @@ func TestScenario_PostMergeHookFailureIsNonFatal(t *testing.T) {
 	out := s.Bosun("merge")
 	s.AssertContainsAll(out, "session-1: merged", "post-merge hook")
 	s.AssertFileOnMain("kept.txt")
+}
+
+// --- cleanup hooks + --purge safety gate ---
+
+// TestScenario_CleanupHooksFireOncePerInvocation pins the contract for
+// operators wiring `pre-cleanup` and `post-cleanup` (the typical use case
+// is a single Slack message per sweep, not five). The hook must see
+// BOSUN_REPO_ROOT, BOSUN_CLEANUP_COUNT, and BOSUN_CLEANUP_REASON, and
+// must fire exactly once even when the planner is removing several
+// sessions.
+func TestScenario_CleanupHooksFireOncePerInvocation(t *testing.T) {
+	s := newScenario(t)
+
+	preLog := filepath.Join(s.parent, "pre-cleanup.log")
+	postLog := filepath.Join(s.parent, "post-cleanup.log")
+	preCmd := `printf 'pre count=%s reason=%s root=%s\n' "$BOSUN_CLEANUP_COUNT" "$BOSUN_CLEANUP_REASON" "$BOSUN_REPO_ROOT" >> ` + shQuote(preLog)
+	postCmd := `printf 'post count=%s reason=%s root=%s\n' "$BOSUN_CLEANUP_COUNT" "$BOSUN_CLEANUP_REASON" "$BOSUN_REPO_ROOT" >> ` + shQuote(postLog)
+	cfgBytes, err := json.MarshalIndent(map[string]any{
+		"hooks": []map[string]any{
+			{"event": "pre-cleanup", "command": preCmd},
+			{"event": "post-cleanup", "command": postCmd},
+		},
+	}, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	s.WriteFile(".bosun/config.json", string(cfgBytes))
+
+	s.Bosun("init", "3")
+	// Two sessions removable by bare cleanup: one squash-merged
+	// (session-1: commit → done → merge), one empty (session-3 untouched).
+	wt1 := s.WorktreePath(1)
+	s.WriteFileIn(wt1, "a.txt", "x\n")
+	s.CommitIn(wt1, "session-1 work")
+	s.Bosun("done", "session-1")
+	s.Bosun("merge")
+	// session-2 stays in-flight (committed but not done) so the planner
+	// has a "skip" to interleave with the two "remove"s.
+	wt2 := s.WorktreePath(2)
+	s.WriteFileIn(wt2, "b.txt", "y\n")
+	s.CommitIn(wt2, "session-2 wip")
+
+	s.Bosun("cleanup")
+
+	preBytes, err := os.ReadFile(preLog)
+	if err != nil {
+		t.Fatalf("pre-cleanup hook did not run: %v", err)
+	}
+	postBytes, err := os.ReadFile(postLog)
+	if err != nil {
+		t.Fatalf("post-cleanup hook did not run: %v", err)
+	}
+	preLines := strings.Count(strings.TrimSpace(string(preBytes)), "\n") + 1
+	postLines := strings.Count(strings.TrimSpace(string(postBytes)), "\n") + 1
+	if preLines != 1 {
+		t.Errorf("pre-cleanup fired %d times, want 1:\n%s", preLines, preBytes)
+	}
+	if postLines != 1 {
+		t.Errorf("post-cleanup fired %d times, want 1:\n%s", postLines, postBytes)
+	}
+
+	got := string(preBytes) + string(postBytes)
+	// Pre-cleanup reports the planned removal count; post reports actual
+	// removed. Both should be 2 here (session-1 squashed + session-3 empty).
+	wantRoot, _ := filepath.EvalSymlinks(s.repo)
+	for _, want := range []string{
+		"pre count=2",
+		"post count=2",
+		"reason=manual",
+		"root=" + wantRoot,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("hook log missing %q:\n%s", want, got)
+		}
+	}
+}
+
+// TestScenario_CleanupForceRefusesDoneButUnmerged is the v0.5 round-1
+// regression: --force used to silently nuke a DONE session whose commits
+// were not yet on main, losing the work. Now --force refuses the case
+// outright and the error names both recovery paths (bosun merge or
+// --purge).
+func TestScenario_CleanupForceRefusesDoneButUnmerged(t *testing.T) {
+	s := newScenario(t)
+	s.Bosun("init", "1")
+
+	wt1 := s.WorktreePath(1)
+	s.WriteFileIn(wt1, "feature.txt", "valuable work\n")
+	s.CommitIn(wt1, "valuable session-1 commit")
+	s.Bosun("done", "session-1")
+	// Critically: no `bosun merge` — the commits live only on the
+	// session branch, removing it would lose them.
+
+	out := s.Bosun("cleanup", "--force")
+	s.AssertContainsAll(out,
+		"session-1: skipped",
+		"would discard",
+		"bosun merge session-1",
+		"--purge",
+	)
+	s.AssertWorktreeExists(1)
+	s.AssertBranchExists("bosun/session-1")
+}
+
+// TestScenario_CleanupPurgeProceedsOnDoneButUnmerged is the explicit
+// opt-in: when the operator truly means to drop the unmerged work, the
+// `--purge` flag lets cleanup tear down the worktree and branch even
+// though committed work would be discarded. Pair test for
+// CleanupForceRefusesDoneButUnmerged.
+func TestScenario_CleanupPurgeProceedsOnDoneButUnmerged(t *testing.T) {
+	s := newScenario(t)
+	s.Bosun("init", "1")
+
+	wt1 := s.WorktreePath(1)
+	s.WriteFileIn(wt1, "throwaway.txt", "abandoned\n")
+	s.CommitIn(wt1, "session-1 commit that won't ship")
+	s.Bosun("done", "session-1")
+
+	out := s.Bosun("cleanup", "--purge")
+	s.AssertContainsAll(out,
+		"session-1: removed",
+		"--purge discards",
+	)
+	s.AssertWorktreeMissing(1)
+	s.AssertBranchMissing("bosun/session-1")
 }

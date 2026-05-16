@@ -70,6 +70,49 @@ func (s *Store) Replace(session string, paths []string) error {
 	return s.write(c)
 }
 
+// Remove drops the given paths from session's claim file. Paths not currently
+// claimed are silently ignored. If the resulting claim has no paths left, the
+// file is removed (mirrors Clear). A missing claim file is not an error.
+// Returns the number of paths actually removed.
+func (s *Store) Remove(session string, paths []string) (int, error) {
+	existing, err := s.Read(session)
+	if err != nil {
+		return 0, err
+	}
+	if existing == nil || len(existing.Paths) == 0 {
+		return 0, nil
+	}
+	drop := map[string]struct{}{}
+	for _, p := range normalizeAll(paths) {
+		drop[p] = struct{}{}
+	}
+	kept := make([]string, 0, len(existing.Paths))
+	removed := 0
+	for _, p := range existing.Paths {
+		if _, ok := drop[p]; ok {
+			removed++
+			continue
+		}
+		kept = append(kept, p)
+	}
+	if removed == 0 {
+		return 0, nil
+	}
+	if len(kept) == 0 {
+		if err := s.Clear(session); err != nil {
+			return 0, err
+		}
+		return removed, nil
+	}
+	sort.Strings(kept)
+	existing.Paths = kept
+	existing.UpdatedAt = time.Now().UTC()
+	if err := s.write(existing); err != nil {
+		return 0, err
+	}
+	return removed, nil
+}
+
 // Clear removes session's claim file. Missing is not an error.
 func (s *Store) Clear(session string) error {
 	err := os.Remove(s.file(session))

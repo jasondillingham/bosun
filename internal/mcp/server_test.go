@@ -58,13 +58,13 @@ func TestServer_CheckTool(t *testing.T) {
 	}
 	defer session.Close()
 
-	// Sanity: the tool is advertised.
+	// Sanity: bosun_check is advertised among the registered tools.
 	tools, err := session.ListTools(ctx, nil)
 	if err != nil {
 		t.Fatalf("list tools: %v", err)
 	}
-	if len(tools.Tools) != 1 || tools.Tools[0].Name != "bosun_check" {
-		t.Fatalf("unexpected tools: %+v", tools.Tools)
+	if !hasTool(tools.Tools, "bosun_check") {
+		t.Fatalf("bosun_check missing from advertised tools: %+v", tools.Tools)
 	}
 
 	// Case 1: querying a path session-2 has claimed → conflict reported.
@@ -126,6 +126,16 @@ func callCheck(t *testing.T, ctx context.Context, session *mcpsdk.ClientSession,
 		_ = json.Unmarshal(data, &out)
 	}
 	return out
+}
+
+// hasTool reports whether name appears in tools.
+func hasTool(tools []*mcpsdk.Tool, name string) bool {
+	for _, t := range tools {
+		if t.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // pipeTransport adapts an io.Reader/io.Writer pair into an mcp.Transport.

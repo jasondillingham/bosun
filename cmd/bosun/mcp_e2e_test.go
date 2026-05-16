@@ -84,8 +84,15 @@ func TestMCP_EndToEndOverUnixSocket(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list tools: %v", err)
 	}
-	if len(tools.Tools) != 1 || tools.Tools[0].Name != "bosun_check" {
-		t.Fatalf("unexpected tools list: %+v", tools.Tools)
+	var sawCheck bool
+	for _, tl := range tools.Tools {
+		if tl.Name == "bosun_check" {
+			sawCheck = true
+			break
+		}
+	}
+	if !sawCheck {
+		t.Fatalf("bosun_check missing from advertised tools: %+v", tools.Tools)
 	}
 
 	result, err := session.CallTool(ctx, &mcpsdk.CallToolParams{

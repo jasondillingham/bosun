@@ -2,12 +2,19 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // --- init ---
@@ -691,6 +698,123 @@ func TestScenario_CleanupForceRemovesDirtyAndAhead(t *testing.T) {
 	s.AssertBranchMissing("bosun/session-1")
 	s.AssertWorktreeMissing(2)
 	s.AssertBranchMissing("bosun/session-2")
+}
+
+// --- mcp ---
+
+// TestScenario_MCPClaimVisibleToCLIStatus spawns `bosun mcp`, connects an
+// MCP client over the Unix socket, calls bosun_claim, and verifies that
+// the CLI's `bosun status` (which reads .bosun/claims/ directly) sees the
+// same claim. This proves the filesystem-compat contract: MCP writes and
+// CLI reads use the same on-disk format.
+func TestScenario_MCPClaimVisibleToCLIStatus(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix sockets aren't supported on Windows runners")
+	}
+
+	s := newScenario(t)
+	s.Bosun("init", "1")
+
+	socketPath := filepath.Join("/tmp", fmt.Sprintf("bosun-mcp-claim-%d.sock", time.Now().UnixNano()))
+	t.Cleanup(func() { _ = os.Remove(socketPath) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, bosunBin, "mcp", "--socket", socketPath)
+	cmd.Dir = s.repo
+	var subOut subprocessTail
+	cmd.Stdout = &subOut
+	cmd.Stderr = &subOut
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start bosun mcp: %v", err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}()
+
+	if err := waitForSocket(socketPath, 3*time.Second); err != nil {
+		t.Fatalf("socket never appeared: %v\nsubprocess output:\n%s", err, subOut.String())
+	}
+
+	netConn, err := net.Dial("unix", socketPath)
+	if err != nil {
+		t.Fatalf("dial socket: %v", err)
+	}
+	defer netConn.Close()
+
+	client := mcpsdk.NewClient(&mcpsdk.Implementation{
+		Name:    "bosun-claim-scenario",
+		Version: "test",
+	}, nil)
+	mcpSession, err := client.Connect(ctx, &netConnTransport{conn: netConn}, nil)
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	defer mcpSession.Close()
+
+	// Call bosun_claim — same effect the CLI's `bosun claim` would have.
+	result, err := mcpSession.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name: "bosun_claim",
+		Arguments: map[string]any{
+			"session": "session-1",
+			"paths":   []string{"internal/foo.go", "internal/bar.go"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("call bosun_claim: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("bosun_claim IsError: %+v", result)
+	}
+
+	var claimed struct {
+		Claimed int `json:"claimed"`
+	}
+	if result.StructuredContent != nil {
+		data, _ := json.Marshal(result.StructuredContent)
+		_ = json.Unmarshal(data, &claimed)
+	}
+	if claimed.Claimed != 2 {
+		t.Fatalf("bosun_claim reported %d, want 2", claimed.Claimed)
+	}
+
+	// The CLI side reads .bosun/claims/ directly. It must see the same paths.
+	p := s.StatusJSON()
+	sess := p.SessionByNumber(1)
+	if sess == nil {
+		t.Fatalf("session-1 missing from status: %+v", p)
+	}
+	if sess.Claimed != 2 {
+		t.Fatalf("CLI status shows Claimed=%d, want 2 (MCP write should be visible to CLI)", sess.Claimed)
+	}
+
+	// And `bosun show` should render the actual claimed paths.
+	show := s.Bosun("show", "session-1")
+	s.AssertContainsAll(show, "internal/foo.go", "internal/bar.go")
+
+	// Round-trip: release via MCP, confirm CLI sees the claim gone.
+	rel, err := mcpSession.CallTool(ctx, &mcpsdk.CallToolParams{
+		Name: "bosun_release",
+		Arguments: map[string]any{
+			"session": "session-1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("call bosun_release: %v", err)
+	}
+	if rel.IsError {
+		t.Fatalf("bosun_release IsError: %+v", rel)
+	}
+	p = s.StatusJSON()
+	sess = p.SessionByNumber(1)
+	if sess == nil {
+		t.Fatalf("session-1 missing from status after release: %+v", p)
+	}
+	if sess.Claimed != 0 {
+		t.Fatalf("CLI status shows Claimed=%d after MCP release, want 0", sess.Claimed)
+	}
 }
 
 // --- helpers (test-local) ---

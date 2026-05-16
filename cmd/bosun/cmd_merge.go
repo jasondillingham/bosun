@@ -13,6 +13,7 @@ func newMergeCmd() *cobra.Command {
 	var (
 		all      bool
 		noSquash bool
+		dryRun   bool
 		message  string
 	)
 
@@ -23,6 +24,7 @@ func newMergeCmd() *cobra.Command {
 			return runMerge(cmd, args, mergeOpts{
 				all:      all,
 				noSquash: noSquash,
+				dryRun:   dryRun,
 				message:  message,
 			})
 		},
@@ -30,6 +32,7 @@ func newMergeCmd() *cobra.Command {
 
 	cmd.Flags().BoolVar(&all, "all", false, "attempt every session, not just DONE")
 	cmd.Flags().BoolVar(&noSquash, "no-squash", false, "use --no-ff merges instead of --squash")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print what would happen, don't act")
 	cmd.Flags().StringVarP(&message, "message", "m", "", "override the commit message")
 
 	return cmd
@@ -38,6 +41,7 @@ func newMergeCmd() *cobra.Command {
 type mergeOpts struct {
 	all      bool
 	noSquash bool
+	dryRun   bool
 	message  string
 }
 
@@ -122,13 +126,19 @@ func runMerge(cmd *cobra.Command, args []string, opts mergeOpts) error {
 			conflictHit = true
 			break
 		}
-		if status == mergeStatusMerged {
+		if status == mergeStatusMerged || status == mergeStatusWouldMerge {
+			// Track would-merge too so a dependent session in the same dry-run
+			// sees its blocker as resolved and reports its own plan accurately.
 			mergedThisRun[s.Label] = true
 		}
 	}
 
 	// Print summary.
 	for _, r := range results {
+		if r.status == mergeStatusWouldMerge {
+			printf("  ▸ %s: would merge (%s)\n", r.name, r.reason)
+			continue
+		}
 		mark := "✓"
 		if r.status == mergeStatusSkipped {
 			mark = "⏭"
@@ -147,9 +157,10 @@ func runMerge(cmd *cobra.Command, args []string, opts mergeOpts) error {
 // the TUI control center) can branch on the outcome without duplicating
 // string literals.
 const (
-	mergeStatusMerged   = "merged"
-	mergeStatusSkipped  = "skipped"
-	mergeStatusConflict = "conflict"
+	mergeStatusMerged     = "merged"
+	mergeStatusSkipped    = "skipped"
+	mergeStatusConflict   = "conflict"
+	mergeStatusWouldMerge = "would-merge"
 )
 
 // mergeOne performs the merge for a single session and reports the outcome.
@@ -196,6 +207,14 @@ func mergeOne(rc *runCtx, s *session.Session, opts mergeOpts) (status, reason st
 		_ = rc.state.Clear(s.Name)
 		_ = rc.claims.Clear(s.Name)
 		return mergeStatusSkipped, "already merged (tree-equivalent to base)", nil
+	}
+
+	// Dry-run: all safety/dep gates passed, so a real run would actually
+	// merge. Report what would happen without touching the working tree or
+	// state. Conflict prediction is out of scope — this only reports the
+	// plan, not the merge outcome.
+	if opts.dryRun {
+		return mergeStatusWouldMerge, fmt.Sprintf("%d commit(s)", s.Ahead), nil
 	}
 
 	commitMsg := opts.message

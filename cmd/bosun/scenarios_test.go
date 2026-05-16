@@ -1638,6 +1638,102 @@ func TestScenario_ConcurrentCliClaimsAllLandOrFailLoudly(t *testing.T) {
 	}
 }
 
+// --- merge --dry-run ---
+
+// TestScenario_MergeDryRunReportsPlanWithoutChangingHead is the headline
+// dry-run contract: with two DONE sessions ready to merge, `bosun merge
+// --dry-run` must print "would merge" for each and leave HEAD on main
+// untouched. The operator should be able to preview the merge plan
+// without committing anything.
+func TestScenario_MergeDryRunReportsPlanWithoutChangingHead(t *testing.T) {
+	s := newScenario(t)
+	s.Bosun("init", "2")
+
+	for _, n := range []int{1, 2} {
+		wt := s.WorktreePath(n)
+		s.WriteFileIn(wt, fmt.Sprintf("f%d.txt", n), "x\n")
+		s.CommitIn(wt, fmt.Sprintf("session-%d work", n))
+		s.Bosun("done", fmt.Sprintf("session-%d", n))
+	}
+
+	before := strings.TrimSpace(s.GitIn(s.repo, "rev-parse", "HEAD"))
+
+	out := s.Bosun("merge", "--dry-run")
+	s.AssertContainsAll(out,
+		"session-1: would merge",
+		"session-2: would merge",
+	)
+
+	after := strings.TrimSpace(s.GitIn(s.repo, "rev-parse", "HEAD"))
+	if before != after {
+		t.Fatalf("dry-run shouldn't move HEAD on main: before=%s after=%s", before, after)
+	}
+
+	// And the session files must not have landed on main.
+	for _, name := range []string{"f1.txt", "f2.txt"} {
+		if _, err := os.Stat(filepath.Join(s.repo, name)); err == nil {
+			t.Fatalf("%s shouldn't exist on main after dry-run", name)
+		}
+	}
+}
+
+// TestScenario_MergeDryRunRespectsDoneFiltering proves the DONE gate runs
+// in the dry-run path too — a WORKING session without `--all` must show
+// up as skipped, not as "would merge". Operator should see the same
+// candidate set they'd see in a real run.
+func TestScenario_MergeDryRunRespectsDoneFiltering(t *testing.T) {
+	s := newScenario(t)
+	s.Bosun("init", "2")
+
+	// session-1: DONE.
+	wt1 := s.WorktreePath(1)
+	s.WriteFileIn(wt1, "a.txt", "x\n")
+	s.CommitIn(wt1, "session-1 work")
+	s.Bosun("done", "session-1")
+
+	// session-2: WORKING (committed but not marked done).
+	wt2 := s.WorktreePath(2)
+	s.WriteFileIn(wt2, "b.txt", "y\n")
+	s.CommitIn(wt2, "session-2 work")
+
+	out := s.Bosun("merge", "--dry-run")
+	s.AssertContainsAll(out,
+		"session-1: would merge",
+		"session-2: skipped",
+	)
+	// And session-2 must not be miscategorized as a would-merge candidate.
+	if strings.Contains(out, "session-2: would merge") {
+		t.Fatalf("session-2 (WORKING, no --all) shouldn't appear as would merge:\n%s", out)
+	}
+}
+
+// TestScenario_MergeDryRunNamedSessionTargetsRightBranch confirms named-
+// session args narrow the dry-run output the same way they narrow a real
+// merge: ask for one session and you see only that session's plan.
+func TestScenario_MergeDryRunNamedSessionTargetsRightBranch(t *testing.T) {
+	s := newScenario(t)
+	s.Bosun("init", "2")
+
+	for _, n := range []int{1, 2} {
+		wt := s.WorktreePath(n)
+		s.WriteFileIn(wt, fmt.Sprintf("f%d.txt", n), "x\n")
+		s.CommitIn(wt, fmt.Sprintf("session-%d work", n))
+		s.Bosun("done", fmt.Sprintf("session-%d", n))
+	}
+
+	out := s.Bosun("merge", "--dry-run", "session-2")
+	s.AssertContains(out, "session-2: would merge")
+	// Named arg filters the other session out entirely.
+	if strings.Contains(out, "session-1") {
+		t.Fatalf("session-1 shouldn't appear when dry-run targets session-2 only:\n%s", out)
+	}
+
+	// And no changes landed on main.
+	if _, err := os.Stat(filepath.Join(s.repo, "f2.txt")); err == nil {
+		t.Fatalf("f2.txt shouldn't be on main after a targeted dry-run")
+	}
+}
+
 // --- helpers (test-local) ---
 
 func readFile(t *testing.T, path string) string {

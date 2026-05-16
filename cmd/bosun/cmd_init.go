@@ -172,7 +172,7 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 		}
 
 		if b := brief.LookupBrief(briefs, i); b != nil {
-			if err := brief.WriteToWorktree(path, *b); err != nil {
+			if err := brief.WriteToWorktree(path, *b, rc.cfg.VerifyCmd); err != nil {
 				return internalErr("write brief for "+name, err)
 			}
 			if err := brief.WriteSessionPointer(path, i); err != nil {

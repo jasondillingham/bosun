@@ -19,6 +19,7 @@ const (
 	DefaultSessionCount      = 4
 	DefaultIsolateCache      = false
 	DefaultLauncherStrategy  = "auto"
+	DefaultVerifyCmd         = "make check"
 	ConfigRelativePath       = ".bosun/config.json"
 )
 
@@ -30,6 +31,11 @@ type Config struct {
 	DefaultSessionCount   int    `json:"default_session_count"`
 	IsolateCacheDefault   bool   `json:"isolate_cache_default"`
 	Launcher              string `json:"launcher"`
+	// VerifyCmd is the command bosun's brief preamble tells the agent to run
+	// before declaring `bosun done`. Default is `make check` (bosun's own
+	// convention). Projects with different test workflows set this to e.g.
+	// "make test" or "go test ./...".
+	VerifyCmd string `json:"verify_cmd"`
 }
 
 // Defaults returns a Config populated with the documented defaults.
@@ -41,6 +47,7 @@ func Defaults() Config {
 		DefaultSessionCount:   DefaultSessionCount,
 		IsolateCacheDefault:   DefaultIsolateCache,
 		Launcher:              DefaultLauncherStrategy,
+		VerifyCmd:             DefaultVerifyCmd,
 	}
 }
 
@@ -78,6 +85,9 @@ func Load(repoRoot string) (Config, error) {
 	}
 	if overlay.Launcher != "" {
 		cfg.Launcher = overlay.Launcher
+	}
+	if overlay.VerifyCmd != "" {
+		cfg.VerifyCmd = overlay.VerifyCmd
 	}
 	// Bool fields are tri-state-ish; we just adopt the parsed value.
 	cfg.IsolateCacheDefault = overlay.IsolateCacheDefault

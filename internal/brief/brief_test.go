@@ -65,7 +65,7 @@ body 5
 func TestWriteToWorktree(t *testing.T) {
 	wt := t.TempDir()
 	b := Brief{Session: 2, Body: "do the thing"}
-	if err := WriteToWorktree(wt, b); err != nil {
+	if err := WriteToWorktree(wt, b, ""); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(filepath.Join(wt, "BOSUN_BRIEF.md"))
@@ -83,7 +83,7 @@ func TestWriteToWorktree_IncludesWorkflowPreamble(t *testing.T) {
 	// makes the lifecycle explicit in the brief.
 	wt := t.TempDir()
 	b := Brief{Session: 3, Body: "implement X"}
-	if err := WriteToWorktree(wt, b); err != nil {
+	if err := WriteToWorktree(wt, b, ""); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(filepath.Join(wt, "BOSUN_BRIEF.md"))
@@ -109,6 +109,43 @@ func TestWriteToWorktree_IncludesWorkflowPreamble(t *testing.T) {
 		if !strings.Contains(content, want) {
 			t.Errorf("brief missing %q\n--- full content ---\n%s", want, content)
 		}
+	}
+}
+
+func TestWriteToWorktree_SubstitutesCustomVerifyCmd(t *testing.T) {
+	// Round-2 assay dogfood finding: hardcoded `make check` confused agents
+	// on projects that use a different verification target. WriteToWorktree
+	// now substitutes the {verifyCmd} placeholder so projects can configure
+	// their own — e.g. `make test` or `go test ./...`.
+	wt := t.TempDir()
+	b := Brief{Session: 1, Body: "do something"}
+	if err := WriteToWorktree(wt, b, "make test"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(wt, "BOSUN_BRIEF.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "Run `make test`") {
+		t.Errorf("expected `make test` in preamble:\n%s", content)
+	}
+	if strings.Contains(content, "make check") {
+		t.Errorf("`make check` should NOT appear when verifyCmd=make test:\n%s", content)
+	}
+	if strings.Contains(content, "{verifyCmd}") {
+		t.Errorf("placeholder `{verifyCmd}` was not substituted:\n%s", content)
+	}
+}
+
+func TestWriteToWorktree_DefaultsToMakeCheck(t *testing.T) {
+	wt := t.TempDir()
+	if err := WriteToWorktree(wt, Brief{Session: 1, Body: "x"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(filepath.Join(wt, "BOSUN_BRIEF.md"))
+	if !strings.Contains(string(data), "Run `make check`") {
+		t.Fatalf("empty verifyCmd should default to make check:\n%s", string(data))
 	}
 }
 

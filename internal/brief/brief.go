@@ -63,11 +63,15 @@ func parseContent(s string) []Brief {
 // but skip the bosun lifecycle (commit + claim + done) — observed in the
 // v0.1 dogfood session where 3 of 4 sessions "finished" but never committed.
 //
-// The {N} placeholder is substituted with the session number at write time.
+// Placeholders substituted at write time:
+//   {N}          → the session number
+//   {verifyCmd}  → the verification command (default `make check`; override
+//                  via .bosun/config.json `verify_cmd` so non-bosun projects
+//                  can use their own target like `make test` or `go test ./...`)
 const WorkflowPreamble = "## How to work this session\n\n" +
 	"1. Read this brief in full — your assignment is in **Your assignment** below.\n" +
 	"2. Implement the work. Keep changes minimal; don't refactor adjacent code.\n" +
-	"3. Run `make check` from the worktree root to validate (vet + race tests + demo).\n" +
+	"3. Run `{verifyCmd}` from the worktree root to validate.\n" +
 	"4. Stage and commit: `git add . && git commit -m \"...\"` — descriptive message.\n" +
 	"5. Declare what you touched: `bosun claim session-{N} <paths...>` (run from this worktree).\n" +
 	"6. Mark ready to merge: `bosun done session-{N} -m \"summary\"`.\n\n" +
@@ -83,11 +87,17 @@ const WorkflowPreamble = "## How to work this session\n\n" +
 	"---\n\n"
 
 // WriteToWorktree writes the brief body as BOSUN_BRIEF.md into worktreePath,
-// prefixed by the standard workflow preamble.
-func WriteToWorktree(worktreePath string, b Brief) error {
+// prefixed by the standard workflow preamble. verifyCmd is substituted into
+// the preamble's "run this to validate" step; pass an empty string to use
+// the package default ("make check").
+func WriteToWorktree(worktreePath string, b Brief, verifyCmd string) error {
+	if verifyCmd == "" {
+		verifyCmd = "make check"
+	}
 	target := filepath.Join(worktreePath, "BOSUN_BRIEF.md")
 	header := fmt.Sprintf("# Bosun brief — session-%d\n\n", b.Session)
 	preamble := strings.ReplaceAll(WorkflowPreamble, "{N}", fmt.Sprintf("%d", b.Session))
+	preamble = strings.ReplaceAll(preamble, "{verifyCmd}", verifyCmd)
 	content := header + preamble + "## Your assignment\n\n" + b.Body + "\n"
 	return os.WriteFile(target, []byte(content), 0o644)
 }

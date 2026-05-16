@@ -33,6 +33,28 @@ func TestLoad_MissingFile(t *testing.T) {
 	}
 }
 
+func TestLoad_VerifyCmdOverride(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".bosun"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte(`{"verify_cmd":"make test"}`)
+	if err := os.WriteFile(filepath.Join(dir, ".bosun/config.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.VerifyCmd != "make test" {
+		t.Fatalf("VerifyCmd = %q, want make test", c.VerifyCmd)
+	}
+	// Other fields still defaulted.
+	if c.BaseBranch != "main" {
+		t.Errorf("BaseBranch defaulted lost: %q", c.BaseBranch)
+	}
+}
+
 func TestLoad_OverridesOnly(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, ".bosun"), 0o755); err != nil {

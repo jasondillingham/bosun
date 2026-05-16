@@ -1,16 +1,19 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/jasondillingham/bosun/internal/config"
+	"github.com/jasondillingham/bosun/internal/git"
 	"github.com/spf13/cobra"
 )
 
@@ -31,6 +34,27 @@ var configSetKeys = []string{
 // about. It's `configSetKeys` plus the read-only `hooks` summary.
 var configListKeys = append(append([]string{}, configSetKeys...), "hooks")
 
+// configRecognizedKeys is the complete set of top-level JSON keys
+// `.bosun/config.json` may contain. `bosun config validate` rejects any
+// stray key so typos surface at the gate rather than being silently
+// ignored by the loader's permissive json.Unmarshal.
+//
+// This is a superset of configListKeys: it also includes fields the
+// scalar set/get/unset path doesn't expose (git_op_timeout_seconds is
+// an int callers usually leave at the default; suggest is a sub-object).
+var configRecognizedKeys = []string{
+	"base_branch",
+	"session_prefix",
+	"worktree_suffix_pattern",
+	"default_session_count",
+	"isolate_cache_default",
+	"launcher",
+	"verify_cmd",
+	"git_op_timeout_seconds",
+	"hooks",
+	"suggest",
+}
+
 func newConfigCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "config",
@@ -45,6 +69,9 @@ and writes the file atomically.`,
 		newConfigListCmd(),
 		newConfigGetCmd(),
 		newConfigSetCmd(),
+		newConfigUnsetCmd(),
+		newConfigValidateCmd(),
+		newConfigInitCmd(),
 	)
 	return cmd
 }
@@ -80,6 +107,57 @@ func newConfigSetCmd() *cobra.Command {
 			return runConfigSet(args[0], args[1])
 		},
 	}
+}
+
+func newConfigUnsetCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "unset <key>",
+		Short: "Remove a key from .bosun/config.json (falls back to default)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runConfigUnset(args[0])
+		},
+	}
+}
+
+func newConfigValidateCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "validate",
+		Short: "Check .bosun/config.json parses and every key + value is valid",
+		Long: `Read-only verification that .bosun/config.json is well-formed.
+
+Checks the file parses as JSON, every top-level key is one bosun
+recognises, every hook event matches the known event set, and every
+value passes the loader's validation rules. Exits 0 when clean,
+non-zero with a structured error otherwise. Suitable as a pre-commit
+hook or CI gate.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runConfigValidate()
+		},
+	}
+}
+
+func newConfigInitCmd() *cobra.Command {
+	var force bool
+	cmd := &cobra.Command{
+		Use:   "init",
+		Short: "Write a stub .bosun/config.json populated with defaults",
+		Long: `Create .bosun/config.json with every key set to its documented default.
+
+Also writes .bosun/config.example.json — an annotated, human-only
+sibling file with a leading // comment block describing each key.
+The example file is documentation; bosun never loads it, so JSON's
+no-comments rule doesn't apply.
+
+Refuses to overwrite an existing config.json unless --force is set.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runConfigInit(force)
+		},
+	}
+	cmd.Flags().BoolVar(&force, "force", false, "overwrite an existing .bosun/config.json")
+	return cmd
 }
 
 func runConfigList() error {
@@ -151,8 +229,192 @@ func runConfigSet(key, value string) error {
 	return nil
 }
 
+func runConfigUnset(key string) error {
+	rc, err := loadCtx()
+	if err != nil {
+		return err
+	}
+	if !isKnownConfigKey(key) {
+		return userErr("unknown config key %q (known: %s)", key, strings.Join(configListKeys, ", "))
+	}
+
+	raw, err := readRawConfig(rc.repoRoot)
+	if err != nil {
+		return userErr("read config file: %v", err)
+	}
+	if _, ok := raw[key]; !ok {
+		printf("bosun: %s already at default (no-op)\n", key)
+		return nil
+	}
+	delete(raw, key)
+
+	merged, err := configFromRaw(raw)
+	if err != nil {
+		return userErr("%v", err)
+	}
+	if err := merged.Validate(); err != nil {
+		return userErr("%v", err)
+	}
+
+	if err := writeConfigAtomic(rc.repoRoot, raw); err != nil {
+		return internalErr("write config", err)
+	}
+	printf("bosun: unset %s (now %s)\n", key, formatConfigValue(merged, key))
+	return nil
+}
+
+// runConfigValidate inspects .bosun/config.json without modifying it.
+// Designed to be wired into a pre-commit hook or CI gate, so it must
+// exit non-zero on any structural problem the loader would silently
+// tolerate — most importantly typo'd top-level keys, which
+// json.Unmarshal ignores by default.
+func runConfigValidate() error {
+	root, err := repoRootForConfig()
+	if err != nil {
+		return err
+	}
+
+	path := filepath.Join(root, config.ConfigRelativePath)
+	if _, err := os.Stat(path); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			printf("bosun: %s absent — using defaults (valid)\n", config.ConfigRelativePath)
+			return nil
+		}
+		return internalErr("stat config", err)
+	}
+
+	raw, err := readRawConfig(root)
+	if err != nil {
+		return userErr("%v", err)
+	}
+
+	var unknown []string
+	for k := range raw {
+		if !isRecognizedConfigKey(k) {
+			unknown = append(unknown, k)
+		}
+	}
+	if len(unknown) > 0 {
+		sort.Strings(unknown)
+		return userErr("unrecognized key(s) in %s: %s (known: %s)",
+			config.ConfigRelativePath,
+			strings.Join(unknown, ", "),
+			strings.Join(configRecognizedKeys, ", "))
+	}
+
+	// Delegate value-level checks (types, ranges, known hook events) to
+	// config.Load — it parses and runs Validate. Anything it rejects is
+	// surfaced verbatim so the operator sees the same message they'd see
+	// running a normal bosun command against the broken file.
+	if _, err := config.Load(root); err != nil {
+		return userErr("%v", err)
+	}
+
+	printf("bosun: %s is valid\n", config.ConfigRelativePath)
+	return nil
+}
+
+// runConfigInit writes a stub config and an annotated companion file.
+// It deliberately skips loadCtx so it works even when the existing
+// config.json is broken — `init --force` is the recovery path.
+func runConfigInit(force bool) error {
+	root, err := repoRootForConfig()
+	if err != nil {
+		return err
+	}
+
+	path := filepath.Join(root, config.ConfigRelativePath)
+	if _, statErr := os.Stat(path); statErr == nil {
+		if !force {
+			return userErr("%s already exists; pass --force to overwrite", config.ConfigRelativePath)
+		}
+	} else if !errors.Is(statErr, fs.ErrNotExist) {
+		return internalErr("stat config", statErr)
+	}
+
+	dir := filepath.Join(root, ".bosun")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return internalErr("mkdir .bosun", err)
+	}
+
+	defaults := config.Defaults()
+	stub, err := json.MarshalIndent(defaults, "", "  ")
+	if err != nil {
+		return internalErr("marshal defaults", err)
+	}
+	stub = append(stub, '\n')
+	if err := os.WriteFile(path, stub, 0o644); err != nil {
+		return internalErr("write config", err)
+	}
+
+	examplePath := filepath.Join(dir, "config.example.json")
+	if err := os.WriteFile(examplePath, []byte(buildConfigExample(defaults)), 0o644); err != nil {
+		return internalErr("write config example", err)
+	}
+
+	printf("bosun: wrote %s\n", config.ConfigRelativePath)
+	printf("bosun: wrote .bosun/config.example.json (annotated reference)\n")
+	return nil
+}
+
+// buildConfigExample emits a human-readable annotated copy of the
+// defaults. The file starts with `//`-prefixed lines describing each
+// key, then the JSON body. It is not valid JSON and is not loaded by
+// bosun — operators copy values out of it into config.json by hand.
+func buildConfigExample(c config.Config) string {
+	body, _ := json.MarshalIndent(c, "", "  ")
+	var b strings.Builder
+	b.WriteString("// bosun config — annotated reference. Documentation only;\n")
+	b.WriteString("// bosun reads .bosun/config.json, never this file. Copy values\n")
+	b.WriteString("// you want into config.json (strip these comment lines first —\n")
+	b.WriteString("// JSON forbids comments).\n")
+	b.WriteString("//\n")
+	b.WriteString("// base_branch:             git branch new sessions branch off of.\n")
+	b.WriteString("// session_prefix:          leading segment for bosun branch names (prefix/session-N).\n")
+	b.WriteString("// worktree_suffix_pattern: suffix appended to the repo dirname for each worktree path.\n")
+	b.WriteString("//                          Must contain {N}; must not start with it.\n")
+	b.WriteString("// default_session_count:   how many sessions `bosun init` creates without an explicit count.\n")
+	b.WriteString("// isolate_cache_default:   copy node_modules / build cache into each worktree at init time.\n")
+	b.WriteString("// launcher:                agent-window strategy: auto | tmux | terminal | print.\n")
+	b.WriteString("// verify_cmd:              command the brief preamble tells the agent to run before `bosun done`.\n")
+	b.WriteString("// git_op_timeout_seconds:  per-operation cap on each `git` subprocess (0 = built-in default).\n")
+	b.WriteString("// hooks:                   list of {event, command, fail_open?, timeout_seconds?} entries.\n")
+	b.WriteString("//                          Events: pre-init, post-init, post-done, pre-merge, post-merge,\n")
+	b.WriteString("//                          pre-cleanup, post-cleanup.\n")
+	b.WriteString("// suggest:                 brief-authoring assistant config (model, max_tokens, api_key_env).\n")
+	b.WriteString("//\n")
+	b.Write(body)
+	b.WriteString("\n")
+	return b.String()
+}
+
+// repoRootForConfig resolves the main worktree path without going
+// through loadCtx so the caller doesn't inherit config.Load failures.
+// `validate` and `init` need to run against repos whose config is
+// currently broken; loadCtx would refuse before they got a chance.
+func repoRootForConfig() (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", internalErr("getwd", err)
+	}
+	root, err := git.New().MainWorktreePath(context.Background(), cwd)
+	if err != nil {
+		return "", userErr("not inside a git repository (cwd=%s)", cwd)
+	}
+	return root, nil
+}
+
 func isKnownConfigKey(key string) bool {
 	for _, k := range configListKeys {
+		if k == key {
+			return true
+		}
+	}
+	return false
+}
+
+func isRecognizedConfigKey(key string) bool {
+	for _, k := range configRecognizedKeys {
 		if k == key {
 			return true
 		}

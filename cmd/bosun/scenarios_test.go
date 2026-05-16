@@ -3074,3 +3074,136 @@ func TestScenario_InitCleanPhantomsRemovesThem(t *testing.T) {
 		t.Errorf("phantom file should be gone, stat err=%v", err)
 	}
 }
+
+// --- config unset / validate / init ---
+//
+// These exercise the round-out subcommands added on top of the original
+// get/set/list trio. They build on the same shared scenario harness so
+// the underlying file plumbing is real (no mocking of disk or git).
+
+func TestScenario_ConfigUnsetRemovesOverride(t *testing.T) {
+	s := newScenario(t)
+	s.Bosun("config", "set", "base_branch", "develop")
+	if out := s.Bosun("config", "list"); !strings.Contains(out, "base_branch: develop") || strings.Contains(out, "base_branch: develop (default)") {
+		t.Fatalf("expected base_branch overridden to develop, got:\n%s", out)
+	}
+
+	out := s.Bosun("config", "unset", "base_branch")
+	s.AssertContains(out, "unset base_branch")
+
+	listed := s.Bosun("config", "list")
+	s.AssertContains(listed, "base_branch: main (default)")
+
+	// Other keys still respect their previous state — the raw file
+	// should round-trip without losing unrelated overrides.
+	s.Bosun("config", "set", "launcher", "print")
+	s.Bosun("config", "unset", "base_branch") // no-op now, but mustn't drop launcher
+	listed = s.Bosun("config", "list")
+	s.AssertContains(listed, "launcher: print")
+}
+
+func TestScenario_ConfigUnsetOnDefaultIsNoop(t *testing.T) {
+	s := newScenario(t)
+	out := s.Bosun("config", "unset", "launcher")
+	s.AssertContains(out, "already at default")
+
+	// No config file should have been created by a no-op unset.
+	if _, err := os.Stat(filepath.Join(s.repo, ".bosun", "config.json")); err == nil {
+		t.Fatalf(".bosun/config.json should not exist after no-op unset")
+	}
+}
+
+func TestScenario_ConfigUnsetUnknownKeyFails(t *testing.T) {
+	s := newScenario(t)
+	out, err := s.BosunErr("config", "unset", "made_up_key")
+	if err == nil {
+		t.Fatalf("expected error for unknown key, output:\n%s", out)
+	}
+	s.AssertContains(out, "unknown config key")
+}
+
+func TestScenario_ConfigValidatePassesOnGoodConfig(t *testing.T) {
+	s := newScenario(t)
+	// No file → defaults are valid.
+	out := s.Bosun("config", "validate")
+	s.AssertContains(out, "absent")
+
+	// File present with a real override.
+	s.Bosun("config", "set", "base_branch", "develop")
+	out = s.Bosun("config", "validate")
+	s.AssertContains(out, "is valid")
+}
+
+func TestScenario_ConfigValidateFailsOnUnknownHookEvent(t *testing.T) {
+	s := newScenario(t)
+	s.WriteFile(".bosun/config.json", `{"hooks":[{"event":"post-typo","command":"echo hi"}]}`)
+	out, err := s.BosunErr("config", "validate")
+	if err == nil {
+		t.Fatalf("expected validate to fail on unknown hook event, output:\n%s", out)
+	}
+	s.AssertContains(out, "unknown event")
+}
+
+func TestScenario_ConfigValidateFailsOnUnknownTopLevelKey(t *testing.T) {
+	s := newScenario(t)
+	s.WriteFile(".bosun/config.json", `{"base_branchh":"main"}`)
+	out, err := s.BosunErr("config", "validate")
+	if err == nil {
+		t.Fatalf("expected validate to fail on typo'd top-level key, output:\n%s", out)
+	}
+	s.AssertContains(out, "unrecognized key")
+}
+
+func TestScenario_ConfigInitWritesStubAndExample(t *testing.T) {
+	s := newScenario(t)
+	out := s.Bosun("config", "init")
+	s.AssertContains(out, ".bosun/config.json")
+	s.AssertContains(out, "config.example.json")
+
+	cfgPath := filepath.Join(s.repo, ".bosun", "config.json")
+	data := readFile(t, cfgPath)
+	for _, want := range []string{
+		`"base_branch": "main"`,
+		`"session_prefix": "bosun"`,
+		`"launcher": "auto"`,
+		`"verify_cmd": "make check"`,
+	} {
+		if !strings.Contains(data, want) {
+			t.Errorf("stub config missing %q; got:\n%s", want, data)
+		}
+	}
+
+	// `config validate` must pass on the freshly-written stub — if it
+	// doesn't, `init` shipped a file the user can't actually use.
+	s.Bosun("config", "validate")
+
+	examplePath := filepath.Join(s.repo, ".bosun", "config.example.json")
+	example := readFile(t, examplePath)
+	if !strings.HasPrefix(example, "//") {
+		t.Errorf("example file should start with a // comment block, got prefix %q", example[:min(40, len(example))])
+	}
+	for _, want := range []string{"base_branch", "hooks", "suggest"} {
+		if !strings.Contains(example, want) {
+			t.Errorf("example missing %q", want)
+		}
+	}
+}
+
+func TestScenario_ConfigInitRefusesOverwriteWithoutForce(t *testing.T) {
+	s := newScenario(t)
+	s.Bosun("config", "init")
+
+	// Mutate the config so we can prove --force replaces it.
+	s.Bosun("config", "set", "launcher", "print")
+
+	out, err := s.BosunErr("config", "init")
+	if err == nil {
+		t.Fatalf("expected init to refuse overwrite, got:\n%s", out)
+	}
+	s.AssertContains(out, "already exists")
+
+	// --force succeeds and resets the mutated key back to the default.
+	s.Bosun("config", "init", "--force")
+	listed := s.Bosun("config", "list")
+	s.AssertContains(listed, "launcher: auto")
+}

@@ -1950,3 +1950,73 @@ func TestScenario_ShowJSONUnknownSessionFails(t *testing.T) {
 		t.Fatalf("show <missing> --json should fail:\n%s", out)
 	}
 }
+
+// --- cleanup --orphan-dirs ---
+
+// TestScenario_CleanupOrphanDirs_RemovesStaleSiblingDir reproduces the
+// v0.3 corruption shape that prompted this feature: a sibling worktree
+// directory survives on disk after its git admin metadata is gone, so
+// `git worktree list` doesn't see it and the normal cleanup planner can't
+// reach it. `bosun cleanup --orphan-dirs` should detect the dir and
+// remove it.
+func TestScenario_CleanupOrphanDirs_RemovesStaleSiblingDir(t *testing.T) {
+	s := newScenario(t)
+	s.Bosun("init", "1")
+	// Commit work in session-1 so the normal cleanup sweep skips it
+	// (ahead-of-base sessions need --force; empty ones don't). Keeping
+	// the live session around lets us assert that --orphan-dirs only
+	// touches the orphan and leaves real worktrees alone.
+	wt1 := s.WorktreePath(1)
+	s.WriteFileIn(wt1, "live.txt", "active work\n")
+	s.CommitIn(wt1, "session-1 work-in-progress")
+
+	// Plant a stale sibling: a worktree-shaped dir with no git admin
+	// entry. We make it by hand rather than through `bosun init` so it
+	// stays invisible to `git worktree list`.
+	stale := filepath.Join(s.parent, s.name+"-bosun-9")
+	if err := os.MkdirAll(stale, 0o755); err != nil {
+		t.Fatalf("mkdir stale: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(stale, "leftover.txt"), []byte("from a long-dead session\n"), 0o644); err != nil {
+		t.Fatalf("write leftover: %v", err)
+	}
+
+	out := s.Bosun("cleanup", "--orphan-dirs")
+	s.AssertContainsAll(out, s.name+"-bosun-9", "removed (orphan dir)")
+
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Fatalf("stale dir still present after cleanup --orphan-dirs (err=%v)", err)
+	}
+	// Live session with work must not be touched.
+	s.AssertWorktreeExists(1)
+}
+
+// TestScenario_CleanupOrphanDirs_SkipsLiveWorktreeDir asserts the safety
+// rail: a sibling dir that still carries a `.git` file pointing back at
+// the main repo is reported as a partially-functional worktree and left
+// alone. The intended remedy is `git worktree prune` (or repair), not a
+// blind delete.
+func TestScenario_CleanupOrphanDirs_SkipsLiveWorktreeDir(t *testing.T) {
+	s := newScenario(t)
+	s.Bosun("init", "1")
+
+	// Plant a dir matching the suffix that *looks* like a worktree on
+	// disk (has a .git file pointing into the main repo's admin tree)
+	// but isn't in `git worktree list`. cleanup --orphan-dirs must
+	// surface this as a skip, not nuke it.
+	live := filepath.Join(s.parent, s.name+"-bosun-7")
+	if err := os.MkdirAll(live, 0o755); err != nil {
+		t.Fatalf("mkdir live: %v", err)
+	}
+	gitDirPtr := "gitdir: " + filepath.Join(s.repo, ".git", "worktrees", "session-7") + "\n"
+	if err := os.WriteFile(filepath.Join(live, ".git"), []byte(gitDirPtr), 0o644); err != nil {
+		t.Fatalf("write .git: %v", err)
+	}
+
+	out := s.Bosun("cleanup", "--orphan-dirs")
+	s.AssertContainsAll(out, s.name+"-bosun-7", "looks like a live worktree", "git worktree prune")
+
+	if _, err := os.Stat(live); err != nil {
+		t.Fatalf("live worktree dir was removed; should have been skipped: %v", err)
+	}
+}

@@ -2,8 +2,11 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
+	"github.com/jasondillingham/bosun/internal/git"
 	"github.com/jasondillingham/bosun/internal/session"
 	"github.com/spf13/cobra"
 )
@@ -13,6 +16,7 @@ func newCleanupCmd() *cobra.Command {
 		dryRun     bool
 		force      bool
 		orphansArg int
+		orphanDirs bool
 	)
 
 	cmd := &cobra.Command{
@@ -28,10 +32,15 @@ print what would happen without changing anything.
 Pass --orphans=N to instead clean up sessions whose number is greater than
 N — typical after ` + "`bosun init --force`" + ` shrinks the session count and leaves
 the trailing worktrees behind. ` + "`--orphans`" + ` without a value defaults to the
-configured default_session_count.`,
+configured default_session_count.
+
+Pass --orphan-dirs to also scan the repo's parent directory for sibling
+worktree directories whose git admin metadata is already gone — the shape
+the v0.3 corruption left behind. Independent of --orphans (which filters by
+session number).`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			opts := cleanupOpts{dryRun: dryRun, force: force}
+			opts := cleanupOpts{dryRun: dryRun, force: force, orphanDirs: orphanDirs}
 			if cmd.Flags().Changed("orphans") {
 				opts.orphansMode = true
 				opts.orphansKeep = orphansArg
@@ -43,6 +52,7 @@ configured default_session_count.`,
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print what would happen, don't act")
 	cmd.Flags().BoolVar(&force, "force", false, "also remove dirty/unmerged sessions")
 	cmd.Flags().IntVar(&orphansArg, "orphans", 0, "only act on sessions whose number is greater than this (0 means use config.default_session_count)")
+	cmd.Flags().BoolVar(&orphanDirs, "orphan-dirs", false, "also scan parent dir for worktree directories git no longer tracks and remove them")
 	// NoOptDefVal lets `--orphans` work without a value (cobra parses it as
 	// `--orphans=0`), at which point runCleanup falls back to the config
 	// default. The string form is what cobra requires here.
@@ -63,6 +73,11 @@ type cleanupOpts struct {
 	// runCleanup." A negative value would remove every session, which we
 	// reject up front.
 	orphansKeep int
+	// orphanDirs additionally scans the repo's parent directory for
+	// worktree-shaped directories that git's worktree list doesn't track
+	// (the v0.3 corruption case: data on disk, admin metadata pruned).
+	// Acts in addition to the normal session sweep.
+	orphanDirs bool
 }
 
 type cleanupAction int
@@ -225,7 +240,7 @@ func runCleanup(cmd *cobra.Command, opts cleanupOpts) error {
 		return gitErr("derive sessions", err)
 	}
 
-	if len(sessions) == 0 {
+	if len(sessions) == 0 && !opts.orphanDirs {
 		println("bosun: no sessions to clean up")
 		return nil
 	}
@@ -239,7 +254,7 @@ func runCleanup(cmd *cobra.Command, opts cleanupOpts) error {
 			return userErr("--orphans must be >= 0, got %d", keep)
 		}
 		sessions = filterOrphans(sessions, keep)
-		if len(sessions) == 0 {
+		if len(sessions) == 0 && !opts.orphanDirs {
 			printf("bosun: no sessions beyond session-%d to clean up\n", keep)
 			return nil
 		}
@@ -279,10 +294,92 @@ func runCleanup(cmd *cobra.Command, opts cleanupOpts) error {
 		printf("  ✓ %s: removed (%s)\n", p.s.Name, p.reason)
 	}
 
+	if opts.orphanDirs {
+		r, s, err := sweepOrphanDirs(rc, opts.dryRun)
+		if err != nil {
+			return err
+		}
+		removed += r
+		skipped += s
+	}
+
 	if opts.dryRun {
 		printf("\nbosun: dry-run — would remove %d, skip %d (no changes made)\n", removed, skipped)
 	} else {
 		printf("\nbosun: removed %d, skipped %d\n", removed, skipped)
 	}
 	return nil
+}
+
+// sweepOrphanDirs implements the --orphan-dirs path: scan the repo's
+// parent directory for sibling dirs matching cfg.WorktreeSuffixPattern,
+// drop any that git's worktree list still tracks, then for each
+// remaining candidate either remove it (chmod + RemoveAll) or skip it
+// with a "looks like a live worktree" notice when the dir still
+// carries a `.git` file pointing at the main repo. Returns the
+// removed/skipped counts so runCleanup can fold them into the summary.
+func sweepOrphanDirs(rc *runCtx, dryRun bool) (removed, skipped int, err error) {
+	candidates, err := git.ScanOrphanDirs(rc.repoRoot, rc.cfg.WorktreeSuffixPattern)
+	if err != nil {
+		return 0, 0, gitErr("scan orphan dirs", err)
+	}
+	if len(candidates) == 0 {
+		return 0, 0, nil
+	}
+
+	worktrees, err := rc.git.ListWorktrees(rc.ctx, rc.repoRoot)
+	if err != nil {
+		return 0, 0, gitErr("list worktrees", err)
+	}
+	tracked := make(map[string]bool, len(worktrees))
+	for _, w := range worktrees {
+		tracked[w.Path] = true
+	}
+
+	for _, dir := range candidates {
+		if tracked[dir] {
+			// git still considers it a real worktree — handled by the
+			// normal session sweep, not here.
+			continue
+		}
+		display := filepath.Base(dir)
+		if looksLikeLiveWorktree(dir) {
+			skipped++
+			printf("  ⏭ %s: skipped (looks like a live worktree; run `git worktree prune` first)\n", display)
+			continue
+		}
+		if dryRun {
+			removed++
+			printf("  ▸ %s: would remove (orphan dir)\n", display)
+			continue
+		}
+		if info, statErr := os.Stat(dir); statErr == nil && info.IsDir() {
+			_ = git.ChmodWritableTree(dir)
+		}
+		if rmErr := os.RemoveAll(dir); rmErr != nil {
+			return removed, skipped, fmt.Errorf("remove orphan dir %s: %w", dir, rmErr)
+		}
+		removed++
+		printf("  ✓ %s: removed (orphan dir)\n", display)
+	}
+	return removed, skipped, nil
+}
+
+// looksLikeLiveWorktree reports whether dir has a `.git` *file* (not
+// directory) whose content begins with `gitdir:` — the on-disk shape of
+// a linked worktree's pointer back to the main repo's .git admin tree.
+// True means we should refuse to remove it: the safer course is to ask
+// the operator to run `git worktree prune` (or `repair`) first so git's
+// view of the tree matches the disk.
+func looksLikeLiveWorktree(dir string) bool {
+	gitPath := filepath.Join(dir, ".git")
+	info, err := os.Lstat(gitPath)
+	if err != nil || info.IsDir() {
+		return false
+	}
+	data, err := os.ReadFile(gitPath)
+	if err != nil {
+		return false
+	}
+	return strings.HasPrefix(strings.TrimSpace(string(data)), "gitdir:")
 }

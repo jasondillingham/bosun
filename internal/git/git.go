@@ -313,6 +313,65 @@ func (c *Client) PruneWorktrees(ctx context.Context, dir string) error {
 	return err
 }
 
+// ScanOrphanDirs returns absolute paths of sibling directories of repoRoot
+// whose name matches the worktree suffix pattern. These are candidates for
+// orphan-dir cleanup — directories left behind on disk after the matching
+// worktree's git admin metadata was already pruned (the v0.3 corruption
+// shape that `git worktree list` can't surface).
+//
+// suffixPattern is the bosun config pattern (e.g. "-bosun-{N}"). The
+// substitution point `{N}` is treated as a `*` glob, so any non-empty
+// session label matches. The repo's own directory is never returned.
+//
+// The caller is responsible for further filtering: excluding entries that
+// `git worktree list` currently tracks, and refusing to remove directories
+// that still carry a `.git` file pointing back at the main repo.
+func ScanOrphanDirs(repoRoot string, suffixPattern string) ([]string, error) {
+	parent := filepath.Dir(repoRoot)
+	base := filepath.Base(repoRoot)
+
+	// The suffix is concatenated onto the repo base name. Translating
+	// `{N}` → `*` produces a glob pattern usable with filepath.Match.
+	glob := base + strings.ReplaceAll(suffixPattern, "{N}", "*")
+
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		return nil, fmt.Errorf("read parent dir %s: %w", parent, err)
+	}
+
+	var out []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		// Belt-and-suspenders: never return the repo's own directory.
+		if name == base {
+			continue
+		}
+		matched, err := filepath.Match(glob, name)
+		if err != nil {
+			return nil, fmt.Errorf("match glob %q: %w", glob, err)
+		}
+		if !matched {
+			continue
+		}
+		out = append(out, filepath.Join(parent, name))
+	}
+	return out, nil
+}
+
+// ChmodWritableTree is the exported wrapper around the internal chmod
+// pre-pass used by RemoveWorktree. Callers that need to nuke an orphan
+// worktree directory (where git no longer has admin metadata, so
+// `git worktree remove` can't help) use this to clear the read-only
+// bits that --isolate-cache leaves on GOMODCACHE entries before
+// os.RemoveAll. The walk is best-effort — per-entry failures are
+// swallowed.
+func ChmodWritableTree(root string) error {
+	return chmodWritableTree(root)
+}
+
 // PorcelainStatusLine is one parsed line of `git status --porcelain`.
 type PorcelainStatusLine struct {
 	XY   string // first two chars, e.g. " M", "??", "A "

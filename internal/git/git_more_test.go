@@ -490,3 +490,121 @@ func TestPruneWorktrees(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestScanOrphanDirs covers the happy path: a parent directory holding a
+// repo plus several sibling dirs, only some of which match the configured
+// worktree suffix pattern. The scanner should return exactly the matching
+// dirs (full absolute paths) and skip everything else — unrelated dirs,
+// regular files with the right name, and the repo itself.
+func TestScanOrphanDirs(t *testing.T) {
+	parent := t.TempDir()
+	repo := filepath.Join(parent, "myproj")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Two orphan worktree dirs (matching) and a couple of decoys.
+	mustMkdir(t, filepath.Join(parent, "myproj-bosun-1"))
+	mustMkdir(t, filepath.Join(parent, "myproj-bosun-9"))
+	mustMkdir(t, filepath.Join(parent, "myproj-bosun-auth")) // labeled session form also matches the {N} glob
+	mustMkdir(t, filepath.Join(parent, "myproj-other"))      // wrong suffix
+	mustMkdir(t, filepath.Join(parent, "unrelated-bosun-1")) // wrong prefix
+	// A regular file that happens to share the naming pattern must not match.
+	if err := os.WriteFile(filepath.Join(parent, "myproj-bosun-7"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := ScanOrphanDirs(repo, "-bosun-{N}")
+	if err != nil {
+		t.Fatalf("ScanOrphanDirs: %v", err)
+	}
+
+	want := map[string]bool{
+		filepath.Join(parent, "myproj-bosun-1"):    true,
+		filepath.Join(parent, "myproj-bosun-9"):    true,
+		filepath.Join(parent, "myproj-bosun-auth"): true,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("ScanOrphanDirs len = %d, want %d\ngot: %v", len(got), len(want), got)
+	}
+	for _, p := range got {
+		if !want[p] {
+			t.Errorf("unexpected match: %s", p)
+		}
+	}
+}
+
+// TestScanOrphanDirs_ExcludesRepo defends against a misconfigured suffix
+// pattern accidentally matching the repo itself. The scanner must never
+// return the repo path even if the glob would otherwise hit it.
+func TestScanOrphanDirs_ExcludesRepo(t *testing.T) {
+	parent := t.TempDir()
+	repo := filepath.Join(parent, "myproj")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A wildcard-heavy pattern that would otherwise match "myproj".
+	got, err := ScanOrphanDirs(repo, "{N}")
+	if err != nil {
+		t.Fatalf("ScanOrphanDirs: %v", err)
+	}
+	for _, p := range got {
+		if p == repo {
+			t.Fatalf("ScanOrphanDirs returned repo path itself: %s", p)
+		}
+	}
+}
+
+// TestScanOrphanDirs_EmptyParent: a parent with no candidate siblings
+// must return an empty slice and no error.
+func TestScanOrphanDirs_EmptyParent(t *testing.T) {
+	parent := t.TempDir()
+	repo := filepath.Join(parent, "lonely")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ScanOrphanDirs(repo, "-bosun-{N}")
+	if err != nil {
+		t.Fatalf("ScanOrphanDirs: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("ScanOrphanDirs = %v, want empty", got)
+	}
+}
+
+// TestScanOrphanDirs_FindsLiveWorktreeDirs documents that the scanner
+// itself does NOT filter out directories that are still tracked by git
+// or that carry a `.git` file — that policy is enforced by cleanup's
+// caller. This test guards against accidentally inlining that policy
+// into the scanner (which would silently hide partially-functional
+// worktrees the operator likely wants surfaced).
+func TestScanOrphanDirs_FindsLiveWorktreeDirs(t *testing.T) {
+	parent := t.TempDir()
+	repo := filepath.Join(parent, "myproj")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	wt := filepath.Join(parent, "myproj-bosun-2")
+	if err := os.MkdirAll(wt, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Plant a worktree-style `.git` file inside.
+	if err := os.WriteFile(filepath.Join(wt, ".git"), []byte("gitdir: "+repo+"/.git/worktrees/session-2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := ScanOrphanDirs(repo, "-bosun-{N}")
+	if err != nil {
+		t.Fatalf("ScanOrphanDirs: %v", err)
+	}
+	if len(got) != 1 || got[0] != wt {
+		t.Fatalf("ScanOrphanDirs = %v, want exactly [%s]", got, wt)
+	}
+}
+
+func mustMkdir(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", path, err)
+	}
+}

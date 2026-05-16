@@ -55,6 +55,20 @@ type Server struct {
 	stopping bool
 }
 
+// toolRegistrations holds every tool registration function the package
+// has accumulated via init(). Each tool_*.go file appends its own
+// registration so adding a tool means adding a file, not editing
+// server.go or tools.go. The point is to remove shared-file overlap
+// when multiple parallel sessions add tools concurrently.
+var toolRegistrations []func(*Server)
+
+// registerTool is called from each tool file's init(). The package-init
+// order is deterministic (alphabetical by file name within a package),
+// so the tool order is stable across builds.
+func registerTool(f func(*Server)) {
+	toolRegistrations = append(toolRegistrations, f)
+}
+
 // NewServer builds a bosun MCP server with all tools registered against the
 // provided stores. Call Listen() before Serve().
 func NewServer(claimsStore *claims.Store, stateStore *state.Store) *Server {
@@ -66,7 +80,9 @@ func NewServer(claimsStore *claims.Store, stateStore *state.Store) *Server {
 		Name:    ServerName,
 		Version: ServerVersion,
 	}, nil)
-	s.registerTools()
+	for _, register := range toolRegistrations {
+		register(s)
+	}
 	return s
 }
 

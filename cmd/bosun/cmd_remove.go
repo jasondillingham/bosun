@@ -1,9 +1,20 @@
 package main
 
 import (
+	"strconv"
+
+	"github.com/jasondillingham/bosun/internal/hooks"
 	"github.com/jasondillingham/bosun/internal/session"
 	"github.com/spf13/cobra"
 )
+
+// Register `pre-remove` here rather than in internal/hooks so each
+// lifecycle owner declares its own event names alongside the call-site
+// that fires them — keeps the hooks package free of churn while v0.5
+// rounds out per-command events in parallel branches.
+func init() {
+	hooks.KnownEvents = append(hooks.KnownEvents, "pre-remove")
+}
 
 func newRemoveCmd() *cobra.Command {
 	var force bool
@@ -89,6 +100,23 @@ func runRemove(cmd *cobra.Command, sessionArg string, force bool) error {
 			// reachable from base, so escalate to force for the git calls only.
 			destructive = true
 		}
+	}
+
+	// Fire pre-remove BEFORE any destructive op so a hook with
+	// `fail_open: false` can snapshot the worktree (or veto entirely)
+	// while it still exists on disk. The orphan-branch fast-path above
+	// skips this hook by design: there's no worktree to snapshot and
+	// the safety-check env vars (ahead/dirty) aren't meaningful.
+	hookEnv := map[string]string{
+		"BOSUN_REPO_ROOT":     rc.repoRoot,
+		"BOSUN_SESSION":       label,
+		"BOSUN_BRANCH":        s.Branch,
+		"BOSUN_WORKTREE_PATH": s.Path,
+		"BOSUN_AHEAD":         strconv.Itoa(s.Ahead),
+		"BOSUN_DIRTY":         strconv.Itoa(s.Dirty),
+	}
+	if err := hooks.Run(rc.ctx, rc.cfg.Hooks, "pre-remove", hookEnv); err != nil {
+		return userErr("%v", err)
 	}
 
 	if err := rc.git.RemoveWorktree(rc.ctx, rc.repoRoot, s.Path, destructive); err != nil {

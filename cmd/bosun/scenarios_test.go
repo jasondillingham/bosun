@@ -2890,3 +2890,102 @@ func TestScenario_CleanupPurgeProceedsOnDoneButUnmerged(t *testing.T) {
 	s.AssertWorktreeMissing(1)
 	s.AssertBranchMissing("bosun/session-1")
 }
+
+// --- pre-remove hook ---
+
+// writePreRemoveConfig writes a .bosun/config.json wiring up a single
+// pre-remove hook. Pulled out so the scenarios below stay focused on
+// their behavioral assertions.
+func writePreRemoveConfig(t *testing.T, s *scenario, command string, failOpen bool) {
+	t.Helper()
+	cfgBytes, err := json.MarshalIndent(map[string]any{
+		"hooks": []map[string]any{
+			{"event": "pre-remove", "command": command, "fail_open": failOpen},
+		},
+	}, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	s.WriteFile(".bosun/config.json", string(cfgBytes))
+}
+
+func TestScenario_PreRemoveHookBlocksWhenFailClosed(t *testing.T) {
+	// A pre-remove hook with fail_open=false (the default safety stance)
+	// must abort the removal — the worktree and branch should still be
+	// there after `bosun remove` returns non-zero. This is the contract
+	// operators rely on to veto a teardown they don't want to happen.
+	s := newScenario(t)
+	writePreRemoveConfig(t, s, "exit 1", false)
+	s.Bosun("init", "1")
+
+	out, err := s.BosunErr("remove", "session-1")
+	if err == nil {
+		t.Fatalf("remove should fail when pre-remove hook exits 1; output:\n%s", out)
+	}
+	if !strings.Contains(out, "pre-remove") {
+		t.Errorf("error should mention pre-remove; got:\n%s", out)
+	}
+	s.AssertWorktreeExists(1)
+	s.AssertBranchExists("bosun/session-1")
+}
+
+func TestScenario_PreRemoveHookFailOpenLetsRemovalProceed(t *testing.T) {
+	// fail_open=true downgrades the same exit-1 hook to a warning. The
+	// removal still happens; this mirrors how post-init / post-done
+	// behave today and lets operators wire up best-effort notifications
+	// without blocking destructive ops on flaky integrations.
+	s := newScenario(t)
+	writePreRemoveConfig(t, s, "exit 1", true)
+	s.Bosun("init", "1")
+
+	s.Bosun("remove", "session-1")
+	s.AssertWorktreeMissing(1)
+	s.AssertBranchMissing("bosun/session-1")
+}
+
+func TestScenario_PreRemoveHookSeesBosunEnv(t *testing.T) {
+	// The documented env (BOSUN_SESSION/BRANCH/WORKTREE_PATH/AHEAD/DIRTY)
+	// must arrive intact — these are the inputs a snapshot or notify
+	// script needs to actually do its job. A hook that errors silently
+	// downstream because BOSUN_WORKTREE_PATH wasn't set would be a
+	// nightmare to debug; lock the shape now.
+	s := newScenario(t)
+
+	hookOut := filepath.Join(s.parent, "remove-env.txt")
+	cmdStr := `env | grep -E '^BOSUN_(SESSION|BRANCH|WORKTREE_PATH|AHEAD|DIRTY)=' | sort > ` + shQuote(hookOut)
+	writePreRemoveConfig(t, s, cmdStr, false)
+
+	s.Bosun("init", "1")
+	// Create one tracked commit so BOSUN_AHEAD is observably non-zero;
+	// the test then squash-merges so `remove` doesn't need --force.
+	wt1 := s.WorktreePath(1)
+	s.WriteFileIn(wt1, "feature.txt", "x\n")
+	s.CommitIn(wt1, "session-1 work")
+	s.Bosun("done", "session-1")
+	s.Bosun("merge")
+
+	s.Bosun("remove", "session-1")
+
+	data, err := os.ReadFile(hookOut)
+	if err != nil {
+		t.Fatalf("pre-remove hook did not run (expected output at %s): %v", hookOut, err)
+	}
+	got := string(data)
+	// Worktree path: tolerate macOS /var ↔ /private/var symlink resolution
+	// in either direction — git may report the registered or canonical form.
+	wantSuffix := fmt.Sprintf("%s-bosun-1\n", s.name)
+	if !strings.Contains(got, "BOSUN_WORKTREE_PATH=") || !strings.Contains(got, wantSuffix) {
+		t.Errorf("hook env missing BOSUN_WORKTREE_PATH ending in %q; got:\n%s", wantSuffix, got)
+	}
+	checks := []string{
+		"BOSUN_SESSION=session-1\n",
+		"BOSUN_BRANCH=bosun/session-1\n",
+		"BOSUN_AHEAD=",
+		"BOSUN_DIRTY=0\n",
+	}
+	for _, want := range checks {
+		if !strings.Contains(got, want) {
+			t.Errorf("hook env missing %q; got:\n%s", want, got)
+		}
+	}
+}

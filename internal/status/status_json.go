@@ -17,6 +17,8 @@ type sessionJSON struct {
 	Ahead       int    `json:"ahead"`
 	Dirty       int    `json:"dirty"`
 	Claimed     int    `json:"claimed"`
+	Running     bool   `json:"running"`
+	RunningPID  int    `json:"running_pid,omitempty"`
 	LastSHA     string `json:"last_sha,omitempty"`
 	LastSubject string `json:"last_subject,omitempty"`
 	LastRel     string `json:"last_relative,omitempty"`
@@ -41,15 +43,17 @@ func RenderJSON(w io.Writer, sessions []session.Session, overlaps []claims.Overl
 	}
 	for _, s := range sessions {
 		row := sessionJSON{
-			Name:     s.Name,
-			Number:   s.Number,
-			Branch:   s.Branch,
-			Path:     s.Path,
-			State:    string(s.State),
-			Ahead:    s.Ahead,
-			Dirty:    s.Dirty,
-			Claimed:  s.Claimed,
-			StateMsg: s.StateMsg,
+			Name:       s.Name,
+			Number:     s.Number,
+			Branch:     s.Branch,
+			Path:       s.Path,
+			State:      string(s.State),
+			Ahead:      s.Ahead,
+			Dirty:      s.Dirty,
+			Claimed:    s.Claimed,
+			Running:    s.Running,
+			RunningPID: s.RunningPID,
+			StateMsg:   s.StateMsg,
 		}
 		if s.Last != nil {
 			row.LastSHA = s.Last.ShortSHA

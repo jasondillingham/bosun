@@ -13,6 +13,7 @@ import (
 
 	"github.com/jasondillingham/bosun/internal/config"
 	"github.com/jasondillingham/bosun/internal/git"
+	"github.com/jasondillingham/bosun/internal/proc"
 )
 
 // State is the merge-readiness state of a session.
@@ -31,17 +32,19 @@ const (
 // Name=="auth", Label=="auth". The two forms share the same Session struct
 // so downstream callers can keep operating on a single Session slice.
 type Session struct {
-	Number   int           // 1-based session number; 0 for named sessions
-	Name     string        // e.g. "session-1" or "auth"
-	Label    string        // canonical label (matches Name)
-	Branch   string        // e.g. "bosun/session-1" or "bosun/auth"
-	Path     string        // absolute worktree path
-	Ahead    int           // commits ahead of base
-	Dirty    int           // count of tracked-file changes
-	Claimed  int           // count of distinct claimed paths
-	State    State         // WORKING / DONE / STUCK
-	StateMsg string        // optional body of the state file
-	Last     *git.LogEntry // last commit ahead of base (nil if none)
+	Number     int           // 1-based session number; 0 for named sessions
+	Name       string        // e.g. "session-1" or "auth"
+	Label      string        // canonical label (matches Name)
+	Branch     string        // e.g. "bosun/session-1" or "bosun/auth"
+	Path       string        // absolute worktree path
+	Ahead      int           // commits ahead of base
+	Dirty      int           // count of tracked-file changes
+	Claimed    int           // count of distinct claimed paths
+	State      State         // WORKING / DONE / STUCK
+	StateMsg   string        // optional body of the state file
+	Last       *git.LogEntry // last commit ahead of base (nil if none)
+	Running    bool          // true when an agent process (claude/claude-code/code-cli) is live in Path
+	RunningPID int           // pid of that agent process; 0 when Running is false
 }
 
 // Derive computes the Session list for repoRoot. It calls into the git
@@ -117,18 +120,25 @@ func Derive(ctx context.Context, c *git.Client, cfg config.Config, repoRoot stri
 			return nil, fmt.Errorf("read claims %s: %w", name, err)
 		}
 
+		// proc.Running is best-effort: a permission error or transient
+		// failure shouldn't keep `bosun status` from rendering. The
+		// worst case is a false negative on the RUNNING column.
+		runPID, running, _ := proc.Running(wt.Path)
+
 		result = append(result, Session{
-			Number:   number,
-			Name:     name,
-			Label:    label,
-			Branch:   branch,
-			Path:     wt.Path,
-			Ahead:    ahead,
-			Dirty:    dirty,
-			Claimed:  claimed,
-			State:    state,
-			StateMsg: msg,
-			Last:     last,
+			Number:     number,
+			Name:       name,
+			Label:      label,
+			Branch:     branch,
+			Path:       wt.Path,
+			Ahead:      ahead,
+			Dirty:      dirty,
+			Claimed:    claimed,
+			State:      state,
+			StateMsg:   msg,
+			Last:       last,
+			Running:    running,
+			RunningPID: runPID,
 		})
 	}
 

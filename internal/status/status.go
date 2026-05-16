@@ -59,15 +59,16 @@ func RenderText(w io.Writer, opts RenderOptions) error {
 	writeEvents(w, opts, useColor)
 
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "SESSION\tBRANCH\tSTATE\tAHEAD\tDIRTY\tCLAIMED\tLAST_COMMIT")
+	fmt.Fprintln(tw, "SESSION\tBRANCH\tSTATE\tAHEAD\tDIRTY\tCLAIMED\tRUNNING\tLAST_COMMIT")
 	for _, s := range opts.Sessions {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%d\t%d\t%s\n",
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%d\t%d\t%s\t%s\n",
 			s.Name,
 			s.Branch,
 			colorState(s.State, useColor),
 			s.Ahead,
 			s.Dirty,
 			s.Claimed,
+			formatRunning(s),
 			formatLastCommit(s),
 		)
 	}
@@ -201,6 +202,17 @@ func colorState(st session.State, color bool) string {
 		return tui.Colorize(string(st), tui.Yellow(), true)
 	}
 	return string(st)
+}
+
+// formatRunning renders the RUNNING column: the pid of the live agent when
+// one was detected, or an em-dash placeholder otherwise. The pid is more
+// useful than a bare "yes" since it lets the operator attach or kill the
+// session without rederiving it.
+func formatRunning(s session.Session) string {
+	if !s.Running {
+		return "—"
+	}
+	return fmt.Sprintf("%d", s.RunningPID)
 }
 
 func formatLastCommit(s session.Session) string {

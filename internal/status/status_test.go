@@ -18,6 +18,7 @@ func sampleSessions() []session.Session {
 			Number: 1, Name: "session-1", Branch: "bosun/session-1",
 			Path: "/code/myproj-bosun-1", State: session.StateDone,
 			Ahead: 2, Dirty: 0, Claimed: 3,
+			Running: true, RunningPID: 12345,
 			Last: &git.LogEntry{ShortSHA: "abc1234", Relative: "23s ago", Subject: "implement auth handler"},
 		},
 		{
@@ -43,9 +44,10 @@ func TestRenderText_HeaderAndRows(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"SESSION", "BRANCH", "STATE", "AHEAD", "DIRTY", "CLAIMED", "LAST_COMMIT",
+		"SESSION", "BRANCH", "STATE", "AHEAD", "DIRTY", "CLAIMED", "RUNNING", "LAST_COMMIT",
 		"session-1", "bosun/session-1", "DONE", "implement auth handler",
 		"session-3", "(no commits)",
+		"12345", // RUNNING pid for session-1
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q\n--- output ---\n%s", want, out)
@@ -307,5 +309,56 @@ func TestRenderJSON_Schema(t *testing.T) {
 	}
 	if _, ok := out["sessions"]; !ok {
 		t.Fatal("JSON missing sessions array")
+	}
+}
+
+func TestRenderText_RunningColumn(t *testing.T) {
+	var buf bytes.Buffer
+	if err := RenderText(&buf, RenderOptions{Sessions: sampleSessions(), NoColor: true}); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	// Running session shows its pid.
+	if !strings.Contains(out, "12345") {
+		t.Errorf("running pid missing from table:\n%s", out)
+	}
+	// Sessions without a running agent show the em-dash placeholder. We
+	// rely on formatRunning's "—" — assert at least one row carries it.
+	// (sample has 2 non-running sessions.)
+	if !strings.Contains(out, "—") {
+		t.Errorf("not-running placeholder missing from table:\n%s", out)
+	}
+}
+
+func TestRenderJSON_RunningFields(t *testing.T) {
+	var buf bytes.Buffer
+	if err := RenderJSON(&buf, sampleSessions(), nil, false); err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Sessions []struct {
+			Name       string `json:"name"`
+			Running    bool   `json:"running"`
+			RunningPID int    `json:"running_pid"`
+		} `json:"sessions"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &payload); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, buf.String())
+	}
+	got := map[string]struct {
+		running bool
+		pid     int
+	}{}
+	for _, s := range payload.Sessions {
+		got[s.Name] = struct {
+			running bool
+			pid     int
+		}{s.Running, s.RunningPID}
+	}
+	if g := got["session-1"]; !g.running || g.pid != 12345 {
+		t.Errorf("session-1 json: %+v, want running=true pid=12345", g)
+	}
+	if g := got["session-2"]; g.running || g.pid != 0 {
+		t.Errorf("session-2 json: %+v, want running=false pid=0", g)
 	}
 }

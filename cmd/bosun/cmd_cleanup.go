@@ -149,6 +149,55 @@ func describeWork(s *session.Session) string {
 	return strings.Join(parts, ", ")
 }
 
+// executeCleanupOne removes one session's worktree and branch and clears
+// its bosun state/claims. The caller is responsible for having decided the
+// session is safe to remove (DONE / empty / squash-merged / --force) — this
+// helper bypasses git's own safety gates so untracked bosun metadata
+// (BOSUN_BRIEF.md, .claude/CLAUDE.md) and patch-id-equivalent branches
+// don't block the removal.
+func executeCleanupOne(rc *runCtx, p cleanupPlan) error {
+	forceWT := true
+	forceBranch := true
+	if err := rc.git.RemoveWorktree(rc.ctx, rc.repoRoot, p.s.Path, forceWT); err != nil {
+		return gitErr("remove worktree "+p.s.Path, err)
+	}
+	if err := rc.git.DeleteBranch(rc.ctx, rc.repoRoot, p.s.Branch, forceBranch); err != nil {
+		return gitErr("delete branch "+p.s.Branch, err)
+	}
+	_ = rc.claims.Clear(p.s.Name)
+	_ = rc.state.Clear(p.s.Name)
+	return nil
+}
+
+// cleanupOne plans and (unless dry-run) executes cleanup for one session.
+// Used by the TUI control center's `c` keybind so it doesn't reimplement
+// the policy from runCleanup. Returns the action taken and a short reason.
+// err is non-nil only for unexpected git failures.
+func cleanupOne(rc *runCtx, s *session.Session, opts cleanupOpts) (cleanupAction, string, error) {
+	isSquashed := func(branch string) (bool, error) {
+		unmerged, err := rc.git.UnmergedPatches(rc.ctx, rc.repoRoot, rc.cfg.BaseBranch, branch)
+		if err != nil {
+			return false, err
+		}
+		return unmerged == 0, nil
+	}
+	plans, err := planCleanup([]session.Session{*s}, opts, isSquashed)
+	if err != nil {
+		return cleanupSkip, "", gitErr("plan cleanup", err)
+	}
+	p := plans[0]
+	if p.action == cleanupSkip {
+		return cleanupSkip, p.reason, nil
+	}
+	if opts.dryRun {
+		return cleanupRemove, p.reason, nil
+	}
+	if err := executeCleanupOne(rc, p); err != nil {
+		return cleanupSkip, "", err
+	}
+	return cleanupRemove, p.reason, nil
+}
+
 func runCleanup(cmd *cobra.Command, opts cleanupOpts) error {
 	rc, err := loadCtx()
 	if err != nil {
@@ -207,21 +256,9 @@ func runCleanup(cmd *cobra.Command, opts cleanupOpts) error {
 			printf("  ▸ %s: would remove (%s)\n", p.s.Name, p.reason)
 			continue
 		}
-		// Bosun's planCleanup already validated this session is safe to
-		// remove (DONE / empty / squash-merged / --force). Bypass git's own
-		// safety gates so untracked bosun metadata (BOSUN_BRIEF.md,
-		// .claude/CLAUDE.md) and patch-id-equivalent branches don't block
-		// the removal.
-		forceWT := true
-		forceBranch := true
-		if err := rc.git.RemoveWorktree(rc.ctx, rc.repoRoot, p.s.Path, forceWT); err != nil {
-			return gitErr("remove worktree "+p.s.Path, err)
+		if err := executeCleanupOne(rc, p); err != nil {
+			return err
 		}
-		if err := rc.git.DeleteBranch(rc.ctx, rc.repoRoot, p.s.Branch, forceBranch); err != nil {
-			return gitErr("delete branch "+p.s.Branch, err)
-		}
-		_ = rc.claims.Clear(p.s.Name)
-		_ = rc.state.Clear(p.s.Name)
 		removed++
 		printf("  ✓ %s: removed (%s)\n", p.s.Name, p.reason)
 	}

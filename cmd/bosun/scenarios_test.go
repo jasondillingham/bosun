@@ -1212,6 +1212,27 @@ func TestScenario_LaunchRejectsMissingSession(t *testing.T) {
 	}
 }
 
+// --- tui ---
+
+func TestScenario_TuiHelpListsSubcommandAndKeybinds(t *testing.T) {
+	// The tui subcommand must show up in `bosun --help` and its own
+	// `--help` output must document the operator keybinds. We don't
+	// drive the interactive UI here — model-level unit tests cover that.
+	// This scenario exists to catch the easy regressions: forgot to
+	// register the subcommand in root.go, or the bubbletea/lipgloss
+	// deps drifted such that the binary won't build.
+	s := newScenario(t)
+
+	rootHelp := s.Bosun("--help")
+	s.AssertContains(rootHelp, "tui")
+
+	tuiHelp := s.Bosun("tui", "--help")
+	s.AssertContainsAll(tuiHelp,
+		"--no-color",
+		"j/k", "merge", "cleanup", "remove", "launch", "brief",
+	)
+}
+
 // --- helpers (test-local) ---
 
 func readFile(t *testing.T, path string) string {

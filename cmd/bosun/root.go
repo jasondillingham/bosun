@@ -26,6 +26,7 @@ worktree, with one place to see what every session is doing.`,
 		newCleanupCmd(),
 		newListCmd(),
 		newMcpCmd(),
+		newTuiCmd(),
 	)
 
 	return root

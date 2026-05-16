@@ -98,15 +98,7 @@ func runMerge(cmd *cobra.Command, args []string, opts mergeOpts) error {
 			continue
 		}
 		if !opts.all && requested == nil && s.State != session.StateDone {
-			results = append(results, result{name: s.Name, status: "skipped", reason: "not marked DONE (use --all to override)"})
-			continue
-		}
-		if s.Dirty > 0 {
-			results = append(results, result{name: s.Name, status: "skipped", reason: fmt.Sprintf("%d uncommitted change(s)", s.Dirty)})
-			continue
-		}
-		if s.Ahead == 0 {
-			results = append(results, result{name: s.Name, status: "skipped", reason: "no commits ahead"})
+			results = append(results, result{name: s.Name, status: mergeStatusSkipped, reason: "not marked DONE (use --all to override)"})
 			continue
 		}
 		// Hold this session if any dependency hasn't merged yet — either in
@@ -114,83 +106,30 @@ func runMerge(cmd *cobra.Command, args []string, opts mergeOpts) error {
 		// patch-equivalent to base. We check per-dep so the reason names the
 		// blocker the operator needs to resolve.
 		if blocker, ok := blockingDep(s.Number, depMap, sessions, mergedThisRun, rc); ok {
-			results = append(results, result{name: s.Name, status: "skipped", reason: fmt.Sprintf("depends on session-%d (not merged yet)", blocker)})
+			results = append(results, result{name: s.Name, status: mergeStatusSkipped, reason: fmt.Sprintf("depends on session-%d (not merged yet)", blocker)})
 			continue
 		}
 
-		// If the branch's commits are all patch-id-equivalent to commits
-		// already on base (e.g. an operator hand-resolved a prior conflict
-		// and committed), don't try to squash again — that would just
-		// re-conflict. Treat it as merged and clear state/claims so it
-		// stops cluttering `bosun status`.
-		unmerged, err := rc.git.UnmergedPatches(rc.ctx, rc.repoRoot, rc.cfg.BaseBranch, s.Branch)
+		status, reason, err := mergeOne(rc, &s, opts)
 		if err != nil {
-			return gitErr("check unmerged patches for "+s.Branch, err)
+			return err
 		}
-		if unmerged == 0 {
-			_ = rc.state.Clear(s.Name)
-			_ = rc.claims.Clear(s.Name)
-			results = append(results, result{name: s.Name, status: "skipped", reason: "already merged"})
-			continue
+		results = append(results, result{name: s.Name, status: status, reason: reason})
+		if status == mergeStatusConflict {
+			conflictHit = true
+			break
 		}
-
-		commitMsg := opts.message
-		if commitMsg == "" {
-			commitMsg = fmt.Sprintf("merge: %s", s.Branch)
+		if status == mergeStatusMerged {
+			mergedThisRun[s.Number] = true
 		}
-
-		if opts.noSquash {
-			if err := rc.git.MergeNoFF(rc.ctx, rc.repoRoot, s.Branch, commitMsg); err != nil {
-				if isMergeConflict(err) {
-					conflictHit = true
-					results = append(results, result{name: s.Name, status: "conflict", reason: "merge conflict — resolve manually then commit"})
-					break
-				}
-				return gitErr("merge --no-ff "+s.Branch, err)
-			}
-		} else {
-			if err := rc.git.MergeSquash(rc.ctx, rc.repoRoot, s.Branch); err != nil {
-				if isMergeConflict(err) {
-					conflictHit = true
-					results = append(results, result{name: s.Name, status: "conflict", reason: "merge conflict — resolve manually then commit"})
-					break
-				}
-				return gitErr("merge --squash "+s.Branch, err)
-			}
-			// `git merge --squash` may leave the index empty when the
-			// branch's tree already matches base (e.g. the operator
-			// previously hand-resolved the content). Patch-ids differ
-			// so UnmergedPatches doesn't catch this, but the merge
-			// staged nothing — treat it as already-merged.
-			staged, err := rc.git.DirtyCount(rc.ctx, rc.repoRoot)
-			if err != nil {
-				return gitErr("check staged after squash", err)
-			}
-			if staged == 0 {
-				_ = rc.state.Clear(s.Name)
-				_ = rc.claims.Clear(s.Name)
-				results = append(results, result{name: s.Name, status: "skipped", reason: "already merged"})
-				continue
-			}
-			if err := rc.git.Commit(rc.ctx, rc.repoRoot, commitMsg); err != nil {
-				return gitErr("commit merged squash", err)
-			}
-		}
-
-		// On clean merge, clear the session's state + claims.
-		_ = rc.state.Clear(s.Name)
-		_ = rc.claims.Clear(s.Name)
-		mergedThisRun[s.Number] = true
-
-		results = append(results, result{name: s.Name, status: "merged", reason: fmt.Sprintf("%d commit(s) squashed", s.Ahead)})
 	}
 
 	// Print summary.
 	for _, r := range results {
 		mark := "✓"
-		if r.status == "skipped" {
+		if r.status == mergeStatusSkipped {
 			mark = "⏭"
-		} else if r.status == "conflict" {
+		} else if r.status == mergeStatusConflict {
 			mark = "✗"
 		}
 		printf("  %s %s: %s — %s\n", mark, r.name, r.status, r.reason)
@@ -199,6 +138,87 @@ func runMerge(cmd *cobra.Command, args []string, opts mergeOpts) error {
 		println("\nbosun: stopped at first conflict. Resolve, commit, then re-run `bosun merge`.")
 	}
 	return nil
+}
+
+// Status constants returned by mergeOne. Exposed so callers (cmd_merge,
+// the TUI control center) can branch on the outcome without duplicating
+// string literals.
+const (
+	mergeStatusMerged   = "merged"
+	mergeStatusSkipped  = "skipped"
+	mergeStatusConflict = "conflict"
+)
+
+// mergeOne performs the merge for a single session and reports the outcome.
+// It enforces the per-session safety gates (dirty, ahead, patch-equivalence)
+// and runs the squash or no-ff merge. The outer loop is responsible for the
+// gates it owns (DONE filtering, dependency holds) before calling.
+//
+// status is one of mergeStatus{Merged,Skipped,Conflict}. err is non-nil
+// only for unexpected git failures; safety-gate skips and merge conflicts
+// are reported via status so the TUI can render them without dying.
+func mergeOne(rc *runCtx, s *session.Session, opts mergeOpts) (status, reason string, err error) {
+	if s.Dirty > 0 {
+		return mergeStatusSkipped, fmt.Sprintf("%d uncommitted change(s)", s.Dirty), nil
+	}
+	if s.Ahead == 0 {
+		return mergeStatusSkipped, "no commits ahead", nil
+	}
+
+	// If the branch's commits are all patch-id-equivalent to commits already
+	// on base (e.g. an operator hand-resolved a prior conflict and committed),
+	// don't try to squash again — that would just re-conflict. Treat as
+	// merged and clear state/claims so it stops cluttering `bosun status`.
+	unmerged, err := rc.git.UnmergedPatches(rc.ctx, rc.repoRoot, rc.cfg.BaseBranch, s.Branch)
+	if err != nil {
+		return "", "", gitErr("check unmerged patches for "+s.Branch, err)
+	}
+	if unmerged == 0 {
+		_ = rc.state.Clear(s.Name)
+		_ = rc.claims.Clear(s.Name)
+		return mergeStatusSkipped, "already merged", nil
+	}
+
+	commitMsg := opts.message
+	if commitMsg == "" {
+		commitMsg = fmt.Sprintf("merge: %s", s.Branch)
+	}
+
+	if opts.noSquash {
+		if err := rc.git.MergeNoFF(rc.ctx, rc.repoRoot, s.Branch, commitMsg); err != nil {
+			if isMergeConflict(err) {
+				return mergeStatusConflict, "merge conflict — resolve manually then commit", nil
+			}
+			return "", "", gitErr("merge --no-ff "+s.Branch, err)
+		}
+	} else {
+		if err := rc.git.MergeSquash(rc.ctx, rc.repoRoot, s.Branch); err != nil {
+			if isMergeConflict(err) {
+				return mergeStatusConflict, "merge conflict — resolve manually then commit", nil
+			}
+			return "", "", gitErr("merge --squash "+s.Branch, err)
+		}
+		// `git merge --squash` may leave the index empty when the branch's
+		// tree already matches base (e.g. operator hand-resolved earlier).
+		// Patch-ids differ so UnmergedPatches doesn't catch this, but the
+		// merge staged nothing — treat as already-merged.
+		staged, err := rc.git.DirtyCount(rc.ctx, rc.repoRoot)
+		if err != nil {
+			return "", "", gitErr("check staged after squash", err)
+		}
+		if staged == 0 {
+			_ = rc.state.Clear(s.Name)
+			_ = rc.claims.Clear(s.Name)
+			return mergeStatusSkipped, "already merged", nil
+		}
+		if err := rc.git.Commit(rc.ctx, rc.repoRoot, commitMsg); err != nil {
+			return "", "", gitErr("commit merged squash", err)
+		}
+	}
+
+	_ = rc.state.Clear(s.Name)
+	_ = rc.claims.Clear(s.Name)
+	return mergeStatusMerged, fmt.Sprintf("%d commit(s) squashed", s.Ahead), nil
 }
 
 // isMergeConflict heuristically detects whether an err message indicates a merge conflict.

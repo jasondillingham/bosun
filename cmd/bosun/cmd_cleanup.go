@@ -10,8 +10,9 @@ import (
 
 func newCleanupCmd() *cobra.Command {
 	var (
-		dryRun bool
-		force  bool
+		dryRun     bool
+		force      bool
+		orphansArg int
 	)
 
 	cmd := &cobra.Command{
@@ -22,15 +23,30 @@ work in it (no commits ahead of base, no uncommitted changes). Sessions with
 in-flight work are skipped with a reason.
 
 Pass --force to also remove dirty or unmerged sessions; pass --dry-run to
-print what would happen without changing anything.`,
+print what would happen without changing anything.
+
+Pass --orphans=N to instead clean up sessions whose number is greater than
+N — typical after ` + "`bosun init --force`" + ` shrinks the session count and leaves
+the trailing worktrees behind. ` + "`--orphans`" + ` without a value defaults to the
+configured default_session_count.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runCleanup(cmd, cleanupOpts{dryRun: dryRun, force: force})
+			opts := cleanupOpts{dryRun: dryRun, force: force}
+			if cmd.Flags().Changed("orphans") {
+				opts.orphansMode = true
+				opts.orphansKeep = orphansArg
+			}
+			return runCleanup(cmd, opts)
 		},
 	}
 
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print what would happen, don't act")
 	cmd.Flags().BoolVar(&force, "force", false, "also remove dirty/unmerged sessions")
+	cmd.Flags().IntVar(&orphansArg, "orphans", 0, "only act on sessions whose number is greater than this (0 means use config.default_session_count)")
+	// NoOptDefVal lets `--orphans` work without a value (cobra parses it as
+	// `--orphans=0`), at which point runCleanup falls back to the config
+	// default. The string form is what cobra requires here.
+	cmd.Flags().Lookup("orphans").NoOptDefVal = "0"
 
 	return cmd
 }
@@ -38,6 +54,15 @@ print what would happen without changing anything.`,
 type cleanupOpts struct {
 	dryRun bool
 	force  bool
+	// orphansMode flips planCleanup into "act on sessions with number >
+	// orphansKeep only" — for cleaning up the trailing worktrees that
+	// linger when a later `bosun init` shrinks the session count.
+	orphansMode bool
+	// orphansKeep is the highest session number to keep when orphansMode
+	// is set. Zero means "fall back to cfg.DefaultSessionCount in
+	// runCleanup." A negative value would remove every session, which we
+	// reject up front.
+	orphansKeep int
 }
 
 type cleanupAction int
@@ -93,6 +118,20 @@ func planCleanup(sessions []session.Session, opts cleanupOpts, isSquashed squash
 	return plans, nil
 }
 
+// filterOrphans returns only those sessions whose number is greater than
+// keep — the sessions that should not exist after the operator's most
+// recent `bosun init`. Caller-supplied keep < 0 is treated as a usage
+// error upstream; here we trust it's non-negative.
+func filterOrphans(sessions []session.Session, keep int) []session.Session {
+	out := make([]session.Session, 0, len(sessions))
+	for _, s := range sessions {
+		if s.Number > keep {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 func describeWork(s *session.Session) string {
 	parts := make([]string, 0, 3)
 	if s.Dirty > 0 {
@@ -124,6 +163,25 @@ func runCleanup(cmd *cobra.Command, opts cleanupOpts) error {
 	if len(sessions) == 0 {
 		println("bosun: no sessions to clean up")
 		return nil
+	}
+
+	if opts.orphansMode {
+		keep := opts.orphansKeep
+		if keep == 0 {
+			keep = rc.cfg.DefaultSessionCount
+		}
+		if keep < 0 {
+			return userErr("--orphans must be >= 0, got %d", keep)
+		}
+		sessions = filterOrphans(sessions, keep)
+		if len(sessions) == 0 {
+			printf("bosun: no sessions beyond session-%d to clean up\n", keep)
+			return nil
+		}
+		// Orphan candidates with no work are removed cleanly; ones with
+		// ahead/dirty/STUCK state stay subject to the same --force gate the
+		// regular cleanup uses. The operator can re-run with --force to
+		// nuke them if they really want.
 	}
 
 	plans, err := planCleanup(sessions, opts, func(branch string) (bool, error) {

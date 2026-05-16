@@ -36,6 +36,11 @@ type RenderOptions struct {
 	// Now is the reference time used to format event ages. Zero defers to
 	// time.Now() — tests pin it for deterministic output.
 	Now time.Time
+	// SummaryOnly suppresses the table, the events block, and the overlap
+	// section, leaving just the one-line summary. For scripting and small
+	// terminals — the same data `bosun status` would derive, minus the
+	// per-session breakdown.
+	SummaryOnly bool
 }
 
 // RenderText writes a human-readable table (and optional overlap section) to w.
@@ -48,6 +53,9 @@ func RenderText(w io.Writer, opts RenderOptions) error {
 	}
 
 	writeSummary(w, opts, useColor)
+	if opts.SummaryOnly {
+		return nil
+	}
 	writeEvents(w, opts, useColor)
 
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)

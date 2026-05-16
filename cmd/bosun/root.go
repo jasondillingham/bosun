@@ -16,6 +16,7 @@ worktree, with one place to see what every session is doing.`,
 
 	root.AddCommand(
 		newInitCmd(),
+		newLaunchCmd(),
 		newStatusCmd(),
 		newShowCmd(),
 		newClaimCmd(),

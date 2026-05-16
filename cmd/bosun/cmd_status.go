@@ -28,6 +28,7 @@ func newStatusCmd() *cobra.Command {
 		noColor      bool
 		watch        bool
 		interval     int
+		summaryOnly  bool
 	)
 
 	cmd := &cobra.Command{
@@ -35,10 +36,14 @@ func newStatusCmd() *cobra.Command {
 		Short: "Print a table of session states",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if summaryOnly && jsonOut {
+				return userErr("--summary-only and --json are mutually exclusive")
+			}
 			opts := statusOpts{
 				withOverlaps: withOverlaps,
 				jsonOut:      jsonOut,
 				noColor:      noColor,
+				summaryOnly:  summaryOnly,
 			}
 			if watch {
 				if jsonOut {
@@ -58,6 +63,7 @@ func newStatusCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&noColor, "no-color", false, "disable color even on a TTY")
 	cmd.Flags().BoolVar(&watch, "watch", false, "re-render the table on an interval until interrupted (Ctrl-C)")
 	cmd.Flags().IntVar(&interval, "interval", 2, "seconds between refreshes when --watch is set")
+	cmd.Flags().BoolVar(&summaryOnly, "summary-only", false, "print just the one-line summary (no table, events, or overlaps)")
 
 	return cmd
 }
@@ -66,6 +72,7 @@ type statusOpts struct {
 	withOverlaps bool
 	jsonOut      bool
 	noColor      bool
+	summaryOnly  bool
 }
 
 func runStatus(cmd *cobra.Command, opts statusOpts) error {
@@ -105,6 +112,7 @@ func renderStatusOnce(w io.Writer, rc *runCtx, opts statusOpts) error {
 		WithOverlaps: opts.withOverlaps,
 		NoColor:      opts.noColor,
 		Events:       recentEvents(rc.repoRoot),
+		SummaryOnly:  opts.summaryOnly,
 	})
 }
 

@@ -1043,6 +1043,110 @@ func TestScenario_AnnounceSurfacesInStatus(t *testing.T) {
 	)
 }
 
+// --- cleanup --orphans ---
+
+func TestScenario_CleanupOrphans_RemovesSessionsBeyondCount(t *testing.T) {
+	// Simulate "started at N=4, shrank to N=3" by initializing 4, then
+	// running cleanup --orphans=3 to remove session-4. Sessions 1-3 stay.
+	s := newScenario(t)
+	s.Bosun("init", "4")
+
+	out := s.Bosun("cleanup", "--orphans=3")
+	s.AssertContainsAll(out, "session-4: removed", "empty")
+	s.AssertNotContains(out, "session-1: removed")
+	s.AssertNotContains(out, "session-2: removed")
+	s.AssertNotContains(out, "session-3: removed")
+
+	s.AssertWorktreeExists(1)
+	s.AssertWorktreeExists(2)
+	s.AssertWorktreeExists(3)
+	s.AssertWorktreeMissing(4)
+}
+
+func TestScenario_CleanupOrphans_DefaultsToConfig(t *testing.T) {
+	// Bare `--orphans` (no value) falls back to default_session_count.
+	// Default in the test config is 4, so a 5th session is the orphan.
+	s := newScenario(t)
+	s.Bosun("init", "5")
+
+	out := s.Bosun("cleanup", "--orphans")
+	s.AssertContains(out, "session-5: removed")
+	s.AssertNotContains(out, "session-1: removed")
+	s.AssertWorktreeExists(4)
+	s.AssertWorktreeMissing(5)
+}
+
+func TestScenario_CleanupOrphans_SkipsAheadWithoutForce(t *testing.T) {
+	// An orphan with commits ahead of base isn't auto-removed — the work
+	// might matter. The operator must explicitly --force.
+	s := newScenario(t)
+	s.Bosun("init", "4")
+	wt4 := s.WorktreePath(4)
+	s.WriteFileIn(wt4, "scratch.txt", "wip\n")
+	s.CommitIn(wt4, "wip on orphaned session-4")
+
+	out := s.Bosun("cleanup", "--orphans=3")
+	s.AssertContains(out, "session-4: skipped")
+	s.AssertContains(out, "1 ahead")
+	s.AssertWorktreeExists(4)
+
+	// With --force, the same session goes.
+	out = s.Bosun("cleanup", "--orphans=3", "--force")
+	s.AssertContains(out, "session-4: removed")
+	s.AssertWorktreeMissing(4)
+}
+
+func TestScenario_CleanupOrphans_NoopWhenAllInRange(t *testing.T) {
+	s := newScenario(t)
+	s.Bosun("init", "2")
+
+	out := s.Bosun("cleanup", "--orphans=4")
+	s.AssertContains(out, "no sessions beyond session-4")
+	s.AssertWorktreeExists(1)
+	s.AssertWorktreeExists(2)
+}
+
+// --- launch ---
+
+func TestScenario_LaunchOpensExistingSession(t *testing.T) {
+	// `bosun launch <session>` opens a launcher window for an existing
+	// session without re-running init. We use launcher=print so the
+	// "spawn" lands in the captured output instead of opening real terms.
+	s := newScenario(t)
+	s.WriteFile(".bosun/config.json", `{"launcher":"print"}`)
+	s.Bosun("init", "2")
+
+	out := s.Bosun("launch", "session-1", "--initial-prompt", "resume work")
+	// print launcher prefixes the command with its env; the prompt and
+	// session name must appear in the rendered command.
+	s.AssertContainsAll(out, "Launched session-1", "'resume work'")
+}
+
+func TestScenario_LaunchAcceptsBareNumberAndSessionForm(t *testing.T) {
+	s := newScenario(t)
+	s.WriteFile(".bosun/config.json", `{"launcher":"print"}`)
+	s.Bosun("init", "2")
+
+	for _, arg := range []string{"1", "session-1"} {
+		out := s.Bosun("launch", arg)
+		s.AssertContains(out, "Launched session-1")
+	}
+}
+
+func TestScenario_LaunchRejectsMissingSession(t *testing.T) {
+	s := newScenario(t)
+	s.WriteFile(".bosun/config.json", `{"launcher":"print"}`)
+	s.Bosun("init", "2")
+
+	out, err := s.BosunErr("launch", "session-9")
+	if err == nil {
+		t.Fatalf("launch on a non-existent session should fail; got output:\n%s", out)
+	}
+	if !strings.Contains(out, "session-9 not found") {
+		t.Errorf("expected 'session-9 not found' in error output:\n%s", out)
+	}
+}
+
 // --- helpers (test-local) ---
 
 func readFile(t *testing.T, path string) string {

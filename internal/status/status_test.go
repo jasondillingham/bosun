@@ -82,6 +82,65 @@ func TestRenderText_SummaryLine(t *testing.T) {
 	}
 }
 
+func TestRenderText_SummaryOnly(t *testing.T) {
+	var buf bytes.Buffer
+	err := RenderText(&buf, RenderOptions{
+		Sessions:    sampleSessions(),
+		NoColor:     true,
+		SummaryOnly: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	// Summary content must still be present.
+	if !strings.Contains(out, "3 sessions") {
+		t.Errorf("summary line missing:\n%s", out)
+	}
+	// Table header must be suppressed — the whole point of --summary-only.
+	if strings.Contains(out, "SESSION") || strings.Contains(out, "BRANCH") {
+		t.Errorf("table header leaked into summary-only output:\n%s", out)
+	}
+	// Output should be exactly one newline-terminated line.
+	if n := strings.Count(out, "\n"); n != 1 {
+		t.Errorf("summary-only should be a single line, got %d newlines:\n%s", n, out)
+	}
+}
+
+func TestRenderText_SummaryOnlySuppressesEventsAndOverlaps(t *testing.T) {
+	now := time.Date(2026, 5, 16, 12, 0, 0, 0, time.UTC)
+	var buf bytes.Buffer
+	err := RenderText(&buf, RenderOptions{
+		Sessions:     sampleSessions(),
+		WithOverlaps: true,
+		Overlaps: []claims.Overlap{
+			{Path: "internal/auth/handler.go", Sessions: []string{"session-1", "session-3"}},
+		},
+		Events: []Event{
+			{Session: "session-1", Kind: "info", Message: "starting", At: now.Add(-30 * time.Second)},
+		},
+		Now:         now,
+		NoColor:     true,
+		SummaryOnly: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if strings.Contains(out, "Recent:") {
+		t.Errorf("events leaked into summary-only output:\n%s", out)
+	}
+	if strings.Contains(out, "internal/auth/handler.go") {
+		t.Errorf("overlaps leaked into summary-only output:\n%s", out)
+	}
+	// But the overlap count should still be in the summary line (it lives
+	// alongside the state counts, controlled by WithOverlaps not by the
+	// summary-only switch).
+	if !strings.Contains(out, "1 overlap") {
+		t.Errorf("summary should still report overlap count, got:\n%s", out)
+	}
+}
+
 func TestRenderText_SummaryWithOverlaps(t *testing.T) {
 	var buf bytes.Buffer
 	err := RenderText(&buf, RenderOptions{

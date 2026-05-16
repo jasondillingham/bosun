@@ -60,6 +60,13 @@ func (GopsutilLister) List() ([]ProcInfo, error) {
 
 // Running returns the PID of an agent process whose working directory
 // matches worktreePath. ok=false (err=nil) means no agent was found.
+//
+// Callers (session.Derive) treat any non-nil error as "not running" so the
+// RUNNING column degrades to a false negative rather than poisoning the
+// whole status render. Per-process Cwd/Name permission errors are filtered
+// inside GopsutilLister.List; a non-nil error here means the entire
+// process-table enumeration failed (e.g. /proc denied, ESRCH on a
+// hardened jail).
 func Running(worktreePath string) (pid int, ok bool, err error) {
 	return RunningWith(GopsutilLister{}, IsAgent, worktreePath)
 }

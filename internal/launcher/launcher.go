@@ -327,6 +327,13 @@ func launchTerminalWindows(opts Options) error {
 	if wt, ok := hasWindowsTerminal(); ok {
 		return spawnDetached(exec.Command(wt, windowsTerminalArgs(opts)...))
 	}
+	return spawnDetached(exec.Command("cmd", cmdExeArgs(opts)...))
+}
+
+// cmdExeArgs builds the argv for the cmd.exe fallback path on Windows. Split
+// out from launchTerminalWindows so cross-platform unit tests can assert on
+// the quoting without actually invoking cmd.exe.
+func cmdExeArgs(opts Options) []string {
 	envPrefix := buildCmdEnvPrefix(opts.Env)
 	cmdLine := opts.Command
 	if opts.InitialPrompt != "" {
@@ -334,11 +341,22 @@ func launchTerminalWindows(opts Options) error {
 		quoted := strings.ReplaceAll(opts.InitialPrompt, `"`, `""`)
 		cmdLine = fmt.Sprintf(`%s "%s"`, opts.Command, quoted)
 	}
-	// cmd.exe fallback: no tab support. Use cmd /c start cmd /K to leave
-	// the window open after the command runs.
-	args := []string{"/c", "start", "cmd", "/K",
-		fmt.Sprintf("cd /D %s && %s%s", opts.WorktreePath, envPrefix, cmdLine)}
-	return spawnDetached(exec.Command("cmd", args...))
+	// cmd.exe fallback: no tab support. Use `cmd /c start "" cmd /K` to leave
+	// the window open after the command runs. The empty "" after `start` is
+	// the window title — required so `start` doesn't misinterpret a quoted
+	// path-with-spaces (e.g. "C:\Users\Joe Smith\repo") as the title. The
+	// worktree path itself is wrapped in double-quotes for `cd /D`; Windows
+	// paths can't legally contain `"`, so no further escaping is needed.
+	inner := fmt.Sprintf(`cd /D %s && %s%s`, cmdQuotePath(opts.WorktreePath), envPrefix, cmdLine)
+	return []string{"/c", "start", "", "cmd", "/K", inner}
+}
+
+// cmdQuotePath wraps a Windows filesystem path in double quotes so cmd.exe
+// treats it as a single token even when it contains spaces. Windows paths
+// can't legally contain `"` (the character is illegal in NTFS filenames),
+// so a naive wrap is safe — no escape pass is needed.
+func cmdQuotePath(p string) string {
+	return `"` + p + `"`
 }
 
 // windowsTerminalArgs builds the `wt.exe` argv. Tab mode targets

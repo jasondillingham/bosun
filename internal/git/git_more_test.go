@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -198,6 +199,99 @@ func TestUnmergedPatches(t *testing.T) {
 				t.Fatalf("UnmergedPatches = %d, want %d", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestChmodWritableTree mirrors the GOMODCACHE shape that --isolate-cache
+// produces: read-only files (0o444) inside read-only dirs (0o555). Without
+// the pre-pass, os.RemoveAll on this tree fails on the first unlink because
+// the parent dir lacks write+execute for the owner. After the pre-pass,
+// RemoveAll succeeds.
+func TestChmodWritableTree(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// Windows permission semantics are different; we still chmod, but
+		// the test failure mode it guards against is the Unix one.
+		t.Skip("permission model differs on Windows")
+	}
+	root := t.TempDir()
+	sub := filepath.Join(root, "go-mod", "cache", "download", "github.com", "x", "y@v1")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	files := []string{
+		filepath.Join(sub, "go.mod"),
+		filepath.Join(sub, "y.go"),
+	}
+	for _, f := range files {
+		if err := os.WriteFile(f, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Lock down: files 0o444, dirs 0o555 (bottom-up).
+	if err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		return os.Chmod(p, 0o444)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Walk again to chmod dirs after their contents so we can still descend.
+	var dirs []string
+	_ = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		if err == nil && d.IsDir() {
+			dirs = append(dirs, p)
+		}
+		return nil
+	})
+	// Apply in reverse so children are restricted before parents.
+	for i := len(dirs) - 1; i >= 0; i-- {
+		if err := os.Chmod(dirs[i], 0o555); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Restore root so the test cleanup can succeed even if our helper bails.
+	t.Cleanup(func() {
+		_ = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+			if err != nil {
+				return nil
+			}
+			if d.IsDir() {
+				_ = os.Chmod(p, 0o755)
+			} else {
+				_ = os.Chmod(p, 0o644)
+			}
+			return nil
+		})
+	})
+
+	// Sanity: an unaided RemoveAll should fail.
+	if err := os.RemoveAll(filepath.Join(root, "go-mod")); err == nil {
+		t.Fatal("expected RemoveAll to fail on locked-down tree (test premise)")
+	}
+
+	// The helper should make the tree writable…
+	if err := chmodWritableTree(root); err != nil {
+		t.Fatalf("chmodWritableTree: %v", err)
+	}
+	// …and a subsequent RemoveAll should now succeed.
+	if err := os.RemoveAll(filepath.Join(root, "go-mod")); err != nil {
+		t.Fatalf("RemoveAll after chmod: %v", err)
+	}
+}
+
+// TestChmodWritableTree_MissingRoot just confirms the walk doesn't panic on
+// a path that doesn't exist — RemoveWorktree calls Stat first, but the
+// helper itself should still degrade cleanly.
+func TestChmodWritableTree_MissingRoot(t *testing.T) {
+	err := chmodWritableTree(filepath.Join(t.TempDir(), "does-not-exist"))
+	if err == nil {
+		// filepath.WalkDir returns an error when the root doesn't exist;
+		// that's expected and fine — callers ignore it.
+		t.Skip("walk returned nil on missing root; platform-dependent")
 	}
 }
 

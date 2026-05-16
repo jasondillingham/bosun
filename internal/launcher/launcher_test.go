@@ -268,6 +268,85 @@ func TestWindowsTerminalArgs_OpenAsTab(t *testing.T) {
 	}
 }
 
+// TestWindowsTerminalArgs_PathWithSpaces verifies that the worktree path is
+// passed as its own argv element (not concatenated into a quoted shell
+// string), so wt's `-d` flag receives it intact. Spaces in Windows usernames
+// are common ("C:\Users\Joe Smith\..."), and Go's exec.Command takes care
+// of argv-level quoting for us — but only if the path stays one element.
+func TestWindowsTerminalArgs_PathWithSpaces(t *testing.T) {
+	pathWithSpaces := `C:\Users\Joe Smith\code\wt`
+	args := windowsTerminalArgs(Options{
+		WorktreePath: pathWithSpaces,
+		Command:      "claude",
+	})
+	// Find -d and confirm the very next element is the unmodified path.
+	for i, a := range args {
+		if a == "-d" {
+			if i+1 >= len(args) {
+				t.Fatalf("-d at end of args: %v", args)
+			}
+			if args[i+1] != pathWithSpaces {
+				t.Fatalf("-d arg = %q, want %q (must be a single argv element, not pre-quoted)", args[i+1], pathWithSpaces)
+			}
+			return
+		}
+	}
+	t.Fatalf("did not find -d in args: %v", args)
+}
+
+func TestCmdExeArgs_PathWithSpacesIsQuoted(t *testing.T) {
+	pathWithSpaces := `C:\Users\Joe Smith\code\wt`
+	args := cmdExeArgs(Options{
+		WorktreePath: pathWithSpaces,
+		Command:      "claude",
+	})
+	// The cmd.exe invocation must wrap the path in double-quotes for cd /D,
+	// otherwise the space splits the argument.
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, `cd /D "`+pathWithSpaces+`"`) {
+		t.Fatalf("cmdExeArgs did not quote path for cd /D, got: %v", args)
+	}
+}
+
+func TestCmdExeArgs_StartHasEmptyTitle(t *testing.T) {
+	// `start "" cmd /K ...` — the empty "" is the window title. Without it,
+	// a quoted path elsewhere on the line is misread as the title and the
+	// real command never runs.
+	args := cmdExeArgs(Options{
+		WorktreePath: `C:\code\wt`,
+		Command:      "claude",
+	})
+	// We expect: ["/c", "start", "", "cmd", "/K", "..."]
+	if len(args) < 6 {
+		t.Fatalf("cmdExeArgs too short: %v", args)
+	}
+	if args[0] != "/c" || args[1] != "start" {
+		t.Fatalf("expected `/c start` prefix, got %v", args)
+	}
+	if args[2] != "" {
+		t.Fatalf("expected empty title after `start`, got %q (full args: %v)", args[2], args)
+	}
+	if args[3] != "cmd" || args[4] != "/K" {
+		t.Fatalf("expected `cmd /K` after title, got %v", args)
+	}
+}
+
+func TestCmdExeArgs_CarriesEnvAndPrompt(t *testing.T) {
+	args := cmdExeArgs(Options{
+		WorktreePath:  `C:\code\wt`,
+		Command:       "claude",
+		InitialPrompt: "kick off",
+		Env:           map[string]string{"X": "1"},
+	})
+	last := args[len(args)-1]
+	if !strings.Contains(last, "set X=1") {
+		t.Errorf("inner command missing env prefix: %s", last)
+	}
+	if !strings.Contains(last, `claude "kick off"`) {
+		t.Errorf("inner command missing prompted invocation: %s", last)
+	}
+}
+
 func TestHasGhostty_OnPath(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("PATH stub uses POSIX shebang")

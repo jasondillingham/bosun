@@ -93,7 +93,20 @@ func TestParseLabel(t *testing.T) {
 
 func TestValidateLabel(t *testing.T) {
 	good := []string{"auth", "http", "storage", "session-1", "a", "auth-2", "a1b2c3"}
-	bad := []string{"", "Auth", "1auth", "-auth", "auth!", "auth_storage", "AUTH", "5", "0"}
+	// Bad list explicitly covers shell-meta characters, non-ASCII letters
+	// (Ωmega), and Windows-illegal filename chars — anything that would
+	// have caused trouble for the filesystem path bosun derives from the
+	// label (`<repo>-bosun-<label>`) is rejected up front.
+	bad := []string{
+		"", "Auth", "1auth", "-auth", "auth!", "auth_storage", "AUTH", "5", "0",
+		"Ωmega",       // non-ASCII letter — would survive on macOS/Linux but tangle git-for-windows
+		"café",   // "café" — same concern
+		"path/with",   // slash — would split into a subdir
+		"path\\with",  // backslash — Windows separator
+		"with space",  // would need quoting in every shell call site
+		"with:colon",  // Windows drive separator
+		"emoji-\U0001F600", // grinning face — outside the label charset
+	}
 	for _, s := range good {
 		if err := ValidateLabel(s); err != nil {
 			t.Errorf("ValidateLabel(%q) = %v, want nil", s, err)

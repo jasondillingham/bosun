@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -141,13 +142,57 @@ func (c *Client) AddWorktree(ctx context.Context, dir, path, branch string) erro
 }
 
 // RemoveWorktree removes a worktree. force => --force.
+//
+// Before invoking git, RemoveWorktree walks the worktree and adds the
+// user-writable bit to every file and directory it can stat. This is
+// necessary because `--isolate-cache` populates `GOMODCACHE` (under
+// `<worktree>/.cache/go-mod`) with mode-0444 files inside mode-0555
+// directories — `git worktree remove --force` otherwise dies on the first
+// `unlink: Permission denied`. On Windows the same chmod sweep clears the
+// read-only attribute that read-only modes translate into. The pre-chmod
+// is best-effort: per-entry stat/chmod failures are swallowed so a
+// concurrently-disappearing file doesn't poison the cleanup.
 func (c *Client) RemoveWorktree(ctx context.Context, dir, path string, force bool) error {
+	if info, err := os.Stat(path); err == nil && info.IsDir() {
+		_ = chmodWritableTree(path)
+	}
 	args := []string{"worktree", "remove", path}
 	if force {
 		args = append(args, "--force")
 	}
 	_, err := c.run(ctx, dir, args...)
 	return err
+}
+
+// chmodWritableTree walks root and ORs the user-write (and, for directories,
+// user-execute) bits onto every entry's permission mode. Errors at any
+// individual entry are swallowed — the function returns nil unless the walk
+// itself can't start. This is a best-effort pre-pass for RemoveWorktree;
+// the subsequent git invocation is the authoritative source of failure.
+func chmodWritableTree(root string) error {
+	return filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			// A failure entering one subtree shouldn't abort the rest. Skip
+			// just this entry (or subtree if d is nil).
+			if d != nil && d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		info, ierr := d.Info()
+		if ierr != nil {
+			return nil
+		}
+		mode := info.Mode().Perm()
+		want := mode | 0o200 // u+w
+		if d.IsDir() {
+			want |= 0o100 // u+x so we can descend / unlink inside
+		}
+		if want != mode {
+			_ = os.Chmod(p, want)
+		}
+		return nil
+	})
 }
 
 // Worktree represents one entry from `git worktree list --porcelain`.

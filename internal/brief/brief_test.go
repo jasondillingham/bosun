@@ -193,3 +193,116 @@ func TestLookupBrief(t *testing.T) {
 		t.Fatalf("LookupBrief(2) = %+v, want nil", got)
 	}
 }
+
+func TestParse_DependsClause(t *testing.T) {
+	cases := []struct {
+		name     string
+		heading  string
+		wantDeps []int
+	}{
+		{"no clause", "## session-2", nil},
+		{"single dep", "## session-2 (depends: session-1)", []int{1}},
+		{"multiple deps", "## session-3 (depends: session-1, session-2)", []int{1, 2}},
+		{"bare numeric form", "## session-3 (depends: 1, 2)", []int{1, 2}},
+		{"extra whitespace", "## session-4 (depends:  session-1 , session-3 )", []int{1, 3}},
+		{"unparseable entries skipped", "## session-2 (depends: session-1, garbage)", []int{1}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			plan := tc.heading + "\nbody\n"
+			briefs := parseContent(plan)
+			if len(briefs) != 1 {
+				t.Fatalf("expected 1 brief, got %d", len(briefs))
+			}
+			got := briefs[0].Depends
+			if len(got) != len(tc.wantDeps) {
+				t.Fatalf("Depends = %v, want %v", got, tc.wantDeps)
+			}
+			for i, d := range tc.wantDeps {
+				if got[i] != d {
+					t.Errorf("Depends[%d] = %d, want %d", i, got[i], d)
+				}
+			}
+		})
+	}
+}
+
+func TestWriteToWorktree_IncludesDependsBlock(t *testing.T) {
+	wt := t.TempDir()
+	b := Brief{Session: 3, Body: "the assignment", Depends: []int{1, 2}}
+	if err := WriteToWorktree(wt, b, ""); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(wt, "BOSUN_BRIEF.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(data)
+	if !strings.Contains(body, "## Depends on") {
+		t.Errorf("brief missing 'Depends on' header:\n%s", body)
+	}
+	if !strings.Contains(body, "session-1, session-2") {
+		t.Errorf("brief missing dependency list:\n%s", body)
+	}
+	// The depends block sits between the preamble and the assignment.
+	depsIdx := strings.Index(body, "## Depends on")
+	assignIdx := strings.Index(body, "## Your assignment")
+	if depsIdx < 0 || assignIdx < 0 || depsIdx > assignIdx {
+		t.Errorf("'Depends on' should precede 'Your assignment' (deps=%d, assign=%d)", depsIdx, assignIdx)
+	}
+}
+
+func TestWriteToWorktree_NoDependsBlockWhenEmpty(t *testing.T) {
+	wt := t.TempDir()
+	b := Brief{Session: 1, Body: "no deps"}
+	if err := WriteToWorktree(wt, b, ""); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(filepath.Join(wt, "BOSUN_BRIEF.md"))
+	if strings.Contains(string(data), "## Depends on") {
+		t.Errorf("brief unexpectedly contains 'Depends on' for no-dep session:\n%s", data)
+	}
+}
+
+func TestLoadArchivedDeps(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, ".bosun", "briefs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	plan := `## session-1
+foundation
+
+## session-2 (depends: session-1)
+wraps session-1
+
+## session-3 (depends: session-1, session-2)
+last
+`
+	if err := os.WriteFile(filepath.Join(repo, archivedPlanRelative), []byte(plan), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadArchivedDeps(repo)
+	if err != nil {
+		t.Fatalf("LoadArchivedDeps: %v", err)
+	}
+	if len(got[2]) != 1 || got[2][0] != 1 {
+		t.Errorf("deps[2] = %v, want [1]", got[2])
+	}
+	if len(got[3]) != 2 || got[3][0] != 1 || got[3][1] != 2 {
+		t.Errorf("deps[3] = %v, want [1 2]", got[3])
+	}
+	if _, has := got[1]; has {
+		t.Errorf("deps[1] should be absent (no deps declared), got %v", got[1])
+	}
+}
+
+func TestLoadArchivedDeps_MissingPlanReturnsEmpty(t *testing.T) {
+	repo := t.TempDir()
+	got, err := LoadArchivedDeps(repo)
+	if err != nil {
+		t.Fatalf("LoadArchivedDeps: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected empty map for missing plan, got %v", got)
+	}
+}

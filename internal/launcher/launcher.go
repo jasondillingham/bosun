@@ -133,6 +133,33 @@ func hasGhostty() (string, bool) {
 	return "", false
 }
 
+// hasITerm2 reports whether iTerm2 is installed on this macOS box. iTerm2
+// has clean AppleScript tab support, so when it's present we prefer it
+// over Terminal.app — Terminal.app's tab-in-current-window dance requires
+// System Events keystrokes and is fragile in practice.
+func hasITerm2() bool {
+	if runtime.GOOS != "darwin" {
+		return false
+	}
+	if _, err := os.Stat("/Applications/iTerm.app"); err == nil {
+		return true
+	}
+	return false
+}
+
+// hasWindowsTerminal reports whether `wt.exe` (Microsoft's Windows Terminal)
+// is on PATH. Default on Windows 11; opt-in on Windows 10. Supports a
+// real "open as tab" command, unlike `cmd /c start`.
+func hasWindowsTerminal() (string, bool) {
+	if runtime.GOOS != "windows" {
+		return "", false
+	}
+	if p, err := exec.LookPath("wt"); err == nil {
+		return p, true
+	}
+	return "", false
+}
+
 func launchTmux(opts Options) error {
 	envPairs := buildEnvPairs(opts.Env)
 	args := []string{"new-window", "-c", opts.WorktreePath, "-n", opts.SessionName}
@@ -216,13 +243,52 @@ func spawnDetached(cmd *exec.Cmd) error {
 }
 
 func launchTerminalDarwin(opts Options) error {
+	if hasITerm2() {
+		return spawnDetached(exec.Command("osascript", "-e", iTerm2Script(opts)))
+	}
+	// Terminal.app: do script always opens a new window. There is no clean
+	// "open new tab in current window" primitive — the workaround keystrokes
+	// ⌘T via System Events, which races on focus. OpenAsTab is honored
+	// best-effort by Terminal.app users: they see a new window. Install
+	// iTerm2 (auto-detected above) for real tab support.
 	envPrefix := buildShellEnvPrefix(opts.Env)
-	// osascript opens a new Terminal window cd'd to the worktree and runs the command.
 	script := fmt.Sprintf(
 		`tell application "Terminal" to do script "cd %s && %s%s"`,
 		shellQuote(opts.WorktreePath), envPrefix, shellInvocation(opts),
 	)
 	return spawnDetached(exec.Command("osascript", "-e", script))
+}
+
+// iTerm2Script returns the AppleScript body that opens an iTerm2 window
+// or tab and runs opts in the new session. Tab creation targets the front
+// window (creating one first if none exists), so a `bosun init --launch`
+// run plays out as: first session opens a window, subsequent sessions
+// land as tabs in that window when OpenAsTab is set.
+func iTerm2Script(opts Options) string {
+	envPrefix := buildShellEnvPrefix(opts.Env)
+	inner := fmt.Sprintf("cd %s && %s%s",
+		shellQuote(opts.WorktreePath), envPrefix, shellInvocation(opts))
+	// AppleScript string quoting: escape embedded backslashes and quotes
+	// so the shell command survives the round trip.
+	quoted := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(inner)
+
+	if opts.OpenAsTab {
+		return fmt.Sprintf(`tell application "iTerm"
+  activate
+  if (count of windows) = 0 then
+    create window with default profile
+  end if
+  tell current window
+    set newTab to (create tab with default profile)
+    tell current session of newTab to write text "%s"
+  end tell
+end tell`, quoted)
+	}
+	return fmt.Sprintf(`tell application "iTerm"
+  activate
+  set newWindow to (create window with default profile)
+  tell current session of newWindow to write text "%s"
+end tell`, quoted)
 }
 
 func launchTerminalLinux(opts Options) error {
@@ -233,10 +299,20 @@ func launchTerminalLinux(opts Options) error {
 		if _, err := exec.LookPath(term); err != nil {
 			continue
 		}
+		// gnome-terminal --tab opens in the most-recently-used gnome-terminal
+		// window when one exists; falls back to a new window otherwise. Other
+		// emulators in linuxTerminals (xterm, konsole, x-terminal-emulator)
+		// don't have a comparable cross-version flag, so OpenAsTab is a no-op
+		// there — they open a new window like before.
 		var cmd *exec.Cmd
 		switch term {
 		case "gnome-terminal":
-			cmd = exec.Command(term, "--", "bash", "-lc", inner)
+			args := []string{"--working-directory", opts.WorktreePath}
+			if opts.OpenAsTab {
+				args = append(args, "--tab")
+			}
+			args = append(args, "--", "bash", "-lc", inner)
+			cmd = exec.Command(term, args...)
 		default:
 			cmd = exec.Command(term, "-e", "bash", "-lc", inner)
 		}
@@ -246,6 +322,11 @@ func launchTerminalLinux(opts Options) error {
 }
 
 func launchTerminalWindows(opts Options) error {
+	// Prefer Windows Terminal when present — it has real tab support via
+	// `wt -w 0 new-tab`, which targets the most-recently-used window.
+	if wt, ok := hasWindowsTerminal(); ok {
+		return spawnDetached(exec.Command(wt, windowsTerminalArgs(opts)...))
+	}
 	envPrefix := buildCmdEnvPrefix(opts.Env)
 	cmdLine := opts.Command
 	if opts.InitialPrompt != "" {
@@ -253,10 +334,28 @@ func launchTerminalWindows(opts Options) error {
 		quoted := strings.ReplaceAll(opts.InitialPrompt, `"`, `""`)
 		cmdLine = fmt.Sprintf(`%s "%s"`, opts.Command, quoted)
 	}
-	// Use cmd /c start cmd /K to leave a window open after the command runs.
+	// cmd.exe fallback: no tab support. Use cmd /c start cmd /K to leave
+	// the window open after the command runs.
 	args := []string{"/c", "start", "cmd", "/K",
 		fmt.Sprintf("cd /D %s && %s%s", opts.WorktreePath, envPrefix, cmdLine)}
 	return spawnDetached(exec.Command("cmd", args...))
+}
+
+// windowsTerminalArgs builds the `wt.exe` argv. Tab mode targets
+// window 0 (the most recently used Windows Terminal window) so a session
+// joins the operator's existing window when one's open.
+func windowsTerminalArgs(opts Options) []string {
+	envPrefix := buildCmdEnvPrefix(opts.Env)
+	cmdLine := opts.Command
+	if opts.InitialPrompt != "" {
+		quoted := strings.ReplaceAll(opts.InitialPrompt, `"`, `""`)
+		cmdLine = fmt.Sprintf(`%s "%s"`, opts.Command, quoted)
+	}
+	inner := fmt.Sprintf(`%s%s`, envPrefix, cmdLine)
+	if opts.OpenAsTab {
+		return []string{"-w", "0", "new-tab", "-d", opts.WorktreePath, "cmd", "/K", inner}
+	}
+	return []string{"-d", opts.WorktreePath, "cmd", "/K", inner}
 }
 
 func printFallback(opts Options) {

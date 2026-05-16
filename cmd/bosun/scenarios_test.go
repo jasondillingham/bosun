@@ -1043,6 +1043,71 @@ func TestScenario_AnnounceSurfacesInStatus(t *testing.T) {
 	)
 }
 
+// --- dependency-aware merge ---
+
+func TestScenario_MergeRespectsDependsClause(t *testing.T) {
+	// session-2 (depends: session-1) should hold until session-1 is merged.
+	s := newScenario(t)
+	s.WriteFile("plan.md", `## session-1
+foundation
+
+## session-2 (depends: session-1)
+wraps session-1
+`)
+	s.Bosun("init", "2", "--brief", "plan.md")
+
+	// Both sessions have work and are marked done.
+	wt1, wt2 := s.WorktreePath(1), s.WorktreePath(2)
+	s.WriteFileIn(wt1, "foundation.txt", "ground floor\n")
+	s.CommitIn(wt1, "foundation")
+	s.WriteFileIn(wt2, "wrapper.txt", "upper floor\n")
+	s.CommitIn(wt2, "wrapper")
+	s.Bosun("done", "session-1")
+	s.Bosun("done", "session-2")
+
+	out := s.Bosun("merge")
+	// session-1 merged first; session-2 follows because session-1 was
+	// recorded as merged earlier in the same run.
+	s.AssertContainsAll(out,
+		"session-1: merged",
+		"session-2: merged",
+	)
+	// session-1 must come before session-2 in the output regardless of
+	// the order they appear in the sessions slice.
+	idx1 := strings.Index(out, "session-1: merged")
+	idx2 := strings.Index(out, "session-2: merged")
+	if idx1 < 0 || idx2 < 0 || idx1 > idx2 {
+		t.Errorf("expected session-1 to merge before session-2 (idx1=%d, idx2=%d)\n%s", idx1, idx2, out)
+	}
+}
+
+func TestScenario_MergeHoldsDependentWhenBlockerNotDone(t *testing.T) {
+	// session-2 depends on session-1, but only session-2 is marked DONE.
+	// bosun merge (no --all) should merge nothing because session-1 isn't
+	// DONE (regular skip rule) and session-2 must wait on session-1.
+	s := newScenario(t)
+	s.WriteFile("plan.md", `## session-1
+foundation
+
+## session-2 (depends: session-1)
+wraps session-1
+`)
+	s.Bosun("init", "2", "--brief", "plan.md")
+
+	wt1, wt2 := s.WorktreePath(1), s.WorktreePath(2)
+	s.WriteFileIn(wt1, "foundation.txt", "ground floor\n")
+	s.CommitIn(wt1, "foundation")
+	s.WriteFileIn(wt2, "wrapper.txt", "upper floor\n")
+	s.CommitIn(wt2, "wrapper")
+	// Only session-2 marked DONE.
+	s.Bosun("done", "session-2")
+
+	out := s.Bosun("merge")
+	s.AssertContains(out, "session-1: skipped")
+	s.AssertContains(out, "session-2: skipped")
+	s.AssertContains(out, "depends on session-1")
+}
+
 // --- cleanup --orphans ---
 
 func TestScenario_CleanupOrphans_RemovesSessionsBeyondCount(t *testing.T) {

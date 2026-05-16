@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/jasondillingham/bosun/internal/brief"
 	"github.com/jasondillingham/bosun/internal/session"
 	"github.com/spf13/cobra"
 )
@@ -73,6 +74,17 @@ func runMerge(cmd *cobra.Command, args []string, opts mergeOpts) error {
 		}
 	}
 
+	// Dependency-aware ordering: re-parse the archived plan to pick up
+	// any `## session-N (depends: session-M)` declarations. Missing or
+	// unparseable plan → empty map (no-deps fallback). Within the loop
+	// we skip a session whose declared deps aren't merged yet.
+	depMap, err := brief.LoadArchivedDeps(rc.repoRoot)
+	if err != nil {
+		return internalErr("load archived deps", err)
+	}
+	sessions = topoOrderForMerge(sessions, depMap)
+	mergedThisRun := make(map[int]bool, len(sessions))
+
 	type result struct {
 		name   string
 		status string // "merged", "skipped", "conflict"
@@ -95,6 +107,14 @@ func runMerge(cmd *cobra.Command, args []string, opts mergeOpts) error {
 		}
 		if s.Ahead == 0 {
 			results = append(results, result{name: s.Name, status: "skipped", reason: "no commits ahead"})
+			continue
+		}
+		// Hold this session if any dependency hasn't merged yet — either in
+		// this run or as a previously-merged session whose branch is now
+		// patch-equivalent to base. We check per-dep so the reason names the
+		// blocker the operator needs to resolve.
+		if blocker, ok := blockingDep(s.Number, depMap, sessions, mergedThisRun, rc); ok {
+			results = append(results, result{name: s.Name, status: "skipped", reason: fmt.Sprintf("depends on session-%d (not merged yet)", blocker)})
 			continue
 		}
 
@@ -160,6 +180,7 @@ func runMerge(cmd *cobra.Command, args []string, opts mergeOpts) error {
 		// On clean merge, clear the session's state + claims.
 		_ = rc.state.Clear(s.Name)
 		_ = rc.claims.Clear(s.Name)
+		mergedThisRun[s.Number] = true
 
 		results = append(results, result{name: s.Name, status: "merged", reason: fmt.Sprintf("%d commit(s) squashed", s.Ahead)})
 	}
@@ -188,5 +209,79 @@ func isMergeConflict(err error) bool {
 	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "conflict") || strings.Contains(msg, "automatic merge failed")
+}
+
+// topoOrderForMerge returns sessions reordered so that any session listed
+// as a dependency of another comes first. Sessions outside the dep graph
+// keep their original (numeric) position. Cycles fall back to the input
+// order — bosun merge will still skip dependent sessions until their
+// blockers clear, so a cycle just means none of the cyclic group can
+// progress, which the operator will see in the output.
+func topoOrderForMerge(sessions []session.Session, depMap map[int][]int) []session.Session {
+	if len(depMap) == 0 {
+		return sessions
+	}
+	indexOf := make(map[int]int, len(sessions))
+	for i, s := range sessions {
+		indexOf[s.Number] = i
+	}
+	out := make([]session.Session, 0, len(sessions))
+	visited := make(map[int]bool, len(sessions))
+	visiting := make(map[int]bool, len(sessions))
+
+	var visit func(n int)
+	visit = func(n int) {
+		if visited[n] || visiting[n] {
+			return
+		}
+		visiting[n] = true
+		for _, dep := range depMap[n] {
+			if _, ok := indexOf[dep]; ok {
+				visit(dep)
+			}
+		}
+		visiting[n] = false
+		if i, ok := indexOf[n]; ok {
+			out = append(out, sessions[i])
+			visited[n] = true
+		}
+	}
+	for _, s := range sessions {
+		visit(s.Number)
+	}
+	return out
+}
+
+// blockingDep returns the first unmerged dependency of session n, if any.
+// "Merged" means: merged earlier in this run, OR the session no longer
+// exists in the candidate list (already cleaned up), OR its branch is
+// patch-equivalent to base (zero unmerged patches via git cherry).
+func blockingDep(n int, depMap map[int][]int, sessions []session.Session, mergedThisRun map[int]bool, rc *runCtx) (int, bool) {
+	deps, ok := depMap[n]
+	if !ok || len(deps) == 0 {
+		return 0, false
+	}
+	byNumber := make(map[int]*session.Session, len(sessions))
+	for i := range sessions {
+		byNumber[sessions[i].Number] = &sessions[i]
+	}
+	for _, d := range deps {
+		if mergedThisRun[d] {
+			continue
+		}
+		dep, present := byNumber[d]
+		if !present {
+			// Dep session no longer exists — assume operator cleaned it up
+			// after a successful merge.
+			continue
+		}
+		// Patch-equivalent to base counts as merged even if `ahead` > 0.
+		unmerged, err := rc.git.UnmergedPatches(rc.ctx, rc.repoRoot, rc.cfg.BaseBranch, dep.Branch)
+		if err == nil && unmerged == 0 {
+			continue
+		}
+		return d, true
+	}
+	return 0, false
 }
 

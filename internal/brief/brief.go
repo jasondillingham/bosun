@@ -19,10 +19,16 @@ const archivedPlanRelative = ".bosun/briefs/plan.last.md"
 type Brief struct {
 	Session int    // 1-based
 	Body    string // verbatim markdown between this heading and the next
+	// Depends lists session numbers this brief depends on, parsed from
+	// the optional `(depends: session-1, session-3)` clause on the
+	// heading line. Empty when no clause was given.
+	Depends []int
 }
 
 // Parse reads a plan markdown file and returns a Brief for every `## session-N`
-// section it contains.
+// section it contains. The optional `(depends: session-X, session-Y)` clause
+// on a heading sets the session's Depends list — bosun merge honors the
+// order so a dependent session waits until its dependencies are merged.
 func Parse(path string) ([]Brief, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -31,7 +37,13 @@ func Parse(path string) ([]Brief, error) {
 	return parseContent(string(data)), nil
 }
 
-var headingRe = regexp.MustCompile(`(?mi)^##\s+session-(\d+)\s*$`)
+// headingRe captures the session number and an optional depends clause.
+// Match groups:
+//
+//	1: session number
+//	2: full "(depends: …)" clause including the parens
+//	3: just the comma-separated body inside the parens
+var headingRe = regexp.MustCompile(`(?mi)^##\s+session-(\d+)(\s*\(depends:\s*([^)]+)\))?\s*$`)
 
 func parseContent(s string) []Brief {
 	// Normalize line endings.
@@ -53,9 +65,39 @@ func parseContent(s string) []Brief {
 			bodyStart++
 		}
 		body := strings.TrimRight(s[bodyStart:end], "\n ")
-		briefs = append(briefs, Brief{Session: n, Body: body})
+
+		// m[6]/m[7] frame the comma-separated dependency list (the third
+		// capture group). -1 when the optional clause is absent.
+		var depends []int
+		if m[6] >= 0 && m[7] > m[6] {
+			depends = parseDepList(s[m[6]:m[7]])
+		}
+
+		briefs = append(briefs, Brief{Session: n, Body: body, Depends: depends})
 	}
 	return briefs
+}
+
+// parseDepList accepts a comma-separated list of session references
+// ("session-1, session-3" or "1, 3") and returns the integer session
+// numbers in order. Unparseable entries are silently skipped — the
+// parser is lenient because the brief plan is human-authored.
+func parseDepList(s string) []int {
+	parts := strings.Split(s, ",")
+	out := make([]int, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		p = strings.TrimPrefix(p, "session-")
+		if p == "" {
+			continue
+		}
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 1 {
+			continue
+		}
+		out = append(out, n)
+	}
+	return out
 }
 
 // WorkflowPreamble is the standard "how to work this session" block prepended
@@ -89,7 +131,9 @@ const WorkflowPreamble = "## How to work this session\n\n" +
 // WriteToWorktree writes the brief body as BOSUN_BRIEF.md into worktreePath,
 // prefixed by the standard workflow preamble. verifyCmd is substituted into
 // the preamble's "run this to validate" step; pass an empty string to use
-// the package default ("make check").
+// the package default ("make check"). Dependency declarations surface as a
+// "Depends on" block between the preamble and the assignment so the agent
+// notices them at the top of the brief.
 func WriteToWorktree(worktreePath string, b Brief, verifyCmd string) error {
 	if verifyCmd == "" {
 		verifyCmd = "make check"
@@ -98,7 +142,21 @@ func WriteToWorktree(worktreePath string, b Brief, verifyCmd string) error {
 	header := fmt.Sprintf("# Bosun brief — session-%d\n\n", b.Session)
 	preamble := strings.ReplaceAll(WorkflowPreamble, "{N}", fmt.Sprintf("%d", b.Session))
 	preamble = strings.ReplaceAll(preamble, "{verifyCmd}", verifyCmd)
-	content := header + preamble + "## Your assignment\n\n" + b.Body + "\n"
+
+	var depsBlock string
+	if len(b.Depends) > 0 {
+		names := make([]string, len(b.Depends))
+		for i, d := range b.Depends {
+			names[i] = fmt.Sprintf("session-%d", d)
+		}
+		depsBlock = "## Depends on\n\n" +
+			strings.Join(names, ", ") + "\n\n" +
+			"`bosun merge` will hold this session until its dependencies " +
+			"are merged. Don't start touching paths another session owns; " +
+			"use `bosun_check` to verify before editing.\n\n"
+	}
+
+	content := header + preamble + depsBlock + "## Your assignment\n\n" + b.Body + "\n"
 	return os.WriteFile(target, []byte(content), 0o644)
 }
 
@@ -140,6 +198,29 @@ func LookupBrief(briefs []Brief, n int) *Brief {
 		}
 	}
 	return nil
+}
+
+// LoadArchivedDeps returns a session-number → dependency-numbers map by
+// re-parsing the archived plan at .bosun/briefs/plan.last.md. A missing
+// or unparseable plan returns an empty map with no error — bosun merge's
+// caller treats "no deps known" the same as "no deps declared."
+func LoadArchivedDeps(repoRoot string) (map[int][]int, error) {
+	plan := filepath.Join(repoRoot, archivedPlanRelative)
+	data, err := os.ReadFile(plan)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return map[int][]int{}, nil
+		}
+		return nil, fmt.Errorf("read archived plan %s: %w", plan, err)
+	}
+	briefs := parseContent(string(data))
+	out := make(map[int][]int, len(briefs))
+	for _, b := range briefs {
+		if len(b.Depends) > 0 {
+			out[b.Session] = append([]int(nil), b.Depends...)
+		}
+	}
+	return out, nil
 }
 
 // ReadFromWorktree returns the contents of BOSUN_BRIEF.md in worktreePath,

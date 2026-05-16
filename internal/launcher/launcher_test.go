@@ -178,6 +178,96 @@ func TestGhosttyArgs_CarriesPromptAndCWD(t *testing.T) {
 	}
 }
 
+func TestITerm2Script_NewWindow(t *testing.T) {
+	script := iTerm2Script(Options{
+		WorktreePath:  "/wt/session-1",
+		SessionName:   "session-1",
+		Command:       "claude",
+		InitialPrompt: "kick off",
+		Env:           map[string]string{"FOO": "bar"},
+	})
+	if !strings.Contains(script, `create window with default profile`) {
+		t.Errorf("new-window script missing create window:\n%s", script)
+	}
+	if strings.Contains(script, `create tab with default profile`) {
+		t.Errorf("new-window script unexpectedly creates a tab:\n%s", script)
+	}
+	if !strings.Contains(script, `cd '/wt/session-1'`) {
+		t.Errorf("script missing worktree cd:\n%s", script)
+	}
+	if !strings.Contains(script, `FOO='bar'`) {
+		t.Errorf("script missing env injection:\n%s", script)
+	}
+	if !strings.Contains(script, `claude '"'"'kick off'"'"'`) && !strings.Contains(script, `kick off`) {
+		t.Errorf("script missing initial-prompt invocation:\n%s", script)
+	}
+}
+
+func TestITerm2Script_OpenAsTab(t *testing.T) {
+	script := iTerm2Script(Options{
+		WorktreePath: "/wt/session-2",
+		SessionName:  "session-2",
+		Command:      "claude",
+		OpenAsTab:    true,
+	})
+	if !strings.Contains(script, `create tab with default profile`) {
+		t.Errorf("tab script missing create-tab clause:\n%s", script)
+	}
+	if !strings.Contains(script, `if (count of windows) = 0`) {
+		t.Errorf("tab script missing zero-window guard:\n%s", script)
+	}
+}
+
+func TestITerm2Script_EscapesQuotes(t *testing.T) {
+	// AppleScript strings use " as the delimiter; the inner shell command
+	// includes embedded " (the prompt). They must arrive at osascript
+	// escaped, otherwise the script terminates the string early.
+	script := iTerm2Script(Options{
+		WorktreePath:  "/wt",
+		SessionName:   "s",
+		Command:       "claude",
+		InitialPrompt: `say "hi"`,
+	})
+	// The escaped form should appear; an unescaped quote would mean the
+	// AppleScript string was terminated.
+	if !strings.Contains(script, `\"hi\"`) {
+		t.Errorf("expected escaped quotes in script:\n%s", script)
+	}
+}
+
+func TestWindowsTerminalArgs_NewWindow(t *testing.T) {
+	args := windowsTerminalArgs(Options{
+		WorktreePath:  `C:\code\wt`,
+		Command:       "claude",
+		InitialPrompt: "kick off",
+		Env:           map[string]string{"X": "1"},
+	})
+	if got := strings.Join(args, " "); !strings.Contains(got, `-d C:\code\wt`) {
+		t.Errorf("expected -d <path> in args, got %v", args)
+	}
+	if got := strings.Join(args, " "); strings.HasPrefix(got, "-w") {
+		t.Errorf("new-window form should not pass -w, got %v", args)
+	}
+	if got := strings.Join(args, " "); !strings.Contains(got, "set X=1") {
+		t.Errorf("expected env prefix in command, got %v", args)
+	}
+}
+
+func TestWindowsTerminalArgs_OpenAsTab(t *testing.T) {
+	args := windowsTerminalArgs(Options{
+		WorktreePath: `C:\code\wt`,
+		Command:      "claude",
+		OpenAsTab:    true,
+	})
+	got := strings.Join(args, " ")
+	if !strings.HasPrefix(got, "-w 0 new-tab") {
+		t.Errorf("tab form should start with `-w 0 new-tab`, got %v", args)
+	}
+	if !strings.Contains(got, `-d C:\code\wt`) {
+		t.Errorf("expected -d <path> in args, got %v", args)
+	}
+}
+
 func TestHasGhostty_OnPath(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("PATH stub uses POSIX shebang")

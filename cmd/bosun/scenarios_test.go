@@ -3835,3 +3835,114 @@ func TestScenario_RescueSnapshotsCrashedWorktree(t *testing.T) {
 		t.Errorf("worktree README mutated by rescue: body=%q err=%v", body, err)
 	}
 }
+
+// TestScenario_InitResumability exercises the v0.6 init-state breadcrumb
+// flow: a failed `bosun init 3` leaves `.bosun/init.state` describing what
+// finished, a follow-up `bosun init --resume` finishes the rest, and on
+// success the state file is removed. We force the failure by shimming a
+// fake `git` onto PATH that errors on the second `git worktree add`. The
+// shim defers to the real git binary for every other command so the
+// surrounding `git init`, branch creation, etc. all behave normally.
+func TestScenario_InitResumability(t *testing.T) {
+	s := newScenario(t)
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Skipf("git not on PATH: %v", err)
+	}
+
+	shimDir := t.TempDir()
+	counterPath := filepath.Join(shimDir, "wt-count")
+	failFlag := filepath.Join(shimDir, "fail-second")
+	shimScript := fmt.Sprintf(`#!/bin/sh
+if [ "$1" = "worktree" ] && [ "$2" = "add" ]; then
+  n=$(cat %q 2>/dev/null || echo 0)
+  n=$((n+1))
+  echo "$n" > %q
+  if [ -f %q ] && [ "$n" = "2" ]; then
+    echo "shim: fake failure on worktree #2" >&2
+    exit 1
+  fi
+fi
+exec %q "$@"
+`, counterPath, counterPath, failFlag, realGit)
+	shimPath := filepath.Join(shimDir, "git")
+	if err := os.WriteFile(shimPath, []byte(shimScript), 0o755); err != nil {
+		t.Fatalf("write git shim: %v", err)
+	}
+	// Arm the shim: the next `worktree add #2` will fail.
+	if err := os.WriteFile(failFlag, nil, 0o644); err != nil {
+		t.Fatalf("arm shim: %v", err)
+	}
+
+	shimmedEnv := append(os.Environ(), "PATH="+shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	// First run: should fail on the 2nd worktree add.
+	run := exec.Command(bosunBin, "init", "3")
+	run.Dir = s.repo
+	run.Env = shimmedEnv
+	var buf1 bytes.Buffer
+	run.Stdout = &buf1
+	run.Stderr = &buf1
+	if err := run.Run(); err == nil {
+		t.Fatalf("first init should fail at session-2; got success:\n%s", buf1.String())
+	}
+
+	// State file should exist with session-1 in completed_sessions and
+	// session-2 as the current session.
+	statePath := filepath.Join(s.repo, ".bosun", "init.state")
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("expected %s to exist after failed init: %v\noutput:\n%s", statePath, err, buf1.String())
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatalf("init.state is not valid JSON: %v\n%s", err, data)
+	}
+	completed, _ := doc["completed_sessions"].([]any)
+	if len(completed) != 1 || completed[0] != "session-1" {
+		t.Errorf("completed_sessions = %v, want [session-1]; full state:\n%s", completed, data)
+	}
+	if cur, _ := doc["current_session"].(string); cur != "session-2" {
+		t.Errorf("current_session = %q, want session-2; full state:\n%s", cur, data)
+	}
+
+	// Plain `bosun init` (no --resume) on top of the state file must refuse.
+	refuse := exec.Command(bosunBin, "init", "3")
+	refuse.Dir = s.repo
+	refuse.Env = shimmedEnv
+	var buf2 bytes.Buffer
+	refuse.Stdout = &buf2
+	refuse.Stderr = &buf2
+	if err := refuse.Run(); err == nil {
+		t.Fatalf("plain init over stale state should refuse; got success:\n%s", buf2.String())
+	}
+	if !strings.Contains(buf2.String(), "--resume") {
+		t.Errorf("refuse-message should mention --resume; got:\n%s", buf2.String())
+	}
+
+	// Disarm the shim and reset the counter so `--resume` can complete.
+	if err := os.Remove(failFlag); err != nil {
+		t.Fatalf("disarm shim: %v", err)
+	}
+	_ = os.Remove(counterPath)
+
+	// Resume: must finish sessions 2 and 3 and remove the state file.
+	resume := exec.Command(bosunBin, "init", "3", "--resume")
+	resume.Dir = s.repo
+	resume.Env = shimmedEnv
+	var buf3 bytes.Buffer
+	resume.Stdout = &buf3
+	resume.Stderr = &buf3
+	if err := resume.Run(); err != nil {
+		t.Fatalf("resume failed: %v\n%s", err, buf3.String())
+	}
+
+	for i := 1; i <= 3; i++ {
+		s.AssertWorktreeExists(i)
+		s.AssertBranchExists("bosun/session-" + itoa(i))
+	}
+	if _, err := os.Stat(statePath); !os.IsNotExist(err) {
+		t.Errorf("state file should be removed after successful resume; stat err = %v", err)
+	}
+}

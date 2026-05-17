@@ -1,7 +1,9 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +16,7 @@ import (
 	"github.com/jasondillingham/bosun/internal/brief"
 	"github.com/jasondillingham/bosun/internal/config"
 	"github.com/jasondillingham/bosun/internal/hooks"
+	initstate "github.com/jasondillingham/bosun/internal/init"
 	"github.com/jasondillingham/bosun/internal/launcher"
 	bosunmcp "github.com/jasondillingham/bosun/internal/mcp"
 	"github.com/jasondillingham/bosun/internal/session"
@@ -30,6 +33,7 @@ func newInitCmd() *cobra.Command {
 		initialPrompt string
 		noLoadCheck   bool
 		cleanPhantoms bool
+		resume        bool
 	)
 
 	cmd := &cobra.Command{
@@ -54,6 +58,7 @@ Mixing integers with names in the same invocation is a usage error.`,
 				initialPrompt: initialPrompt,
 				noLoadCheck:   noLoadCheck,
 				cleanPhantoms: cleanPhantoms,
+				resume:        resume,
 			})
 		},
 	}
@@ -66,6 +71,7 @@ Mixing integers with names in the same invocation is a usage error.`,
 	cmd.Flags().StringVar(&initialPrompt, "initial-prompt", "", "first message passed to each launched session (paired with --launch; default: 'Read BOSUN_BRIEF.md...' when --brief is also set)")
 	cmd.Flags().BoolVar(&noLoadCheck, "no-load-check", false, "skip the pre-flight 1-minute load average check")
 	cmd.Flags().BoolVar(&cleanPhantoms, "clean-phantoms", false, "auto-remove Finder/Spotlight phantom branch refs (off by default)")
+	cmd.Flags().BoolVar(&resume, "resume", false, "continue a previously-interrupted bosun init using .bosun/init.state")
 
 	return cmd
 }
@@ -79,6 +85,7 @@ type initOpts struct {
 	initialPrompt string
 	noLoadCheck   bool
 	cleanPhantoms bool
+	resume        bool
 }
 
 func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
@@ -90,6 +97,48 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 	labels, err := resolveInitLabels(args, rc.cfg)
 	if err != nil {
 		return err
+	}
+
+	// Resume / refuse-on-stale gate. We do this before any pre-flight
+	// (phantom scan, load average, hooks) so an operator who Ctrl-C'd a
+	// prior init isn't surprised by the same flaky pre-flight running
+	// twice. The two states are mutually exclusive: plain `init` with a
+	// state file = refuse; `init --resume` without a state file = refuse.
+	istate, err := initstate.Load(rc.repoRoot)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		// No prior state. --resume without a state file is a clear operator
+		// mistake — surface it rather than falling through to a fresh init.
+		if opts.resume {
+			return userErr("--resume requested but no %s found; remove the flag for a fresh init", initstate.Path(rc.repoRoot))
+		}
+		istate = initstate.New(len(labels), opts.brief)
+	case err != nil:
+		return userErr("read %s: %v", initstate.Path(rc.repoRoot), err)
+	case opts.force && !opts.resume:
+		// --force is bosun's "I know, blow it away" escape hatch. Clear
+		// the stale state breadcrumb and start a fresh run.
+		fmt.Fprintf(os.Stdout, "bosun: --force: discarding stale %s.\n", initstate.Path(rc.repoRoot))
+		if err := initstate.ClearFile(rc.repoRoot); err != nil {
+			return internalErr("clear stale init state", err)
+		}
+		istate = initstate.New(len(labels), opts.brief)
+	case !opts.resume:
+		return userErr(
+			"previous bosun init didn't finish (see %s).\n"+
+				"  run `bosun init --resume` to continue, or `rm %s` to start fresh",
+			initstate.Path(rc.repoRoot),
+			initstate.Path(rc.repoRoot),
+		)
+	default:
+		// --resume with valid state.
+		fmt.Fprintf(os.Stdout, "Resuming previous init (started %s).\n", istate.StartedAt.Format(time.RFC3339))
+		if istate.TotalSessions != len(labels) {
+			return userErr(
+				"--resume label count (%d) doesn't match prior init (%d). Re-run with the same args, or remove %s to start fresh.",
+				len(labels), istate.TotalSessions, initstate.Path(rc.repoRoot),
+			)
+		}
 	}
 
 	// Pre-flight #1: phantom-branch detection. Cheap directory scan that
@@ -160,10 +209,15 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 		return userErr("%v", err)
 	}
 
-	// Pre-flight: check for existing worktree paths.
+	// Pre-flight: check for existing worktree paths. Completed-in-prior-run
+	// labels are exempt under --resume — we explicitly want to reuse those
+	// worktrees, not refuse on them.
 	for _, label := range labels {
 		path := session.WorktreePathForLabel(rc.repoRoot, rc.cfg, label)
 		if _, err := os.Stat(path); err == nil {
+			if opts.resume && istate.IsCompleted(label) {
+				continue
+			}
 			if !opts.force {
 				return userErr("worktree path already exists: %s (use --force to overwrite)", path)
 			}
@@ -193,6 +247,35 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 		}
 	}
 
+	// On --resume, every label already in completed_sessions must still
+	// have its worktree on disk. If somebody manually `rm -rf`'d a sibling
+	// worktree directory, the resume can't safely "skip" — we'd leave the
+	// final state inconsistent. Refuse with a clear pointer rather than
+	// silently re-creating, which could clobber operator hand-fixes.
+	if opts.resume && len(istate.CompletedSessions) > 0 {
+		worktrees, err := rc.git.ListWorktrees(rc.ctx, rc.repoRoot)
+		if err != nil {
+			return gitErr("list worktrees", err)
+		}
+		known := map[string]bool{}
+		for _, wt := range worktrees {
+			known[wt.Path] = true
+		}
+		for _, label := range istate.CompletedSessions {
+			path := session.WorktreePathForLabel(rc.repoRoot, rc.cfg, label)
+			if _, statErr := os.Stat(path); statErr != nil {
+				return userErr(
+					"resume: completed session %s is missing its worktree at %s.\n"+
+						"  remove %s and re-run `bosun init %d` for a clean start.",
+					label, path, initstate.Path(rc.repoRoot), len(labels),
+				)
+			}
+			if !known[path] {
+				fmt.Fprintf(os.Stderr, "bosun: warning: %s exists on disk but is not registered as a worktree; resume continuing\n", path)
+			}
+		}
+	}
+
 	// Create branches + worktrees.
 	type created struct {
 		label  string
@@ -205,6 +288,17 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 		branch := rc.cfg.BranchForLabel(label)
 		path := session.WorktreePathForLabel(rc.repoRoot, rc.cfg, label)
 
+		// Resume short-circuit: already-completed sessions are skipped wholesale.
+		if opts.resume && istate.IsCompleted(label) {
+			fmt.Fprintf(os.Stdout, "Skipping %s (already completed in prior run).\n", label)
+			made = append(made, created{label: label, branch: branch, path: path})
+			continue
+		}
+
+		if err := istate.SetCurrent(rc.repoRoot, label, initstate.StepBranchCreate); err != nil {
+			return internalErr("persist init state", err)
+		}
+
 		exists, err := rc.git.BranchExists(rc.ctx, rc.repoRoot, branch)
 		if err != nil {
 			return gitErr("check branch", err)
@@ -214,11 +308,49 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 				return gitErr("create branch "+branch, err)
 			}
 		}
-		fmt.Fprintf(os.Stdout, "Creating worktree %s (%d/%d)...\n", label, i+1, len(labels))
-		if err := rc.git.AddWorktree(rc.ctx, rc.repoRoot, path, branch); err != nil {
-			return gitErr("add worktree "+path, err)
+
+		if err := istate.SetCurrent(rc.repoRoot, label, initstate.StepGitWorktreeAdd); err != nil {
+			return internalErr("persist init state", err)
 		}
+
+		// On --resume, the worktree path may already exist if the prior
+		// run completed AddWorktree but failed afterwards. Detect that
+		// case via `git worktree list` and skip the re-add so we don't
+		// hit "already exists" errors. A bare directory at the path that
+		// git doesn't know about is still a hard error — that's the
+		// operator-fingerprint case the safety contract wants to surface.
+		if opts.resume {
+			worktrees, listErr := rc.git.ListWorktrees(rc.ctx, rc.repoRoot)
+			if listErr != nil {
+				return gitErr("list worktrees", listErr)
+			}
+			registered := false
+			for _, wt := range worktrees {
+				if wt.Path == path || wt.Branch == "refs/heads/"+branch {
+					registered = true
+					break
+				}
+			}
+			if registered {
+				fmt.Fprintf(os.Stdout, "Reusing existing worktree for %s (%d/%d).\n", label, i+1, len(labels))
+			} else {
+				fmt.Fprintf(os.Stdout, "Creating worktree %s (%d/%d)...\n", label, i+1, len(labels))
+				if err := rc.git.AddWorktree(rc.ctx, rc.repoRoot, path, branch); err != nil {
+					return gitErr("add worktree "+path, err)
+				}
+			}
+		} else {
+			fmt.Fprintf(os.Stdout, "Creating worktree %s (%d/%d)...\n", label, i+1, len(labels))
+			if err := rc.git.AddWorktree(rc.ctx, rc.repoRoot, path, branch); err != nil {
+				return gitErr("add worktree "+path, err)
+			}
+		}
+
 		made = append(made, created{label: label, branch: branch, path: path})
+
+		if err := istate.SetCurrent(rc.repoRoot, label, initstate.StepStateFileWrite); err != nil {
+			return internalErr("persist init state", err)
+		}
 
 		// Always exclude BOSUN_BRIEF.md and .claude/CLAUDE.md from the
 		// worktree's index, even when no brief is written this run — that
@@ -238,6 +370,10 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 			if err := brief.WriteSessionPointer(path, label); err != nil {
 				return internalErr("write session pointer for "+label, err)
 			}
+		}
+
+		if err := istate.MarkComplete(rc.repoRoot, label); err != nil {
+			return internalErr("persist init state", err)
 		}
 	}
 
@@ -260,6 +396,10 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 		fmt.Fprintf(os.Stderr, "bosun: warning: update .gitignore: %v\n", err)
 	}
 
+	if err := istate.SetCurrent(rc.repoRoot, "", initstate.StepHookPostInit); err != nil {
+		return internalErr("persist init state", err)
+	}
+
 	// Fire post-init after every worktree exists and every brief is on
 	// disk, but before launching agents — operators wiring this hook
 	// typically want to seed/inspect the worktrees and the launch step is
@@ -271,6 +411,12 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 	}
 	if err := hooks.Run(rc.ctx, rc.cfg.Hooks, "post-init", postEnv); err != nil {
 		return userErr("%v", err)
+	}
+
+	// Everything succeeded — discard the resume breadcrumb so the next
+	// plain `bosun init` isn't refused on stale state.
+	if err := istate.Clear(rc.repoRoot); err != nil {
+		fmt.Fprintf(os.Stderr, "bosun: warning: clear init state: %v\n", err)
 	}
 
 	// Print summary.

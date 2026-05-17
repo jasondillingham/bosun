@@ -2,6 +2,7 @@ package hooks
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -94,7 +95,7 @@ func TestRun_FailClosedReturnsError(t *testing.T) {
 	if err == nil {
 		t.Fatal("Run(fail-closed, exit 7) = nil, want error")
 	}
-	if !strings.Contains(err.Error(), "pre-init hook") {
+	if !strings.Contains(err.Error(), "pre-init") {
 		t.Errorf("error %q should mention the event name", err)
 	}
 }
@@ -172,5 +173,57 @@ func TestRun_EmptyCommandIsError(t *testing.T) {
 	hooks := []Hook{{Event: "pre-init", Command: ""}}
 	if err := Run(context.Background(), hooks, "pre-init", nil); err == nil {
 		t.Fatal("Run(empty command) = nil, want error")
+	}
+}
+
+func TestRun_TimeoutIsErrTimeoutSentinel(t *testing.T) {
+	// errors.Is must classify a timeout as ErrTimeout so callers can
+	// render a distinct message without parsing the error string.
+	hooks := []Hook{{
+		Event:          "pre-init",
+		Command:        "sleep 5",
+		TimeoutSeconds: 1,
+	}}
+	err := Run(context.Background(), hooks, "pre-init", nil)
+	if err == nil {
+		t.Fatal("Run(timeout) = nil, want error")
+	}
+	if !errors.Is(err, ErrTimeout) {
+		t.Errorf("expected errors.Is(err, ErrTimeout); err = %v", err)
+	}
+	if !strings.Contains(err.Error(), "timed out after 1s") {
+		t.Errorf("error %q should include the timeout duration", err)
+	}
+}
+
+func TestRun_ZeroTimeoutUsesDefault(t *testing.T) {
+	// TimeoutSeconds==0 must not mean "infinite". v0.6 turns zero into the
+	// 30-second default. A `sleep 60` hook with TimeoutSeconds==0 should
+	// time out (after <=30s) rather than block indefinitely. We assert
+	// the upper bound conservatively (~32s) because slow CI can drift a
+	// second or two; the point is that the hook DOES return, not that
+	// it returns in exactly 30s.
+	if testing.Short() {
+		t.Skip("skipping 30s default-timeout test in -short mode")
+	}
+	hooks := []Hook{{
+		Event:   "pre-init",
+		Command: "sleep 60",
+		// TimeoutSeconds left at zero on purpose.
+	}}
+	start := time.Now()
+	err := Run(context.Background(), hooks, "pre-init", nil)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("Run(default-timeout) = nil, want error")
+	}
+	if !errors.Is(err, ErrTimeout) {
+		t.Errorf("expected errors.Is(err, ErrTimeout); err = %v", err)
+	}
+	if !strings.Contains(err.Error(), "30s") {
+		t.Errorf("error %q should mention 30s default", err)
+	}
+	if elapsed > 32*time.Second {
+		t.Errorf("default timeout took %s; expected ~30s", elapsed)
 	}
 }

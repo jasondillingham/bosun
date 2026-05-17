@@ -39,6 +39,31 @@ If you've ever run 3–4 Claude Code sessions in parallel on the same repo, you'
 
 Bosun solves all four by giving each session an isolated git worktree, surfacing live state in one place, providing clean merge-back, and (since v0.2) exposing live cross-session coordination as MCP tool calls.
 
+## Safety contract — what bosun does to your repo
+
+Bosun runs alongside your normal git workflow, on the same checkout you already use. The rules below describe exactly what it touches without being asked, what it does only when you ask, and what it never does at all.
+
+**Without explicit command, bosun:**
+
+- Creates branches under the `bosun/` prefix (e.g. `bosun/session-1`, `bosun/auth`). Your existing branches and `main` are not touched.
+- Creates worktrees as sibling directories of your repo, named `<repo>-bosun-<session>` (e.g. `myproj-bosun-1`). Nothing is created inside the repo root other than `.bosun/`.
+- Writes coordination state under `.bosun/` in your repo root: per-session claim files, DONE/STUCK markers, an MCP socket at `.bosun/mcp.sock`, and `.bosun/init.state` while `bosun init` is in progress. `.bosun/` is auto-added to `.gitignore`.
+
+**Only on explicit command, bosun:**
+
+- `bosun merge` squash-merges DONE sessions back to your base branch — the only action that touches `main`.
+- `bosun remove <session>` and `bosun cleanup` delete the session's worktree and branch. Both default to safe-delete (`git branch -d`); `--force` switches to `-D`.
+- `bosun cleanup --purge` discards committed work that hasn't been merged. Loud on purpose: this is the only path that can drop session commits.
+- `bosun merge --undo` resets `main` to a prior SHA, and only when `main` hasn't advanced past it.
+
+**Never, regardless of command, bosun:**
+
+- Touches `main` outside of `bosun merge`.
+- Writes outside `<repo>` and the `<repo>-bosun-*` sibling worktrees.
+- Pushes to any remote, fetches from one, or talks to a forge (GitHub, GitLab, …).
+- Modifies your global git config or your `user.{name,email}`.
+- Modifies repo-level git config beyond what `git worktree add` already does.
+
 ## Install
 
 ```

@@ -17,6 +17,20 @@ import (
 	"time"
 )
 
+// DefaultTimeoutSeconds is applied to any Hook with TimeoutSeconds == 0.
+// A zero timeout used to mean "no timeout", which let a runaway operator
+// command pin the bosun process indefinitely. v0.6 turns that into a
+// 30-second safety net — long enough that legitimate hooks (lint, vet,
+// docker pulls) complete comfortably, short enough that an interactive
+// `read` or wedged subprocess can't hang init forever.
+const DefaultTimeoutSeconds = 30
+
+// ErrTimeout is the sentinel returned (via errors.Is) when a hook is
+// killed because its timeout fired. Callers can distinguish a timeout
+// from an exit-status failure to render different messaging without
+// string-matching on the error text.
+var ErrTimeout = errors.New("hook timed out")
+
 // KnownEvents lists every event name v0.1 recognises. Config validation
 // rejects entries outside this set so typos surface at load time rather
 // than silently never firing.
@@ -46,7 +60,11 @@ func IsKnownEvent(name string) bool {
 // and `&&` chains without bosun re-parsing the string. FailOpen=true keeps
 // the bosun command running on non-zero exit (the default in
 // config.example.json); FailOpen=false makes the hook a hard gate.
-// TimeoutSeconds=0 means no timeout.
+//
+// TimeoutSeconds == 0 falls back to DefaultTimeoutSeconds (30s). A negative
+// value would round trip through JSON unchanged; treat any non-positive
+// value as "use the default" rather than as "no timeout" — letting hooks
+// run unbounded is exactly the foot-gun this version closes.
 type Hook struct {
 	Event          string `json:"event"`
 	Command        string `json:"command"`
@@ -75,10 +93,10 @@ func Run(ctx context.Context, hooks []Hook, event string, env map[string]string)
 		}
 		if err := runOne(ctx, h, env); err != nil {
 			if h.FailOpen {
-				fmt.Fprintf(os.Stderr, "bosun: warning: %s hook #%d failed: %v\n", event, i, err)
+				fmt.Fprintf(os.Stderr, "bosun: warning: hook %s #%d failed: %v\n", event, i, err)
 				continue
 			}
-			return fmt.Errorf("%s hook: %w", event, err)
+			return fmt.Errorf("hook %s: %w", event, err)
 		}
 	}
 	return nil
@@ -91,12 +109,12 @@ func runOne(ctx context.Context, h Hook, env map[string]string) error {
 	if h.Command == "" {
 		return errors.New("empty command")
 	}
-	runCtx := ctx
-	var cancel context.CancelFunc
-	if h.TimeoutSeconds > 0 {
-		runCtx, cancel = context.WithTimeout(ctx, time.Duration(h.TimeoutSeconds)*time.Second)
-		defer cancel()
+	timeoutSeconds := h.TimeoutSeconds
+	if timeoutSeconds <= 0 {
+		timeoutSeconds = DefaultTimeoutSeconds
 	}
+	runCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSeconds)*time.Second)
+	defer cancel()
 
 	cmd := exec.CommandContext(runCtx, "sh", "-c", h.Command)
 	cmd.Env = append(os.Environ(), envSlice(env)...)
@@ -105,7 +123,9 @@ func runOne(ctx context.Context, h Hook, env map[string]string) error {
 
 	err := cmd.Run()
 	if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
-		return fmt.Errorf("timed out after %ds", h.TimeoutSeconds)
+		// Wrap the sentinel so callers can check errors.Is(err, ErrTimeout)
+		// without losing the duration in the user-facing message.
+		return fmt.Errorf("timed out after %ds: %w", timeoutSeconds, ErrTimeout)
 	}
 	return err
 }

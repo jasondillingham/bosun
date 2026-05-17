@@ -255,6 +255,28 @@ func (c *Client) RevParseHEAD(ctx context.Context, dir string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
+// RevParseRef returns the commit SHA the named ref resolves to in dir.
+// Equivalent to `git rev-parse <ref>`. Used by init's stale-branch check
+// to compare a leftover `bosun/session-N` branch tip against the base
+// branch HEAD without depending on the per-call shape of show-ref.
+func (c *Client) RevParseRef(ctx context.Context, dir, ref string) (string, error) {
+	out, err := c.run(ctx, dir, "rev-parse", ref)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// ResetBranchTo force-moves the named branch to point at sha. Equivalent
+// to `git branch -f <name> <sha>`. Used by init's stale-branch recovery
+// when --force is passed: the branch is recreated at base HEAD so the
+// next `git worktree add` checks out a fresh tip rather than the old
+// (and possibly stale) commit.
+func (c *Client) ResetBranchTo(ctx context.Context, dir, name, sha string) error {
+	_, err := c.run(ctx, dir, "branch", "-f", name, sha)
+	return err
+}
+
 // ResetHard runs `git reset --hard <sha>` in dir. Destructive: discards
 // the working tree, index, and HEAD's recorded position in favor of sha.
 //

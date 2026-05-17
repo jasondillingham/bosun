@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +19,7 @@ import (
 	initstate "github.com/jasondillingham/bosun/internal/init"
 	"github.com/jasondillingham/bosun/internal/launcher"
 	bosunmcp "github.com/jasondillingham/bosun/internal/mcp"
+	"github.com/jasondillingham/bosun/internal/preflight"
 	"github.com/jasondillingham/bosun/internal/session"
 	"github.com/spf13/cobra"
 )
@@ -196,12 +196,7 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 	// before spinning up N worktrees + N agents tends to turn a slow init
 	// into a silent-looking hang.
 	if !opts.noLoadCheck {
-		if load, err := getLoadAverage(); err != nil {
-			fmt.Fprintf(os.Stderr, "bosun: warning: load-average check failed: %v\n", err)
-		} else if load > loadAverageWarnThreshold {
-			fmt.Fprintf(os.Stdout, "system load is %.2f; init may be slow (--no-load-check to skip)\n", load)
-			time.Sleep(loadAveragePauseDuration)
-		}
+		preflight.CheckLoad(os.Stdout, "init", preflight.DefaultLoadWarnThreshold, preflight.DefaultLoadAveragePauseDuration)
 	}
 
 	base := opts.fromBranch
@@ -360,6 +355,20 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 			fmt.Fprintf(os.Stdout, "Skipping %s (already completed in prior run).\n", label)
 			made = append(made, created{label: label, branch: branch, path: path})
 			continue
+		}
+
+		// Stale-branch pre-flight. A prior `bosun cleanup` removes the
+		// worktree but leaves the branch; without this check, a fresh
+		// `bosun init` would silently reuse the leftover branch tip and
+		// later `bosun done`+`bosun merge` could squash stale code into
+		// main. Skipped under --force (the cleanup block above already
+		// deleted the branch) and under --resume (resume intentionally
+		// reuses the prior branch). Runs before any istate.SetCurrent so
+		// a refusal leaves no breadcrumb behind.
+		if !opts.force && !opts.resume {
+			if err := checkStaleSessionBranch(rc, branch, base); err != nil {
+				return err
+			}
 		}
 
 		if err := istate.SetCurrent(rc.repoRoot, label, initstate.StepBranchCreate); err != nil {
@@ -568,6 +577,52 @@ type workTreeRef struct {
 	locked bool
 }
 
+// checkStaleSessionBranch refuses to proceed when branch already exists
+// at a SHA that diverges from base's HEAD — the classic post-cleanup
+// shape where the worktree was removed but the branch was not.
+// Equal-SHA case is a no-op (the upcoming `git worktree add` will check
+// the branch out, which is what we want). Caller is responsible for
+// gating with !opts.force && !opts.resume — the --force flow already
+// deletes the branch upstream, and --resume intentionally reuses it.
+func checkStaleSessionBranch(rc *runCtx, branch, base string) error {
+	exists, err := rc.git.BranchExists(rc.ctx, rc.repoRoot, branch)
+	if err != nil {
+		return gitErr("check branch", err)
+	}
+	if !exists {
+		return nil
+	}
+	branchSHA, err := rc.git.RevParseRef(rc.ctx, rc.repoRoot, branch)
+	if err != nil {
+		return gitErr("rev-parse "+branch, err)
+	}
+	baseSHA, err := rc.git.RevParseRef(rc.ctx, rc.repoRoot, base)
+	if err != nil {
+		return gitErr("rev-parse "+base, err)
+	}
+	if branchSHA == baseSHA {
+		return nil
+	}
+	return userErr(
+		"branch %s already exists at %s (diverges from %s).\n"+
+			"       Recovery:\n"+
+			"       - git branch -D %s   (drop the stale branch), OR\n"+
+			"       - re-run with --force             (reset %s to %s).",
+		branch, shortStaleSHA(branchSHA), base, branch, branch, base,
+	)
+}
+
+// shortStaleSHA returns the leading 8 chars of a commit SHA for
+// operator-facing diagnostics. Mirrors cmd_merge.shortSHA but is kept
+// separate to avoid coupling the init refusal message to the merge log
+// formatter — they may diverge.
+func shortStaleSHA(sha string) string {
+	if len(sha) > 8 {
+		return sha[:8]
+	}
+	return sha
+}
+
 // sameLabels reports whether two label slices represent the same ordered set.
 // Used by --resume to decide whether positional args agree with init.state's
 // snapshot — a disagreement is downgraded to a warning rather than a hard
@@ -756,83 +811,6 @@ func trimCR(s string) string {
 		return s[:len(s)-1]
 	}
 	return s
-}
-
-// loadAverageWarnThreshold is the 1-minute load average above which init
-// prints a slow-warning. loadAveragePauseDuration is how long it pauses
-// to give the operator a chance to abort. Both are var-scoped (not const)
-// so tests can shorten the pause without sleeping for real seconds.
-var (
-	loadAverageWarnThreshold = 5.0
-	loadAveragePauseDuration = 2 * time.Second
-)
-
-// getLoadAverage is the indirection point tests override to inject a
-// synthetic 1-minute load average. The default reads the host's actual
-// load (or honors BOSUN_TEST_LOAD_AVERAGE when set, which lets
-// subprocess-style scenario tests exercise the warning path).
-var getLoadAverage = readSystemLoadAverage
-
-func readSystemLoadAverage() (float64, error) {
-	if v := os.Getenv("BOSUN_TEST_LOAD_AVERAGE"); v != "" {
-		f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
-		if err != nil {
-			return 0, fmt.Errorf("BOSUN_TEST_LOAD_AVERAGE=%q: %w", v, err)
-		}
-		return f, nil
-	}
-	switch runtime.GOOS {
-	case "linux":
-		return readLoadFromProcLoadavg()
-	case "darwin":
-		return readLoadFromUptime()
-	default:
-		// Windows / other: no reliable cross-vendor 1-min load average.
-		return 0, nil
-	}
-}
-
-func readLoadFromProcLoadavg() (float64, error) {
-	data, err := os.ReadFile("/proc/loadavg")
-	if err != nil {
-		return 0, err
-	}
-	fields := strings.Fields(string(data))
-	if len(fields) == 0 {
-		return 0, fmt.Errorf("unexpected /proc/loadavg format: %q", data)
-	}
-	return strconv.ParseFloat(fields[0], 64)
-}
-
-func readLoadFromUptime() (float64, error) {
-	out, err := exec.Command("uptime").Output()
-	if err != nil {
-		return 0, err
-	}
-	return parseUptimeLoad(string(out))
-}
-
-// parseUptimeLoad pulls the 1-minute load average out of `uptime` output.
-// Example input: "14:32  up 1:23, 2 users, load averages: 1.23 1.45 1.67".
-// macOS uses "load averages:" (plural) and Linux uses "load average:";
-// match either by anchoring on "load average".
-func parseUptimeLoad(text string) (float64, error) {
-	idx := strings.Index(text, "load average")
-	if idx < 0 {
-		return 0, fmt.Errorf("unexpected uptime output: %q", text)
-	}
-	colon := strings.Index(text[idx:], ":")
-	if colon < 0 {
-		return 0, fmt.Errorf("unexpected uptime output: %q", text)
-	}
-	rest := text[idx+colon+1:]
-	// Linux uptime separates with commas; macOS with spaces. Normalize.
-	rest = strings.ReplaceAll(rest, ",", " ")
-	fields := strings.Fields(rest)
-	if len(fields) == 0 {
-		return 0, fmt.Errorf("unexpected uptime output: %q", text)
-	}
-	return strconv.ParseFloat(fields[0], 64)
 }
 
 // phantomBranchRefPattern matches macOS Finder / Time Machine / Spotlight

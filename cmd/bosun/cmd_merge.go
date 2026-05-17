@@ -13,6 +13,7 @@ import (
 
 	"github.com/jasondillingham/bosun/internal/brief"
 	"github.com/jasondillingham/bosun/internal/hooks"
+	"github.com/jasondillingham/bosun/internal/preflight"
 	"github.com/jasondillingham/bosun/internal/proc"
 	"github.com/jasondillingham/bosun/internal/session"
 	"github.com/spf13/cobra"
@@ -27,13 +28,14 @@ var procRunning = proc.Running
 
 func newMergeCmd() *cobra.Command {
 	var (
-		all            bool
-		noSquash       bool
-		dryRun         bool
-		message        string
-		ignoreRunning  bool
-		undoID         string
-		listUndo       bool
+		all           bool
+		noSquash      bool
+		dryRun        bool
+		message       string
+		ignoreRunning bool
+		undoID        string
+		listUndo      bool
+		noLoadCheck   bool
 	)
 
 	cmd := &cobra.Command{
@@ -48,6 +50,7 @@ func newMergeCmd() *cobra.Command {
 				ignoreRunning: ignoreRunning,
 				undoID:        undoID,
 				listUndo:      listUndo,
+				noLoadCheck:   noLoadCheck,
 			})
 		},
 	}
@@ -59,6 +62,7 @@ func newMergeCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&ignoreRunning, "ignore-running", false, "bypass the live-agent gate (drops untracked + unstaged work)")
 	cmd.Flags().StringVar(&undoID, "undo", "", "undo a recent merge by session name or pre-SHA prefix")
 	cmd.Flags().BoolVar(&listUndo, "list-undo", false, "list recent merge log entries for inspection")
+	cmd.Flags().BoolVar(&noLoadCheck, "no-load-check", false, "skip the pre-flight 1-minute load average check")
 
 	return cmd
 }
@@ -71,6 +75,7 @@ type mergeOpts struct {
 	ignoreRunning bool
 	undoID        string
 	listUndo      bool
+	noLoadCheck   bool
 }
 
 func runMerge(cmd *cobra.Command, args []string, opts mergeOpts) error {
@@ -97,6 +102,14 @@ func runMerge(cmd *cobra.Command, args []string, opts mergeOpts) error {
 	}
 	if currentBranch != rc.cfg.BaseBranch {
 		return userErr("merge must run on base branch %q (HEAD is on %q)", rc.cfg.BaseBranch, currentBranch)
+	}
+
+	// Pre-flight: 1-min load average advisory. Merge's pre-merge fsck is
+	// exactly the operation that hung for 11 minutes in v0.6.1 under
+	// fsync pressure — same shape as init, same warning surface, same
+	// --no-load-check escape hatch.
+	if !opts.noLoadCheck {
+		preflight.CheckLoad(os.Stdout, "merge", preflight.DefaultLoadWarnThreshold, preflight.DefaultLoadAveragePauseDuration)
 	}
 
 	sessions, err := session.Derive(rc.ctx, rc.git, rc.cfg, rc.repoRoot, rc.state, rc.claims)

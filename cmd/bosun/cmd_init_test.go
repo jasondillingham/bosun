@@ -2,66 +2,11 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
-
-func TestParseUptimeLoad_macOS(t *testing.T) {
-	// macOS `uptime` uses "load averages:" with space-separated values.
-	got, err := parseUptimeLoad("14:32  up 1:23, 2 users, load averages: 1.23 1.45 1.67\n")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got != 1.23 {
-		t.Errorf("want 1.23, got %v", got)
-	}
-}
-
-func TestParseUptimeLoad_Linux(t *testing.T) {
-	// Linux `uptime` uses "load average:" (singular) with comma separators.
-	got, err := parseUptimeLoad(" 14:32:01 up 12 days,  3:45,  1 user,  load average: 7.42, 5.10, 3.88\n")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got != 7.42 {
-		t.Errorf("want 7.42, got %v", got)
-	}
-}
-
-func TestParseUptimeLoad_Malformed(t *testing.T) {
-	if _, err := parseUptimeLoad("nothing useful here"); err == nil {
-		t.Fatal("expected error for malformed uptime output")
-	}
-}
-
-func TestGetLoadAverage_RespectsEnvOverride(t *testing.T) {
-	// BOSUN_TEST_LOAD_AVERAGE is the seam scenario tests use to inject a
-	// synthetic load from outside the process. Cover it directly so the
-	// contract doesn't silently rot.
-	t.Setenv("BOSUN_TEST_LOAD_AVERAGE", "12.5")
-	got, err := readSystemLoadAverage()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got != 12.5 {
-		t.Errorf("want 12.5, got %v", got)
-	}
-}
-
-func TestGetLoadAverage_StubbableViaVar(t *testing.T) {
-	// getLoadAverage is a package-level var precisely so unit tests can
-	// inject a value without depending on the host's real load.
-	orig := getLoadAverage
-	t.Cleanup(func() { getLoadAverage = orig })
-	getLoadAverage = func() (float64, error) { return 9.9, nil }
-	got, err := getLoadAverage()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got != 9.9 {
-		t.Errorf("want 9.9, got %v", got)
-	}
-}
 
 func TestFindPhantomBranchRefs_DetectsFinderDuplicates(t *testing.T) {
 	repo := t.TempDir()
@@ -101,6 +46,91 @@ func mustWrite(t *testing.T, path, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write %s: %v", path, err)
 	}
+}
+
+// TestCheckStaleSessionBranch covers the v0.6.2 stale-branch pre-flight in
+// isolation. Drives the helper directly against a real on-disk repo so the
+// rev-parse / branch-exists paths run end-to-end rather than against
+// mocked git output.
+//
+// Three cases:
+//   - branch absent             → no error (proceed)
+//   - branch at base HEAD       → no error (equal-SHA is a no-op semantically)
+//   - branch diverges from base → userErr with recovery hints
+func TestCheckStaleSessionBranch(t *testing.T) {
+	repo := t.TempDir()
+	runGit := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, string(out))
+		}
+	}
+	runGit("init", "-q", "-b", "main")
+	runGit("config", "user.email", "t@e")
+	runGit("config", "user.name", "t")
+	runGit("config", "commit.gpgsign", "false")
+	if err := os.WriteFile(filepath.Join(repo, "f"), []byte("x\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	runGit("add", "f")
+	runGit("commit", "-q", "-m", "init")
+
+	rc, err := loadCtxAt(repo)
+	if err != nil {
+		t.Fatalf("loadCtx: %v", err)
+	}
+
+	// Case 1: branch absent.
+	if err := checkStaleSessionBranch(rc, "bosun/session-99", "main"); err != nil {
+		t.Fatalf("expected nil for absent branch, got %v", err)
+	}
+
+	// Case 2: branch at base HEAD.
+	runGit("branch", "bosun/session-1")
+	if err := checkStaleSessionBranch(rc, "bosun/session-1", "main"); err != nil {
+		t.Fatalf("expected nil for branch == base HEAD, got %v", err)
+	}
+
+	// Case 3: branch diverges from base.
+	runGit("checkout", "-q", "bosun/session-1")
+	if err := os.WriteFile(filepath.Join(repo, "f"), []byte("y\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	runGit("commit", "-q", "-am", "diverge")
+	runGit("checkout", "-q", "main")
+
+	err = checkStaleSessionBranch(rc, "bosun/session-1", "main")
+	if err == nil {
+		t.Fatal("expected refusal on divergent branch, got nil")
+	}
+	msg := err.Error()
+	for _, want := range []string{
+		"already exists",
+		"diverges from main",
+		"git branch -D bosun/session-1",
+		"--force",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("refusal message missing %q:\n%s", want, msg)
+		}
+	}
+}
+
+// loadCtxAt wraps loadCtx for tests that need a runCtx rooted at a
+// specific directory rather than the process CWD. Captures and restores
+// the working directory around the call.
+func loadCtxAt(dir string) (*runCtx, error) {
+	prev, err := os.Getwd()
+	if err != nil {
+		return nil, err
+	}
+	if err := os.Chdir(dir); err != nil {
+		return nil, err
+	}
+	defer os.Chdir(prev)
+	return loadCtx()
 }
 
 func TestSameLabels(t *testing.T) {

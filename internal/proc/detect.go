@@ -26,10 +26,17 @@ import (
 const debugEnv = "BOSUN_PROC_DEBUG"
 
 // ProcInfo is the minimal snapshot of a running process needed for matching.
+//
+// Cmdline is the kernel-level command line. We carry it because Name on
+// macOS reports the executable basename, and Claude Code installs at
+// `~/.local/share/claude/versions/<X.Y.Z>/` — making Name a version
+// number ("2.1.143") rather than "claude". Falling back to the cmdline's
+// first token recovers the recognizable agent name.
 type ProcInfo struct {
-	PID  int
-	Name string
-	CWD  string
+	PID     int
+	Name    string
+	CWD     string
+	Cmdline string
 }
 
 // Lister enumerates running processes. Production code uses
@@ -73,7 +80,11 @@ func (GopsutilLister) List() ([]ProcInfo, error) {
 			}
 			continue
 		}
-		out = append(out, ProcInfo{PID: int(p.Pid), Name: name, CWD: cwd})
+		// Cmdline is best-effort; an error here doesn't disqualify the
+		// process — the Name+CWD-only fallback still works for installs
+		// whose binary is named "claude".
+		cmdline, _ := p.Cmdline()
+		out = append(out, ProcInfo{PID: int(p.Pid), Name: name, CWD: cwd, Cmdline: cmdline})
 	}
 	return out, nil
 }
@@ -109,7 +120,7 @@ func RunningWith(l Lister, isAgent func(name string) bool, worktreePath string) 
 	}
 	debug := os.Getenv(debugEnv) == "1"
 	for _, p := range procs {
-		if !isAgent(p.Name) {
+		if !matchesAgent(isAgent, p) {
 			continue
 		}
 		got := canonicalize(p.CWD)
@@ -121,6 +132,34 @@ func RunningWith(l Lister, isAgent func(name string) bool, worktreePath string) 
 		}
 	}
 	return 0, false, nil
+}
+
+// matchesAgent runs the predicate against multiple candidate names
+// derived from the process. macOS-installed Claude Code reports its
+// version number as Name (because the binary is `versions/2.1.143`);
+// the cmdline's first token recovers the recognizable "claude" name.
+func matchesAgent(isAgent func(name string) bool, p ProcInfo) bool {
+	if isAgent(p.Name) {
+		return true
+	}
+	if p.Cmdline != "" {
+		if first := firstCmdlineToken(p.Cmdline); first != "" && isAgent(first) {
+			return true
+		}
+	}
+	return false
+}
+
+// firstCmdlineToken returns the basename of cmdline's first whitespace-
+// or NUL-separated token. gopsutil joins argv with spaces on macOS;
+// Linux's /proc/<pid>/cmdline uses NULs that gopsutil also reports as
+// spaces in v3. A bare basename (no path) returns unchanged.
+func firstCmdlineToken(cmdline string) string {
+	fields := strings.Fields(cmdline)
+	if len(fields) == 0 {
+		return ""
+	}
+	return filepath.Base(fields[0])
 }
 
 // canonicalize returns an absolute, symlink-resolved form of path so that

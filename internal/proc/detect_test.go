@@ -150,6 +150,68 @@ func TestRunningWith_DetectsRealSubprocess(t *testing.T) {
 	}
 }
 
+func TestRunningWith_MatchesViaCmdlineWhenNameIsVersion(t *testing.T) {
+	// Regression for the v0.7+ kickoff observation: macOS Claude Code
+	// installs at ~/.local/share/claude/versions/<X.Y.Z>/, so p.Name()
+	// returns the version number ("2.1.143") rather than "claude". The
+	// cmdline's first token is still "claude" and recovers the match.
+	dir, err := filepath.Abs(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := fakeLister{procs: []ProcInfo{
+		{PID: 1, Name: "2.1.143", CWD: dir, Cmdline: "claude Read BOSUN_BRIEF.md..."},
+	}}
+	pid, ok, err := RunningWith(fake, IsAgent, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("expected match via cmdline first token even when Name is a version number")
+	}
+	if pid != 1 {
+		t.Fatalf("pid=%d, want 1", pid)
+	}
+}
+
+func TestRunningWith_CmdlineFallbackIgnoredWhenNoMatch(t *testing.T) {
+	// Cmdline starts with `bash` (not an agent); name is `2.1.143`
+	// (also not an agent). Don't false-positive on the version-number
+	// pattern alone.
+	dir, err := filepath.Abs(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := fakeLister{procs: []ProcInfo{
+		{PID: 1, Name: "2.1.143", CWD: dir, Cmdline: "bash -c some-other-tool"},
+	}}
+	_, ok, err := RunningWith(fake, IsAgent, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("expected no match when neither Name nor cmdline first token is an agent")
+	}
+}
+
+func TestFirstCmdlineToken(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"", ""},
+		{"claude", "claude"},
+		{"claude Read BOSUN_BRIEF.md", "claude"},
+		{"/usr/local/bin/claude --foo", "claude"},
+		{"  leading whitespace", "leading"},
+	}
+	for _, tc := range cases {
+		if got := firstCmdlineToken(tc.in); got != tc.want {
+			t.Errorf("firstCmdlineToken(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestIsAgent(t *testing.T) {
 	cases := []struct {
 		in   string

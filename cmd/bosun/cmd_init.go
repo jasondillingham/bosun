@@ -20,12 +20,14 @@ import (
 	"github.com/jasondillingham/bosun/internal/preflight"
 	"github.com/jasondillingham/bosun/internal/session"
 	"github.com/jasondillingham/bosun/internal/state"
+	"github.com/jasondillingham/bosun/internal/suggest"
 	"github.com/spf13/cobra"
 )
 
 func newInitCmd() *cobra.Command {
 	var (
 		briefPath     string
+		suggestGoal   string
 		launch        bool
 		isolateCache  bool
 		force         bool
@@ -51,6 +53,7 @@ Mixing integers with names in the same invocation is a usage error.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runInit(cmd, args, initOpts{
 				brief:         briefPath,
+				suggestGoal:   suggestGoal,
 				launch:        launch,
 				isolateCache:  isolateCache,
 				force:         force,
@@ -64,6 +67,7 @@ Mixing integers with names in the same invocation is a usage error.`,
 	}
 
 	cmd.Flags().StringVar(&briefPath, "brief", "", "path to a plan markdown with '## <label>' sections (e.g. '## session-1' or '## auth')")
+	cmd.Flags().StringVar(&suggestGoal, "suggest", "", "generate a brief from this goal description via `bosun suggest`, then init from it (one-step onboarding; conflicts with --brief)")
 	cmd.Flags().BoolVar(&launch, "launch", false, "spawn an agent session in each worktree")
 	cmd.Flags().BoolVar(&isolateCache, "isolate-cache", false, "set per-worktree build-cache env vars when launching")
 	cmd.Flags().BoolVar(&force, "force", false, "overwrite existing bosun worktrees")
@@ -78,6 +82,7 @@ Mixing integers with names in the same invocation is a usage error.`,
 
 type initOpts struct {
 	brief         string
+	suggestGoal   string
 	launch        bool
 	isolateCache  bool
 	force         bool
@@ -169,6 +174,29 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 		if err != nil {
 			return err
 		}
+		istate = initstate.New(labels, opts.brief)
+	}
+
+	// --suggest: generate a brief via `bosun suggest` and use it as if
+	// the operator had hand-written one. The one-step onboarding path
+	// — no separate suggest → review → init dance. Conflicts with
+	// --brief (the operator already has a plan); conflicts with --resume
+	// (we wouldn't replace the prior plan mid-run).
+	if opts.suggestGoal != "" {
+		if opts.brief != "" {
+			return userErr("--suggest and --brief are mutually exclusive (--suggest writes a brief; --brief consumes one)")
+		}
+		if opts.resume {
+			return userErr("--suggest cannot be combined with --resume; the prior init's plan path is recorded in init.state")
+		}
+		path, err := generateBriefFromSuggest(rc, opts.suggestGoal, len(labels))
+		if err != nil {
+			return err
+		}
+		opts.brief = path
+		fmt.Fprintf(os.Stdout, "Generated brief from --suggest: %s\n", path)
+		// init.state was just created without a plan path; update it so
+		// --resume after a failed init points at the suggested brief.
 		istate = initstate.New(labels, opts.brief)
 	}
 
@@ -851,4 +879,56 @@ func findPhantomBranchRefs(repoRoot, sessionPrefix string) ([]string, error) {
 		}
 	}
 	return phantoms, nil
+}
+
+// generateBriefFromSuggest runs the same pipeline `bosun suggest` does
+// (inspect → propose → validate → render) and writes the markdown into
+// .bosun/suggested-plan.md inside the repo. Returns the path so the
+// caller can wire it into opts.brief.
+//
+// Kept inline here rather than calling out to cmd_suggest.go so the
+// init path has a single error surface — if the suggest pipeline
+// fails, we want the user to see "bosun: --suggest: <reason>" and
+// abort, not a half-init that's missing its plan.
+func generateBriefFromSuggest(rc *runCtx, goal string, sessionCount int) (string, error) {
+	sugCfg := rc.cfg.Suggest
+	proposer, err := suggest.NewClaudeProposer(suggest.ClaudeProposerOptions{
+		Model:     sugCfg.Model,
+		MaxTokens: sugCfg.MaxTokens,
+		APIKeyEnv: sugCfg.APIKeyEnv,
+	})
+	if err != nil {
+		return "", userErr("--suggest: %v", err)
+	}
+
+	intel, err := suggest.Inspect(rc.repoRoot)
+	if err != nil {
+		return "", internalErr("--suggest: inspect repo", err)
+	}
+
+	proposal, err := proposer.Propose(rc.ctx, goal, intel, sessionCount)
+	if err != nil {
+		return "", userErr("--suggest: propose lanes: %v", err)
+	}
+
+	// Validate strictly — init must not proceed on a plan that overlaps
+	// or cycles. The standalone `bosun suggest` has --allow-overlaps as
+	// an escape hatch; init refuses since the operator can't review the
+	// plan before bosun acts on it.
+	_, vErr := suggest.Validate(proposal, sessionCount)
+	if vErr != nil {
+		return "", userErr("--suggest: plan failed validation: %v\n\n"+
+			"  if you want to inspect the failed plan, run `bosun suggest %q --sessions %d --allow-overlaps` separately",
+			vErr, goal, sessionCount)
+	}
+
+	md := suggest.RenderPlanMarkdown(proposal)
+	planPath := filepath.Join(rc.repoRoot, ".bosun", "suggested-plan.md")
+	if err := os.MkdirAll(filepath.Dir(planPath), 0o755); err != nil {
+		return "", internalErr("--suggest: mkdir .bosun", err)
+	}
+	if err := os.WriteFile(planPath, []byte(md), 0o644); err != nil {
+		return "", internalErr("--suggest: write plan", err)
+	}
+	return planPath, nil
 }

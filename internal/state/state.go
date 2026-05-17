@@ -9,12 +9,12 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/jasondillingham/bosun/internal/phantom"
 	"github.com/jasondillingham/bosun/internal/session"
 )
 
@@ -59,24 +59,17 @@ func EnsureSpotlightMarker(repoRoot string) error {
 	return nil
 }
 
-// phantomSpotlightPattern matches macOS Spotlight / Time Machine duplicates
-// (e.g. `session-1 2.done`, `session-1 2.json`) — a literal space, one or
-// more digits, then the suffix. Files matching this are ignored when
-// enumerating session markers so duplicated state files don't surface as
-// phantom sessions in `bosun list` / `bosun status`.
-var phantomSpotlightPattern = regexp.MustCompile(`^.* \d+\.(done|stuck|heartbeat|json)$`)
-
-// phantomICloudPattern matches iCloud Drive duplicates (e.g.
-// `session-1 (1).done`). Same purpose as phantomSpotlightPattern;
-// kept as two regexes for grep-ability in incident triage.
-var phantomICloudPattern = regexp.MustCompile(`^.* \(\d+\)\.(done|stuck|heartbeat|json)$`)
+// stateMarkerExts is the allow-list passed to phantom.IsLikelyPhantom
+// when filtering enumeration of the state directory. Constrains the
+// match so a hypothetical operator-supplied file named "Section 2.txt"
+// dropped under .bosun/state/ wouldn't be silently ignored.
+var stateMarkerExts = []string{"done", "stuck", "heartbeat", "json"}
 
 // isPhantomStateFile reports whether name looks like a Finder/Spotlight/
-// iCloud duplicate. The state directory is the authoritative location for
-// session markers; any duplicated copy would create a phantom session if
-// callers enumerated the dir blindly.
+// iCloud duplicate of a state marker. Thin wrapper over
+// phantom.IsLikelyPhantom to keep call sites in this package readable.
 func isPhantomStateFile(name string) bool {
-	return phantomSpotlightPattern.MatchString(name) || phantomICloudPattern.MatchString(name)
+	return phantom.IsLikelyPhantom(name, stateMarkerExts...)
 }
 
 // Store reads and writes session state markers under repoRoot/.bosun/state/.

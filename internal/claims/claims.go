@@ -12,32 +12,22 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/jasondillingham/bosun/internal/phantom"
 )
 
 const dirRelative = ".bosun/claims"
 
-// phantomSpotlightPattern matches macOS Spotlight / Time Machine duplicates
-// (e.g. `session-1 2.json`) — a literal space, one or more digits, then
-// `.json`. Same shape as internal/state's filter; kept inline to avoid a
-// cross-package dep just for one regex.
-var phantomSpotlightPattern = regexp.MustCompile(`^.* \d+\.json$`)
-
-// phantomICloudPattern matches iCloud Drive duplicates (e.g.
-// `session-1 (1).json`). Mirrors internal/state's separation of the two
-// patterns for grep-ability during incident triage.
-var phantomICloudPattern = regexp.MustCompile(`^.* \(\d+\)\.json$`)
-
 // isPhantomClaimFile reports whether name looks like a Finder/Spotlight/
-// iCloud duplicate of a claim file. Observed during the v0.7 round-1
-// kickoff: stale `session-1 3.json` phantom counted toward the operator-
-// visible CLAIMED column in `bosun status` until manually deleted.
+// iCloud duplicate of a claim file. Thin wrapper over
+// phantom.IsLikelyPhantom — see the v0.7 round-1 kickoff write-up for
+// the observed inflation of CLAIMED counts that this filter prevents.
 func isPhantomClaimFile(name string) bool {
-	return phantomSpotlightPattern.MatchString(name) || phantomICloudPattern.MatchString(name)
+	return phantom.IsLikelyPhantom(name, "json")
 }
 
 // Claim is one persisted claim file.

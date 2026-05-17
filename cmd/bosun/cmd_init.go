@@ -284,12 +284,17 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 			path := session.WorktreePathForLabel(rc.repoRoot, rc.cfg, label)
 			for _, wt := range existingWorktrees {
 				if wt.Branch == "refs/heads/"+branch || wt.Path == path {
+					fmt.Fprintf(os.Stdout, "bosun: --force: removing worktree %s...\n", wt.Path)
 					if err := rc.git.RemoveWorktree(rc.ctx, rc.repoRoot, wt.Path, true); err != nil {
 						return gitErr(fmt.Sprintf("remove existing worktree %s", wt.Path), err)
 					}
 				}
 			}
 			if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
+				// Orphan dirs can contain large Go module caches (observed:
+				// ~6 min recursive delete during the v0.7 kickoff). Surface
+				// what's happening so operators don't suspect a hang.
+				fmt.Fprintf(os.Stdout, "bosun: --force: deleting stale on-disk dir %s (may take a moment if it contains a build cache)...\n", path)
 				if err := os.RemoveAll(path); err != nil {
 					return internalErr("force-remove stale worktree dir "+path, err)
 				}

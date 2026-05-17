@@ -99,6 +99,20 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 		return err
 	}
 
+	// Flag-set conflict checks fire BEFORE any state inspection / mutation.
+	// Otherwise `bosun init --force --suggest GOAL --brief X.md` would
+	// discard init.state (--force path below) and then refuse on the
+	// conflict — leaving the operator with a cleared state file and a
+	// bare-error message. Pre-mutation refusal is the right shape.
+	if opts.suggestGoal != "" {
+		if opts.brief != "" {
+			return userErr("--suggest and --brief are mutually exclusive (--suggest writes a brief; --brief consumes one)")
+		}
+		if opts.resume {
+			return userErr("--suggest cannot be combined with --resume; the prior init's plan path is recorded in init.state")
+		}
+	}
+
 	// Resume / refuse-on-stale gate. We do this before any pre-flight
 	// (phantom scan, load average, hooks) so an operator who Ctrl-C'd a
 	// prior init isn't surprised by the same flaky pre-flight running
@@ -178,17 +192,10 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 	}
 
 	// --suggest: generate a brief via `bosun suggest` and use it as if
-	// the operator had hand-written one. The one-step onboarding path
-	// — no separate suggest → review → init dance. Conflicts with
-	// --brief (the operator already has a plan); conflicts with --resume
-	// (we wouldn't replace the prior plan mid-run).
+	// the operator had hand-written one. The one-step onboarding path.
+	// Conflict checks for --suggest vs --brief / --resume already fired
+	// at the top of runInit before any state mutation.
 	if opts.suggestGoal != "" {
-		if opts.brief != "" {
-			return userErr("--suggest and --brief are mutually exclusive (--suggest writes a brief; --brief consumes one)")
-		}
-		if opts.resume {
-			return userErr("--suggest cannot be combined with --resume; the prior init's plan path is recorded in init.state")
-		}
 		path, err := generateBriefFromSuggest(rc, opts.suggestGoal, len(labels))
 		if err != nil {
 			return err

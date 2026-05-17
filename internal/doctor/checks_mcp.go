@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 )
 
 // CheckMCPDaemonStartup verifies bosun can bind a Unix socket where
@@ -46,8 +47,11 @@ func CheckMCPDaemonStartup(_ context.Context, repoRoot string) Result {
 		}
 	}
 
-	// Remove any stale socket from a prior probe + bind.
-	probePath := sock + ".doctor-probe"
+	// Include the PID so concurrent doctor invocations (or a doctor
+	// against a still-running daemon's stale crash artifact) don't
+	// collide on the same probe path. Defer the remove so a panic
+	// inside the bind path still cleans up.
+	probePath := sock + ".doctor-probe-" + strconv.Itoa(os.Getpid())
 	_ = os.Remove(probePath)
 	defer os.Remove(probePath)
 

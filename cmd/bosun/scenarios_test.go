@@ -3429,6 +3429,60 @@ func TestScenario_MergeRefusesLiveAgentWithDirtyFiles(t *testing.T) {
 	}
 }
 
+// TestScenario_MergeRefusesLiveAgentWithModifiedTrackedFile pins the
+// v0.8 trial #2 finding (Test 3): when a session has a live agent AND a
+// modified tracked file (Session.Dirty > 0), the merge refusal must
+// fire the v0.6 agent-aware message — names the live PID + the
+// --ignore-running escape hatch — not the simpler v0.5-era
+// "N uncommitted change(s)" short-circuit.
+//
+// Pre-fix, mergeOne ordered the s.Dirty check FIRST, so a modified
+// tracked file would skip the agent-liveness gate entirely and the
+// operator got the less-informative message. Post-fix the gate runs
+// before the dirty check.
+//
+// The companion test above uses an UNTRACKED file (Dirty == 0,
+// gate already fires correctly); this one uses a MODIFIED file
+// (Dirty > 0, the regressed path).
+func TestScenario_MergeRefusesLiveAgentWithModifiedTrackedFile(t *testing.T) {
+	s := newScenario(t)
+	s.Bosun("init", "1")
+
+	wt1 := s.WorktreePath(1)
+	// Commit a tracked file then modify it (without committing) — this
+	// is the trial #2 scenario: README.md was modified, not untracked.
+	s.WriteFileIn(wt1, "feature.txt", "first\n")
+	s.CommitIn(wt1, "feature work")
+	s.Bosun("done", "session-1")
+
+	// Modify the now-tracked file. This produces Dirty == 1 in the
+	// session struct, which pre-fix would short-circuit before the gate.
+	s.WriteFileIn(wt1, "feature.txt", "first\nin-flight edit\n")
+
+	// Sanity: git sees this as a tracked-file modification, not untracked.
+	out := s.GitIn(wt1, "status", "--porcelain")
+	if !strings.Contains(out, " M feature.txt") {
+		t.Fatalf("feature.txt should be modified-tracked, got:\n%s", out)
+	}
+
+	startFakeAgent(t, wt1)
+
+	mergeOut, err := s.BosunErr("merge")
+	if err == nil {
+		t.Fatalf("merge should refuse when agent live + modified-tracked file, got success:\n%s", mergeOut)
+	}
+	// Must surface the v0.6 agent-aware message, not the v0.5 simple one.
+	for _, want := range []string{"live agent", "uncommitted changes", "--ignore-running"} {
+		if !strings.Contains(mergeOut, want) {
+			t.Errorf("refusal message missing %q, got:\n%s", want, mergeOut)
+		}
+	}
+	// Must NOT have short-circuited to the bare "N uncommitted change(s)" form.
+	if strings.Contains(mergeOut, "1 uncommitted change(s)") && !strings.Contains(mergeOut, "live agent") {
+		t.Errorf("merge short-circuited to the v0.5 message; got:\n%s", mergeOut)
+	}
+}
+
 func TestScenario_MergeIgnoreRunningBypassesGate(t *testing.T) {
 	s := newScenario(t)
 	s.Bosun("init", "1")

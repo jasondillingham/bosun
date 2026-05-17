@@ -224,20 +224,13 @@ const (
 // only for unexpected git failures; safety-gate skips and merge conflicts
 // are reported via status so the TUI can render them without dying.
 func mergeOne(rc *runCtx, s *session.Session, opts mergeOpts) (status, reason string, err error) {
-	if s.Dirty > 0 {
-		return mergeStatusSkipped, fmt.Sprintf("%d uncommitted change(s)", s.Dirty), nil
-	}
-	if s.Ahead == 0 {
-		return mergeStatusSkipped, "no commits ahead", nil
-	}
-
-	// Agent-liveness gate: refuse to squash a worktree that has both a
-	// live `claude` process AND uncommitted/untracked changes. Without
-	// this, `bosun merge --all` can race an in-flight edit and squash
-	// only the committed half, dropping unstaged work. --ignore-running
-	// bypasses for the case where the operator knows the dirty state is
-	// disposable. Runs before fsck and the patch-id checks so the most
-	// common in-flight scenario gets the most specific error.
+	// Agent-liveness gate FIRST so the v0.6-designed refusal message
+	// (names the live PID, names the `--ignore-running` escape hatch)
+	// fires before the simpler dirty check below could short-circuit
+	// with a less-informative "N uncommitted change(s)" message. Trial
+	// #2 (v0.8) caught this: an operator with a live agent + dirty
+	// tracked file deserves to see the agent-aware refusal, not the
+	// bare dirty count. --ignore-running skips the gate entirely.
 	if !opts.ignoreRunning {
 		if reason, refuse, gerr := agentLivenessGate(rc, s); gerr != nil {
 			return "", "", gerr
@@ -247,6 +240,12 @@ func mergeOne(rc *runCtx, s *session.Session, opts mergeOpts) (status, reason st
 			}
 			return "", "", userErr("%s", reason)
 		}
+	}
+	if s.Dirty > 0 {
+		return mergeStatusSkipped, fmt.Sprintf("%d uncommitted change(s)", s.Dirty), nil
+	}
+	if s.Ahead == 0 {
+		return mergeStatusSkipped, "no commits ahead", nil
 	}
 
 	// Pre-merge fsck: refuse on object-store corruption. fsck failure

@@ -235,21 +235,33 @@ func ParseName(s string) (int, error) {
 	return n, nil
 }
 
-// labelRe matches valid bosun session labels: lowercase ASCII alphanumerics
-// optionally joined by single dashes. Must start with a letter and may not
-// end with a dash or contain `--`. Branches derived from a label end up in
-// `bosun/<label>`; trailing-dash and consecutive-dash forms are syntactically
-// valid git refs but consistently bite operators (shell tab-completion eats
-// the dash, brief headings ambiguous, no human types them on purpose).
-var labelRe = regexp.MustCompile(`^[a-z][a-z0-9]*(-[a-z0-9]+)*$`)
+// segmentRe matches one dot-separated segment of a label: lowercase
+// ASCII alphanumerics optionally joined by single dashes. Must start
+// with a letter and may not end with a dash or contain `--`. Branches
+// derived from a label end up in `bosun/<label>`; trailing-dash and
+// consecutive-dash forms are syntactically valid git refs but
+// consistently bite operators.
+var segmentRe = regexp.MustCompile(`^[a-z][a-z0-9]*(-[a-z0-9]+)*$`)
+
+// labelRe matches a full label — one or more segments joined by single
+// dots. The dot is the v0.9 separator for sub-session labels spawned
+// via the bosun_spawn MCP tool: a parent `session-1` spawns
+// `session-1.auth` and `session-1.http`. No leading/trailing dots, no
+// `..`, each segment matches segmentRe.
+var labelRe = regexp.MustCompile(`^[a-z][a-z0-9]*(-[a-z0-9]+)*(\.[a-z][a-z0-9]*(-[a-z0-9]+)*)*$`)
 
 // ValidateLabel returns nil if s is a valid bosun label. Used at init time
 // to reject malformed named-session args before any branches are created.
 // Also enforced for label-derived heading parsing in the brief package via
 // its own regex (kept in sync deliberately — see internal/brief/brief.go).
+//
+// v0.9 added the dotted-suffix form for sub-sessions: a parent's
+// AddChild spawn yields labels like `session-1.auth`. Each dot-
+// separated segment must independently match the historical label
+// charset (see segmentRe).
 func ValidateLabel(s string) error {
 	if !labelRe.MatchString(s) {
-		return fmt.Errorf("invalid session label %q (want lowercase letters/digits separated by single dashes, starting with a letter and not ending with a dash)", s)
+		return fmt.Errorf("invalid session label %q (want lowercase letters/digits separated by single dashes, optionally joined by dots for sub-sessions; no leading/trailing dot, no `..`, no `--`)", s)
 	}
 	return nil
 }

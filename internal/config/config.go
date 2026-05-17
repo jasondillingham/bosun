@@ -37,6 +37,16 @@ const (
 	DefaultSuggestModel     = "claude-sonnet-4-6"
 	DefaultSuggestMaxTokens = 8000
 	DefaultSuggestAPIKeyEnv = "ANTHROPIC_API_KEY"
+
+	// Defaults for the v0.9 agent_spawn capability. See
+	// docs/v0.9-spawn-spec.md for the auth + quota model.
+	DefaultAgentSpawnEnabled       = false
+	DefaultAgentSpawnMaxConcurrent = 3
+	DefaultAgentSpawnMaxDepth      = 1
+	// MaxAgentSpawnDepthCeiling is the hard upper bound on spawn depth
+	// regardless of what an operator configures. A misconfigured 100
+	// gets clamped here so a runaway agent can't fork-bomb.
+	MaxAgentSpawnDepthCeiling = 4
 )
 
 // Config is the resolved bosun config for a repo.
@@ -61,6 +71,31 @@ type Config struct {
 	// Suggest configures the v0.5 brief-authoring assistant. Read by
 	// internal/suggest and cmd/bosun/cmd_suggest.go.
 	Suggest SuggestConfig `json:"suggest"`
+	// AgentSpawn gates the v0.9 bosun_spawn MCP tool. Off by default;
+	// see docs/v0.9-spawn-spec.md for the auth + quota model.
+	AgentSpawn AgentSpawnConfig `json:"agent_spawn"`
+}
+
+// AgentSpawnConfig governs whether (and how much) agent-driven session
+// spawning is permitted in this repo. Enforced by internal/mcp's
+// bosun_spawn tool. The defaults are deliberately conservative:
+// disabled, single-depth, 3 concurrent.
+type AgentSpawnConfig struct {
+	// Enabled gates the bosun_spawn MCP tool entirely. False by default
+	// — agents cannot spawn until the operator opts in.
+	Enabled bool `json:"enabled"`
+	// MaxConcurrentSubSessions caps the live children a single parent
+	// may have. Defaults to DefaultAgentSpawnMaxConcurrent.
+	MaxConcurrentSubSessions int `json:"max_concurrent_sub_sessions"`
+	// MaxDepth caps how deep a spawn tree may grow. 1 means parents
+	// can spawn but their children can't; 2 allows grandchildren.
+	// Values above MaxAgentSpawnDepthCeiling are silently clamped.
+	MaxDepth int `json:"max_depth"`
+	// AllowedForSessions, when non-empty, is a whitelist of session
+	// labels permitted to spawn. When empty (the default), any session
+	// may spawn. Useful for "this one workflow can fan out, others
+	// stay single-shot."
+	AllowedForSessions []string `json:"allowed_for_sessions,omitempty"`
 }
 
 // SuggestConfig configures the brief-authoring assistant (`bosun suggest`).
@@ -92,6 +127,11 @@ func Defaults() Config {
 			Model:     DefaultSuggestModel,
 			MaxTokens: DefaultSuggestMaxTokens,
 			APIKeyEnv: DefaultSuggestAPIKeyEnv,
+		},
+		AgentSpawn: AgentSpawnConfig{
+			Enabled:                  DefaultAgentSpawnEnabled,
+			MaxConcurrentSubSessions: DefaultAgentSpawnMaxConcurrent,
+			MaxDepth:                 DefaultAgentSpawnMaxDepth,
 		},
 	}
 }
@@ -154,6 +194,22 @@ func Load(repoRoot string) (Config, error) {
 	if overlay.Suggest.APIKeyEnv != "" {
 		cfg.Suggest.APIKeyEnv = overlay.Suggest.APIKeyEnv
 	}
+
+	// AgentSpawn: bool fields adopt the parsed value (zero is meaningful
+	// — false is the default). Numeric fields override when positive so
+	// an omitted key keeps the documented defaults. Depth gets clamped
+	// to the ceiling regardless of what the operator typed.
+	cfg.AgentSpawn.Enabled = overlay.AgentSpawn.Enabled
+	if overlay.AgentSpawn.MaxConcurrentSubSessions > 0 {
+		cfg.AgentSpawn.MaxConcurrentSubSessions = overlay.AgentSpawn.MaxConcurrentSubSessions
+	}
+	if overlay.AgentSpawn.MaxDepth > 0 {
+		cfg.AgentSpawn.MaxDepth = overlay.AgentSpawn.MaxDepth
+	}
+	if cfg.AgentSpawn.MaxDepth > MaxAgentSpawnDepthCeiling {
+		cfg.AgentSpawn.MaxDepth = MaxAgentSpawnDepthCeiling
+	}
+	cfg.AgentSpawn.AllowedForSessions = overlay.AgentSpawn.AllowedForSessions
 
 	if err := cfg.Validate(); err != nil {
 		return cfg, err

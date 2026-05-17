@@ -16,6 +16,7 @@ import (
 	"github.com/jasondillingham/bosun/internal/preflight"
 	"github.com/jasondillingham/bosun/internal/proc"
 	"github.com/jasondillingham/bosun/internal/session"
+	"github.com/jasondillingham/bosun/internal/spawntree"
 	"github.com/spf13/cobra"
 )
 
@@ -224,6 +225,18 @@ const (
 // only for unexpected git failures; safety-gate skips and merge conflicts
 // are reported via status so the TUI can render them without dying.
 func mergeOne(rc *runCtx, s *session.Session, opts mergeOpts) (status, reason string, err error) {
+	// v0.9: spawn-tree refusal. A parent's branch is only "ready" to
+	// merge once its sub-sessions have merged back to it (per the
+	// hierarchical branch model in docs/v0.9-spawn-spec.md).
+	// `bosun merge --tree <parent>` cascades subs-then-parent; this
+	// gate exists for the non-tree call shape.
+	children, _ := spawntree.NewStore(rc.repoRoot).ChildrenOf(s.Name)
+	if len(children) > 0 {
+		return mergeStatusSkipped, fmt.Sprintf(
+			"%d unmerged sub-session(s): %s — merge them first via `bosun merge --tree %s`",
+			len(children), strings.Join(children, ", "), s.Name), nil
+	}
+
 	// Agent-liveness gate FIRST so the v0.6-designed refusal message
 	// (names the live PID, names the `--ignore-running` escape hatch)
 	// fires before the simpler dirty check below could short-circuit

@@ -5,10 +5,12 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jasondillingham/bosun/internal/git"
 	"github.com/jasondillingham/bosun/internal/hooks"
+	"github.com/jasondillingham/bosun/internal/spawntree"
 	"github.com/jasondillingham/bosun/internal/session"
 	"github.com/spf13/cobra"
 )
@@ -114,6 +116,18 @@ func runRemove(cmd *cobra.Command, sessionArg string, force, ignoreRunning bool)
 		return userErr("%s", liveAgentRemoveMessage(label, s.RunningPID))
 	}
 
+	// v0.9: spawn-tree refusal — same shape as cleanup. A parent with
+	// live children must be reaped via `bosun cleanup --tree <parent>`
+	// so the descendants get the same safety gates each, in dependency
+	// order. Removing a parent here would orphan its children.
+	children, _ := spawntree.NewStore(rc.repoRoot).ChildrenOf(label)
+	if len(children) > 0 && !force {
+		return userErr("%s has %d live sub-session(s): %s\n"+
+			"       reap them first via `bosun cleanup --tree %s`,\n"+
+			"       or pass --force to remove this session anyway (orphans the children in the spawn tree)",
+			label, len(children), strings.Join(children, ", "), label)
+	}
+
 	// destructive controls whether we let git's own safety checks (`branch -d`,
 	// `worktree remove` without --force) gate the operation. We bypass them when
 	// the user passed --force, OR when patch-id analysis says the branch's
@@ -178,6 +192,7 @@ func runRemove(cmd *cobra.Command, sessionArg string, force, ignoreRunning bool)
 	}
 	_ = rc.claims.Clear(label)
 	_ = rc.state.Clear(label)
+	_ = spawntree.NewStore(rc.repoRoot).Remove(label)
 
 	printf("bosun: removed %s (worktree + branch + state)\n", label)
 	return nil
@@ -210,6 +225,7 @@ func removeCorruptedWorktree(rc *runCtx, label, worktreePath string) error {
 	}
 	_ = rc.claims.Clear(label)
 	_ = rc.state.Clear(label)
+	_ = spawntree.NewStore(rc.repoRoot).Remove(label)
 
 	if salvagePath != "" {
 		printf("bosun: removed %s (gitdir was corrupted) — %d file(s) salvaged to %s\n", label, n, salvagePath)

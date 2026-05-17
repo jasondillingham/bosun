@@ -10,6 +10,7 @@ import (
 	"github.com/jasondillingham/bosun/internal/git"
 	"github.com/jasondillingham/bosun/internal/hooks"
 	"github.com/jasondillingham/bosun/internal/session"
+	"github.com/jasondillingham/bosun/internal/spawntree"
 	"github.com/spf13/cobra"
 )
 
@@ -21,6 +22,7 @@ func newCleanupCmd() *cobra.Command {
 		orphansArg    int
 		orphanDirs    bool
 		ignoreRunning bool
+		tree          string
 	)
 
 	cmd := &cobra.Command{
@@ -54,6 +56,9 @@ session number).`,
 				opts.orphansMode = true
 				opts.orphansKeep = orphansArg
 			}
+			if tree != "" {
+				return runCleanupTree(cmd, tree, opts)
+			}
 			return runCleanup(cmd, opts)
 		},
 	}
@@ -64,6 +69,7 @@ session number).`,
 	cmd.Flags().IntVar(&orphansArg, "orphans", 0, "only act on sessions whose number is greater than this (0 means use config.default_session_count)")
 	cmd.Flags().BoolVar(&orphanDirs, "orphan-dirs", false, "also scan parent dir for worktree directories git no longer tracks and remove them")
 	cmd.Flags().BoolVar(&ignoreRunning, "ignore-running", false, "bypass the live-agent safety gate for every session in the batch (discards uncommitted work agents are editing)")
+	cmd.Flags().StringVar(&tree, "tree", "", "cascade-cleanup a parent session and all its sub-sessions (children first, parent last). Mutually exclusive with --orphans.")
 	// NoOptDefVal lets `--orphans` work without a value (cobra parses it as
 	// `--orphans=0`), at which point runCleanup falls back to the config
 	// default. The string form is what cobra requires here.
@@ -271,6 +277,20 @@ func describeWork(s *session.Session) string {
 // (BOSUN_BRIEF.md, .claude/CLAUDE.md) and patch-id-equivalent branches
 // don't block the removal.
 func executeCleanupOne(rc *runCtx, p cleanupPlan) error {
+	// v0.9: refuse to reap a parent that still has sub-sessions tracked
+	// in .bosun/spawn-tree.json. The cascade requires `--tree` or the
+	// children gone first; otherwise the spawn-tree's records become
+	// orphans referencing a missing parent (status renders them in the
+	// orphan-pass at the bottom — usable, but not what the operator
+	// intended).
+	children, _ := spawntree.NewStore(rc.repoRoot).ChildrenOf(p.s.Name)
+	if len(children) > 0 {
+		return userErr("session %s has %d live sub-session(s): %s\n"+
+			"       reap them first via `bosun cleanup --tree %s` (cascades),\n"+
+			"       or individually before retrying this command",
+			p.s.Name, len(children), strings.Join(children, ", "), p.s.Name)
+	}
+
 	forceWT := true
 	forceBranch := true
 	if err := rc.git.RemoveWorktree(rc.ctx, rc.repoRoot, p.s.Path, forceWT); err != nil {
@@ -287,6 +307,9 @@ func executeCleanupOne(rc *runCtx, p cleanupPlan) error {
 	// meant a permission-denied claims dir could leave stale entries
 	// forever.
 	clearSessionMetadata(rc, p.s.Name)
+	// Also drop the session from the spawn tree so quotas and renderers
+	// stop reporting it. Best-effort: a missing tree file is fine.
+	_ = spawntree.NewStore(rc.repoRoot).Remove(p.s.Name)
 	return nil
 }
 
@@ -557,4 +580,120 @@ func looksLikeLiveWorktree(dir string) bool {
 		return false
 	}
 	return strings.HasPrefix(strings.TrimSpace(string(data)), "gitdir:")
+}
+
+// runCleanupTree cascades cleanup through a spawn-tree starting at
+// parentLabel. Reaps in dependency order — leaves first, root last —
+// so each removal sees a tree with no live children below it (the
+// spawn-tree refusal in executeCleanupOne never fires for the cascade
+// itself).
+//
+// Each session in the subtree goes through the normal cleanup gates:
+// liveness check, dirty/ahead policy, --force / --purge / --ignore-
+// running pass-through. A skip mid-cascade is non-fatal — the rest of
+// the subtree proceeds and the skipped session is reported. A real
+// git failure aborts.
+//
+// Mutually exclusive with --orphans (validated at the flag layer).
+func runCleanupTree(cmd *cobra.Command, parentLabel string, opts cleanupOpts) error {
+	rc, err := loadCtx()
+	if err != nil {
+		return err
+	}
+	parsed, err := session.ParseLabel(parentLabel)
+	if err != nil {
+		return err
+	}
+	tree := spawntree.NewStore(rc.repoRoot)
+
+	// Build the post-order walk: for each subtree, emit descendants
+	// before the root. Iterative + visited-set in case the tree on
+	// disk has a self-reference cycle (shouldn't happen, but cheap
+	// to defend against).
+	order, err := postOrderSubtree(tree, parsed)
+	if err != nil {
+		return internalErr("walk spawn tree", err)
+	}
+	if len(order) == 0 {
+		return userErr("session %s is not in the spawn tree (no record); nothing to cascade", parsed)
+	}
+
+	// Derive the live session list once so each iteration uses the
+	// same snapshot — saves a `git worktree list` per session.
+	sessions, err := session.Derive(rc.ctx, rc.git, rc.cfg, rc.repoRoot, rc.state, rc.claims)
+	if err != nil {
+		return gitErr("derive sessions", err)
+	}
+	byName := map[string]*session.Session{}
+	for i := range sessions {
+		byName[sessions[i].Name] = &sessions[i]
+	}
+
+	var (
+		reaped  []string
+		skipped []string
+	)
+	for _, label := range order {
+		s, ok := byName[label]
+		if !ok {
+			// In the spawn tree but no worktree — already reaped or
+			// never fully created. Drop from the tree quietly.
+			if !opts.dryRun {
+				_ = tree.Remove(label)
+			}
+			continue
+		}
+		if opts.dryRun {
+			fmt.Fprintf(os.Stdout, "would cleanup %s\n", label)
+			reaped = append(reaped, label)
+			continue
+		}
+		action, reason, err := cleanupOne(rc, s, opts)
+		if err != nil {
+			return err
+		}
+		switch action {
+		case cleanupRemove:
+			reaped = append(reaped, label)
+		case cleanupSkip:
+			skipped = append(skipped, label+" ("+reason+")")
+		}
+	}
+
+	fmt.Fprintf(os.Stdout, "tree cleanup for %s: %d reaped, %d skipped\n",
+		parsed, len(reaped), len(skipped))
+	for _, s := range skipped {
+		fmt.Fprintf(os.Stdout, "  skipped: %s\n", s)
+	}
+	return nil
+}
+
+// postOrderSubtree returns labels in dependency order — children
+// before parent, depth-first. Visited-set prevents infinite loops if
+// the on-disk tree somehow contains a cycle.
+func postOrderSubtree(tree *spawntree.Store, root string) ([]string, error) {
+	visited := map[string]bool{}
+	var out []string
+	var walk func(label string) error
+	walk = func(label string) error {
+		if visited[label] {
+			return nil
+		}
+		visited[label] = true
+		kids, err := tree.ChildrenOf(label)
+		if err != nil {
+			return err
+		}
+		for _, k := range kids {
+			if err := walk(k); err != nil {
+				return err
+			}
+		}
+		out = append(out, label)
+		return nil
+	}
+	if err := walk(root); err != nil {
+		return nil, err
+	}
+	return out, nil
 }

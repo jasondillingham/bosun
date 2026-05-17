@@ -372,6 +372,18 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 			}
 		}
 
+		// Stale-claim cleanup. A prior round's claim file for this label
+		// can survive `bosun cleanup` (which removes worktrees+branches
+		// but not advisory claims). On reuse, the leftover paths surface
+		// in `bosun status` CLAIMED before the new session has done any
+		// work. Skipped on --resume so an in-progress session's claims
+		// aren't wiped mid-flight.
+		if !opts.resume {
+			if err := rc.claims.Clear(label); err != nil {
+				fmt.Fprintf(os.Stderr, "bosun: warning: clear stale claims for %s: %v\n", label, err)
+			}
+		}
+
 		if err := istate.SetCurrent(rc.repoRoot, label, initstate.StepBranchCreate); err != nil {
 			return internalErr("persist init state", err)
 		}

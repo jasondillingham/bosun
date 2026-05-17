@@ -1,20 +1,17 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jasondillingham/bosun/internal/brief"
-	bgit "github.com/jasondillingham/bosun/internal/git"
 	"github.com/jasondillingham/bosun/internal/hooks"
 	"github.com/jasondillingham/bosun/internal/proc"
 	"github.com/jasondillingham/bosun/internal/session"
@@ -247,7 +244,7 @@ func mergeOne(rc *runCtx, s *session.Session, opts mergeOpts) (status, reason st
 	// call `git cherry` / `git diff` which would themselves fail on
 	// corrupt objects, but with a cryptic git-plumbing error rather
 	// than the clear "fsck" diagnostic the operator needs.
-	if err := bgit.FsckWorktree(rc.ctx, s.Path); err != nil {
+	if err := rc.git.FsckWorktree(rc.ctx, s.Path); err != nil {
 		return "", "", gitErr("pre-merge fsck "+s.Name, err)
 	}
 
@@ -306,7 +303,7 @@ func mergeOne(rc *runCtx, s *session.Session, opts mergeOpts) (status, reason st
 	// happens after the post-merge state lands; we resolve it now so a
 	// later rev-parse race doesn't confuse the recorded pre-SHA with
 	// the post-SHA.
-	preSHA, err := headSHA(rc.ctx, rc.repoRoot)
+	preSHA, err := rc.git.RevParseHEAD(rc.ctx, rc.repoRoot)
 	if err != nil {
 		return "", "", gitErr("read pre-merge HEAD", err)
 	}
@@ -350,9 +347,10 @@ func mergeOne(rc *runCtx, s *session.Session, opts mergeOpts) (status, reason st
 
 	// post-merge fires after the squash commit lands. Failures are
 	// non-fatal: a notification or backup hook misfiring shouldn't unwind
-	// a clean merge. Resolve the commit SHA via plain `git rev-parse HEAD`
-	// to avoid widening the internal/git Client surface this round.
-	postSHA, _ := headSHA(rc.ctx, rc.repoRoot)
+	// a clean merge. Routed through rc.git.RevParseHEAD so the configured
+	// per-op timeout applies — pre-v0.6.2 this shelled out directly and
+	// could hang indefinitely under fsync pressure.
+	postSHA, _ := rc.git.RevParseHEAD(rc.ctx, rc.repoRoot)
 	postEnv := mergeHookEnv(s, rc.cfg.BaseBranch)
 	if postSHA != "" {
 		postEnv["BOSUN_MERGE_COMMIT"] = postSHA
@@ -394,20 +392,6 @@ func mergeHookEnv(s *session.Session, baseBranch string) map[string]string {
 		"BOSUN_BRANCH":        s.Branch,
 		"BOSUN_AHEAD":         strconv.Itoa(s.Ahead),
 	}
-}
-
-// headSHA returns the current HEAD commit SHA for repo. Used to populate
-// BOSUN_MERGE_COMMIT for post-merge — we shell out instead of extending
-// internal/git so this lane doesn't collide with the timeout work
-// happening in internal/git/git.go this round.
-func headSHA(ctx context.Context, repo string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
-	cmd.Dir = repo
-	out, err := cmd.Output()
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(out)), nil
 }
 
 // isMergeConflict heuristically detects whether an err message indicates a merge conflict.
@@ -662,7 +646,7 @@ func runMergeUndo(rc *runCtx, mergeID string) error {
 		return userErr("no merge log entry matching %q (run `bosun merge --list-undo` to see recent merges)", mergeID)
 	}
 
-	curHead, err := headSHA(rc.ctx, rc.repoRoot)
+	curHead, err := rc.git.RevParseHEAD(rc.ctx, rc.repoRoot)
 	if err != nil {
 		return gitErr("read HEAD", err)
 	}
@@ -671,7 +655,7 @@ func runMergeUndo(rc *runCtx, mergeID string) error {
 			entry.Session, shortSHA(curHead), shortSHA(entry.Post))
 	}
 
-	if err := gitResetHard(rc.ctx, rc.repoRoot, entry.Pre); err != nil {
+	if err := rc.git.ResetHard(rc.ctx, rc.repoRoot, entry.Pre); err != nil {
 		return gitErr("reset --hard "+shortSHA(entry.Pre), err)
 	}
 	printf("bosun: undid merge of %s (was at %s, now at %s)\n", entry.Session, shortSHA(entry.Post), shortSHA(entry.Pre))
@@ -693,19 +677,6 @@ func runMergeListUndo(rc *runCtx) error {
 	for i := len(entries) - 1; i >= 0; i-- {
 		e := entries[i]
 		printf("  %s  %-14s  %s..%s  %s\n", e.TS, e.Session, shortSHA(e.Pre), shortSHA(e.Post), e.SquashMsg)
-	}
-	return nil
-}
-
-// gitResetHard shells out for `git reset --hard <sha>`. Kept local to
-// cmd_merge for the same reason as headSHA — avoid widening
-// internal/git's Client surface for a one-call undo helper.
-func gitResetHard(ctx context.Context, repo, sha string) error {
-	cmd := exec.CommandContext(ctx, "git", "reset", "--hard", sha)
-	cmd.Dir = repo
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("git reset --hard %s: %w: %s", sha, err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }

@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestFsckWorktree_CleanRepo(t *testing.T) {
@@ -17,7 +18,8 @@ func TestFsckWorktree_CleanRepo(t *testing.T) {
 		t.Skip("fsck test uses POSIX shell setup")
 	}
 	dir := initFsckTestRepo(t)
-	if err := FsckWorktree(context.Background(), dir); err != nil {
+	c := New()
+	if err := c.FsckWorktree(context.Background(), dir); err != nil {
 		t.Fatalf("FsckWorktree on clean repo: %v", err)
 	}
 }
@@ -54,7 +56,8 @@ func TestFsckWorktree_CorruptLooseObject(t *testing.T) {
 		t.Fatalf("corrupt loose object: %v", err)
 	}
 
-	err := FsckWorktree(context.Background(), dir)
+	c := New()
+	err := c.FsckWorktree(context.Background(), dir)
 	if err == nil {
 		t.Fatal("FsckWorktree on corrupted repo: want error, got nil")
 	}
@@ -72,9 +75,65 @@ func TestFsckWorktree_MissingDir(t *testing.T) {
 	// as a non-nil error (so cmd_merge can refuse), but it doesn't need
 	// to be an *FsckError — the failure mode is "fsck couldn't run",
 	// not "fsck found corruption".
-	err := FsckWorktree(context.Background(), filepath.Join(t.TempDir(), "does-not-exist"))
+	c := New()
+	err := c.FsckWorktree(context.Background(), filepath.Join(t.TempDir(), "does-not-exist"))
 	if err == nil {
 		t.Fatal("FsckWorktree on missing dir: want error, got nil")
+	}
+}
+
+// TestFsckWorktree_TimeoutFiresWithRecoveryHint is the v0.6.2 regression
+// test: pre-fix, FsckWorktree was a free function that called
+// exec.CommandContext directly with the caller's ctx, bypassing the
+// Client's configured per-op timeout. Under fsync pressure that produced
+// a multi-minute hang despite the operator's configured cap. The fix routes
+// fsck through c.run so the timeout applies uniformly.
+//
+// Against pre-fix code this test fails to compile (FsckWorktree was a free
+// function, not a Client method) — the compile failure IS the regression
+// signal we want before Step 2's migration.
+func TestFsckWorktree_TimeoutFiresWithRecoveryHint(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shim uses POSIX sh; Windows skipped")
+	}
+
+	shimDir := t.TempDir()
+	shimPath := filepath.Join(shimDir, "git")
+	// Sleep forever on any invocation — the test should hit Client.Timeout
+	// regardless of what subcommand fsck delegates to under the hood.
+	shim := "#!/bin/sh\nsleep 60\n"
+	if err := os.WriteFile(shimPath, []byte(shim), 0o755); err != nil {
+		t.Fatalf("write shim: %v", err)
+	}
+	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	c := &Client{Runner: ExecRunner{}, Timeout: 2 * time.Second}
+
+	start := time.Now()
+	err := c.FsckWorktree(context.Background(), t.TempDir())
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected timeout error from sleep-60s shim, got nil")
+	}
+	// 4s ceiling: 2s timeout + headroom for SIGKILL delivery + pipe drain.
+	// A regression that drops the timeout would push this to ~60s.
+	if elapsed > 4*time.Second {
+		t.Fatalf("FsckWorktree returned in %v; expected ~2s — fsck timeout did not fire", elapsed)
+	}
+	var to *TimeoutError
+	if !errors.As(err, &to) {
+		t.Fatalf("error is not *TimeoutError: %v (type %T)", err, err)
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "timed out") {
+		t.Errorf("error message %q missing 'timed out'", msg)
+	}
+	// Operator-actionable recovery: fsck-timeout points at retry/cleanup,
+	// not the worktree-add hint reused everywhere. Without this assertion
+	// the same message would survive any future copy-paste regression.
+	if !strings.Contains(msg, "bosun cleanup") {
+		t.Errorf("error message must point at retry/cleanup recovery; got:\n  %s", msg)
 	}
 }
 

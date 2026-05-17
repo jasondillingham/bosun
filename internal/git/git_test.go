@@ -349,6 +349,115 @@ func TestWorktreeAddTimeout_OperatorOverrideWins(t *testing.T) {
 	}
 }
 
+// TestClient_AllMethodsHonorTimeout is the regression-proof against future
+// "I'll just call exec.CommandContext here" backsliding. Every public
+// method on *Client that shells out to git must surface a *TimeoutError
+// within Timeout+1s when git hangs — otherwise a new method silently
+// reintroduces the v0.6.1 fsck-bypass shape.
+//
+// We shim a single fake `git` onto PATH that sleeps 60s on any
+// invocation, then exercise each method with a tight 1s Timeout. The
+// shimDir path lets every t.Run share one shim; PATH and shim payload
+// stay constant for the whole test.
+func TestClient_AllMethodsHonorTimeout(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shim uses POSIX sh; Windows skipped")
+	}
+
+	shimDir := t.TempDir()
+	shimPath := filepath.Join(shimDir, "git")
+	shim := "#!/bin/sh\nsleep 60\n"
+	if err := os.WriteFile(shimPath, []byte(shim), 0o755); err != nil {
+		t.Fatalf("write shim: %v", err)
+	}
+	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	// Cwd must exist on disk — otherwise exec fails with `chdir: no such
+	// file` *before* invoking the shim, and the test never gets near the
+	// sleep that would exercise the timeout. A bare TempDir is enough;
+	// the shim ignores its own working directory.
+	workDir := t.TempDir()
+	// Some methods (RemoveWorktree.chmodWritableTree) stat the target
+	// path before invoking git; create it so the pre-pass doesn't shortcut.
+	wtDir := filepath.Join(workDir, "wt")
+	if err := os.Mkdir(wtDir, 0o755); err != nil {
+		t.Fatalf("mkdir worktree placeholder: %v", err)
+	}
+
+	// Budget: timeout + execPipeDrainTimeout (the WaitDelay we install on
+	// every child) + a slack window for OS scheduling. With timeout=500ms
+	// and pipe-drain=1s the wall-clock cost per row is ~1.5s; the 2.5s
+	// ceiling tolerates +1s of jitter on slow CI runners while still
+	// failing loudly if a method returns in ~60s (the un-bounded case).
+	const timeout = 500 * time.Millisecond
+	const ceiling = 2500 * time.Millisecond
+
+	// Each row exercises one Client method. ListWorktrees swallows parse
+	// errors via parseWorktreeList — but we only care that the method
+	// returns within the budget with a TimeoutError, which it must
+	// because c.run wraps every call. Same logic for RevListCount
+	// (Atoi-parses post-timeout output we never reach).
+	cases := []struct {
+		name string
+		fn   func(c *Client) error
+	}{
+		{"CreateBranch", func(c *Client) error {
+			return c.CreateBranch(context.Background(), workDir, "topic", "main")
+		}},
+		{"DeleteBranch", func(c *Client) error {
+			return c.DeleteBranch(context.Background(), workDir, "topic", false)
+		}},
+		{"AddWorktree", func(c *Client) error {
+			// AddWorktree uses its own (longer) timeout via worktreeAddTimeout();
+			// setting WorktreeAddTimeout=timeout here ensures the test exits in
+			// the same budget as the other methods.
+			return c.AddWorktree(context.Background(), workDir, wtDir, "main")
+		}},
+		{"RemoveWorktree", func(c *Client) error {
+			return c.RemoveWorktree(context.Background(), workDir, wtDir, false)
+		}},
+		{"ListWorktrees", func(c *Client) error {
+			_, err := c.ListWorktrees(context.Background(), workDir)
+			return err
+		}},
+		{"RevListCount", func(c *Client) error {
+			_, err := c.RevListCount(context.Background(), workDir, "main")
+			return err
+		}},
+		{"FsckWorktree", func(c *Client) error {
+			return c.FsckWorktree(context.Background(), workDir)
+		}},
+		{"RevParseHEAD", func(c *Client) error {
+			_, err := c.RevParseHEAD(context.Background(), workDir)
+			return err
+		}},
+		{"ResetHard", func(c *Client) error {
+			return c.ResetHard(context.Background(), workDir, "deadbeef")
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Construct a fresh client per row so AddWorktree's worktreeAddTimeout
+			// floor can be lowered to the shared budget for this test.
+			c := &Client{Runner: ExecRunner{}, Timeout: timeout, WorktreeAddTimeout: timeout}
+			start := time.Now()
+			err := tc.fn(c)
+			elapsed := time.Since(start)
+			if err == nil {
+				t.Fatalf("%s: expected timeout error from sleep-60s shim, got nil", tc.name)
+			}
+			if elapsed > ceiling {
+				t.Fatalf("%s: returned in %v; expected ~%v — timeout did not fire (bypass regression?)", tc.name, elapsed, timeout)
+			}
+			var to *TimeoutError
+			if !errors.As(err, &to) {
+				t.Fatalf("%s: error is not *TimeoutError: %v (type %T) — caller bypassed c.run", tc.name, err, err)
+			}
+		})
+	}
+}
+
 func TestSetTimeout(t *testing.T) {
 	c := New()
 	if c.Timeout != DefaultOpTimeout {

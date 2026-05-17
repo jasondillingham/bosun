@@ -194,6 +194,25 @@ func isOurTimeout(parentCtx, childCtx context.Context) bool {
 	return childCtx.Err() == context.DeadlineExceeded && parentCtx.Err() != context.DeadlineExceeded
 }
 
+// runStreams is like run but returns stdout and stderr separately, without
+// folding either into the error string. Use this when a caller (e.g.
+// FsckWorktree) needs the raw stderr text — git fsck writes its diagnostic
+// findings there, and run's combined-into-error format loses the structure
+// the caller wants to preserve.
+//
+// Timeout handling is identical to run: a child-ctx deadline fired by us
+// becomes a *TimeoutError; everything else is returned as the raw exec
+// error so callers can errors.As against *exec.ExitError directly.
+func (c *Client) runStreams(parentCtx context.Context, dir string, args ...string) (stdout, stderr string, err error) {
+	ctx, cancel := withTimeout(parentCtx, c.Timeout)
+	defer cancel()
+	out, errOut, runErr := c.Runner.Run(ctx, dir, args...)
+	if runErr != nil && isOurTimeout(parentCtx, ctx) {
+		return out, errOut, &TimeoutError{Op: strings.Join(args, " "), Timeout: c.Timeout}
+	}
+	return out, errOut, runErr
+}
+
 // RepoRoot returns the absolute path to the *current* worktree (linked or main).
 // Use MainWorktreePath when you need to read bosun's .bosun/ state, which
 // always lives in the main worktree regardless of where the command was run.
@@ -218,6 +237,40 @@ func (c *Client) MainWorktreePath(ctx context.Context, dir string) (string, erro
 	// commonDir is the absolute path to the shared .git dir, e.g.
 	// "/repo/.git" — the main worktree is its parent.
 	return filepath.Dir(commonDir), nil
+}
+
+// RevParseHEAD returns the current HEAD commit SHA for dir. Equivalent to
+// `git rev-parse HEAD`. Empty repos (no commits) surface as an error from
+// git, not an empty string.
+//
+// Routed through c.run so the configured per-op timeout applies. Used by
+// cmd_merge's pre/post-merge SHA capture and the merge --undo recovery
+// path — anywhere a "what is HEAD pointing at" probe needs to be both
+// time-bounded and consistent with the rest of the git surface.
+func (c *Client) RevParseHEAD(ctx context.Context, dir string) (string, error) {
+	out, err := c.run(ctx, dir, "rev-parse", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// ResetHard runs `git reset --hard <sha>` in dir. Destructive: discards
+// the working tree, index, and HEAD's recorded position in favor of sha.
+//
+// Used by `bosun merge --undo` to roll the base branch back to its
+// pre-merge SHA. On timeout, the *TimeoutError carries a recovery hint
+// pointing at `git reflog` — when reset itself can't complete because of
+// fsync pressure, the operator's escape hatch is the reflog plus a manual
+// retry once load drops.
+func (c *Client) ResetHard(ctx context.Context, dir, sha string) error {
+	_, err := c.run(ctx, dir, "reset", "--hard", sha)
+	var to *TimeoutError
+	if errors.As(err, &to) {
+		to.Hint = "system likely under fsync pressure; recover the pre-reset SHA via `git reflog` and retry `git reset --hard <sha>` once load drops."
+		return to
+	}
+	return err
 }
 
 // CurrentBranch returns the abbreviated HEAD ref name (or empty for detached HEAD).

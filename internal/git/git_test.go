@@ -3,7 +3,10 @@ package git
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -256,6 +259,93 @@ func TestRun_ZeroTimeoutDisablesDeadline(t *testing.T) {
 	var to *TimeoutError
 	if errors.As(err, &to) {
 		t.Fatalf("unexpected *TimeoutError when parent ctx caused cancellation: %v", err)
+	}
+}
+
+// TestAddWorktree_TimeoutFiresWithRecoveryHint reproduces the v0.6 trial
+// finding: `git worktree add` hung indefinitely with no per-op cap.
+// It shims a fake `git` binary onto PATH that sleeps 60s on `worktree add`,
+// then asserts that AddWorktree returns within a few seconds with a
+// *TimeoutError whose message points the operator at `bosun init --resume`.
+//
+// Against pre-fix code the timeout would fire but the error message would
+// lack the recovery hint — operator hits the timeout, sees "timed out
+// after Xs", and has no signal about what to do next.
+func TestAddWorktree_TimeoutFiresWithRecoveryHint(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// Shim uses POSIX `sh`; the timeout-wrapping logic itself is the
+		// same on Windows, but this particular regression harness assumes
+		// a Unix shell on PATH. The in-memory blockingRunner tests above
+		// already cover the timeout-wrapping path cross-platform.
+		t.Skip("shim uses POSIX sh; Windows skipped")
+	}
+
+	shimDir := t.TempDir()
+	shimPath := filepath.Join(shimDir, "git")
+	// Sleep forever on `worktree add`; succeed quickly on anything else
+	// so the shim doesn't accidentally hang unrelated calls.
+	shim := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"worktree\" ] && [ \"$2\" = \"add\" ]; then\n" +
+		"    sleep 60\n" +
+		"fi\n" +
+		"exit 0\n"
+	if err := os.WriteFile(shimPath, []byte(shim), 0o755); err != nil {
+		t.Fatalf("write shim: %v", err)
+	}
+	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	// Construct Client directly (skipping New()) so we don't pick up the
+	// production worktree-add-specific default — we want this single
+	// 2s Timeout to bound AddWorktree end-to-end.
+	c := &Client{Runner: ExecRunner{}, Timeout: 2 * time.Second}
+
+	start := time.Now()
+	err := c.AddWorktree(context.Background(), "", filepath.Join(t.TempDir(), "fake-wt"), "main")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected timeout error from sleep-60s shim, got nil")
+	}
+	// 5s ceiling: 2s timeout + headroom for SIGKILL delivery on a slow runner.
+	// A regression that drops the timeout would push this to ~60s.
+	if elapsed > 5*time.Second {
+		t.Fatalf("AddWorktree returned in %v; expected ~2s — worktree-add timeout did not fire", elapsed)
+	}
+	var to *TimeoutError
+	if !errors.As(err, &to) {
+		t.Fatalf("error is not *TimeoutError: %v (type %T)", err, err)
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "timed out") {
+		t.Errorf("error message %q missing 'timed out'", msg)
+	}
+	if !strings.Contains(msg, "bosun init --resume") {
+		t.Errorf("error message must point at the recovery path; got:\n  %s", msg)
+	}
+}
+
+// TestNew_WorktreeAddTimeoutDefault locks in the bumped default: worktree-add
+// gets a longer cap than other git ops because creating a worktree under
+// fsync pressure (APFS, Spotlight reindex) is legitimately slow. 30s fires
+// spuriously; 120s is the floor per the v0.6 trial findings.
+func TestNew_WorktreeAddTimeoutDefault(t *testing.T) {
+	c := New()
+	if c.WorktreeAddTimeout != DefaultWorktreeAddTimeout {
+		t.Fatalf("New() WorktreeAddTimeout = %v, want %v", c.WorktreeAddTimeout, DefaultWorktreeAddTimeout)
+	}
+	if DefaultWorktreeAddTimeout <= DefaultOpTimeout {
+		t.Fatalf("DefaultWorktreeAddTimeout (%v) must exceed DefaultOpTimeout (%v) — worktree-add is the legitimately-slow case", DefaultWorktreeAddTimeout, DefaultOpTimeout)
+	}
+}
+
+// TestWorktreeAddTimeout_OperatorOverrideWins documents that an operator
+// who raises Timeout above the WorktreeAddTimeout floor still gets the
+// longer cap they asked for — the floor doesn't clamp them down.
+func TestWorktreeAddTimeout_OperatorOverrideWins(t *testing.T) {
+	c := New()
+	c.Timeout = 300 * time.Second
+	if got := c.worktreeAddTimeout(); got != 300*time.Second {
+		t.Fatalf("worktreeAddTimeout with Timeout=300s = %v, want 300s (operator override should win)", got)
 	}
 }
 

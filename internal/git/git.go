@@ -23,17 +23,46 @@ import (
 // constant through Client.SetTimeout at startup.
 const DefaultOpTimeout = 30 * time.Second
 
+// DefaultWorktreeAddTimeout is the per-operation cap applied to
+// `git worktree add` specifically. Worktree creation under fsync pressure
+// (APFS, Spotlight reindex, kernel write-back saturation) is legitimately
+// slow — 30s fires spuriously, which the v0.6 trial reproduced. 120s is the
+// floor; operators who set a higher `git_op_timeout_seconds` still win,
+// because AddWorktree picks max(Timeout, WorktreeAddTimeout).
+const DefaultWorktreeAddTimeout = 120 * time.Second
+
+// execPipeDrainTimeout caps how long cmd.Wait blocks reading stdout/stderr
+// after the child has been killed by ctx cancellation. Without this, a
+// git subprocess that forks helpers (libexec hooks, fsync workers) leaks
+// the inherited stdout/stderr fds to those grandchildren; SIGKILL on the
+// git leader doesn't close the pipes, and Wait blocks until the
+// grandchildren exit. This is the v0.6 trial's 14-minute "hang despite
+// 30s timeout" finding: the timeout DID fire, but pipe-drain pinned us.
+//
+// 1s is a tight bound: the leader has already been killed, anything still
+// holding the pipes is an orphaned grandchild whose output we don't need.
+// We're not waiting on a long sentence here — we're letting the kernel
+// finish flushing whatever was already in the buffer.
+const execPipeDrainTimeout = 1 * time.Second
+
 // TimeoutError indicates a git subprocess exceeded its configured timeout.
 // Callers can check `errors.As(err, &git.TimeoutError{})` to distinguish
 // the silent-hang case (Spotlight reindex, APFS pressure, etc.) from
-// real git failures.
+// real git failures. Hint, when set, carries operator-actionable recovery
+// guidance — populated by callers that know what the right next step is
+// (e.g. AddWorktree pointing at `bosun init --resume`).
 type TimeoutError struct {
 	Op      string        // joined git args, e.g. "worktree add /tmp/foo bosun/session-1"
 	Timeout time.Duration // the timeout that fired
+	Hint    string        // optional operator-actionable suffix
 }
 
 func (e *TimeoutError) Error() string {
-	return fmt.Sprintf("git %s: timed out after %s", e.Op, e.Timeout)
+	base := fmt.Sprintf("git %s: timed out after %s", e.Op, e.Timeout)
+	if e.Hint != "" {
+		return base + " — " + e.Hint
+	}
+	return base
 }
 
 // Runner is the surface area we depend on from os/exec. It lets tests inject
@@ -52,6 +81,11 @@ func (ExecRunner) Run(ctx context.Context, dir string, args ...string) (string, 
 	if dir != "" {
 		cmd.Dir = dir
 	}
+	// WaitDelay bounds the time Wait spends draining stdout/stderr after
+	// the child has been killed by ctx. Without it, fsync-pressured git
+	// that forked grandchildren can keep the pipes open long after our
+	// timeout fired. See execPipeDrainTimeout for the v0.6 trial root cause.
+	cmd.WaitDelay = execPipeDrainTimeout
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -66,12 +100,23 @@ type Client struct {
 	// disables the timeout (use the parent ctx as-is). New() initializes
 	// this to DefaultOpTimeout.
 	Timeout time.Duration
+	// WorktreeAddTimeout, if positive, applies specifically to
+	// `git worktree add` — which is legitimately slow under fsync pressure
+	// and needs a longer cap than regular git ops. The effective timeout
+	// for worktree-add is max(Timeout, WorktreeAddTimeout), so an operator
+	// who raises `git_op_timeout_seconds` above this floor still wins.
+	// New() initializes this to DefaultWorktreeAddTimeout.
+	WorktreeAddTimeout time.Duration
 }
 
 // New returns a Client that shells out to the real git binary with the
 // default per-operation timeout.
 func New() *Client {
-	return &Client{Runner: ExecRunner{}, Timeout: DefaultOpTimeout}
+	return &Client{
+		Runner:             ExecRunner{},
+		Timeout:            DefaultOpTimeout,
+		WorktreeAddTimeout: DefaultWorktreeAddTimeout,
+	}
 }
 
 // SetTimeout overrides the per-operation timeout. A zero or negative value
@@ -80,14 +125,14 @@ func (c *Client) SetTimeout(d time.Duration) {
 	c.Timeout = d
 }
 
-// withTimeout returns a child context capped at c.Timeout, or the parent
-// unchanged when Timeout is non-positive. The returned cancel function is
+// withTimeout returns a child context capped at d, or the parent
+// unchanged when d is non-positive. The returned cancel function is
 // always safe to call.
-func (c *Client) withTimeout(parent context.Context) (context.Context, context.CancelFunc) {
-	if c.Timeout <= 0 {
+func withTimeout(parent context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	if d <= 0 {
 		return parent, func() {}
 	}
-	return context.WithTimeout(parent, c.Timeout)
+	return context.WithTimeout(parent, d)
 }
 
 // run is the internal helper that converts (stdout, stderr, err) into a
@@ -101,12 +146,20 @@ func (c *Client) withTimeout(parent context.Context) (context.Context, context.C
 // not a bare context.DeadlineExceeded — because this surfaces directly to
 // the operator (see `bosun init` silent-hang findings, v0.4).
 func (c *Client) run(parentCtx context.Context, dir string, args ...string) (string, error) {
-	ctx, cancel := c.withTimeout(parentCtx)
+	return c.runWithTimeout(parentCtx, c.Timeout, dir, args...)
+}
+
+// runWithTimeout is like run but uses an explicit timeout instead of
+// c.Timeout. AddWorktree uses it to apply WorktreeAddTimeout — that op is
+// the legitimately-slow outlier and shouldn't share a 30s cap with
+// instant-feedback ops like `rev-parse`.
+func (c *Client) runWithTimeout(parentCtx context.Context, timeout time.Duration, dir string, args ...string) (string, error) {
+	ctx, cancel := withTimeout(parentCtx, timeout)
 	defer cancel()
 	out, errOut, err := c.Runner.Run(ctx, dir, args...)
 	if err != nil {
 		if isOurTimeout(parentCtx, ctx) {
-			return out, &TimeoutError{Op: strings.Join(args, " "), Timeout: c.Timeout}
+			return out, &TimeoutError{Op: strings.Join(args, " "), Timeout: timeout}
 		}
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
@@ -116,6 +169,21 @@ func (c *Client) run(parentCtx context.Context, dir string, args ...string) (str
 		return out, fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
 	}
 	return out, nil
+}
+
+// worktreeAddTimeout returns the timeout to use for `git worktree add`,
+// which is max(c.Timeout, c.WorktreeAddTimeout). Either field being
+// non-positive means "no cap from this source" — if BOTH are non-positive,
+// the operation is unbounded (parent ctx wins). This matches the spec
+// commitment: an operator who raises `git_op_timeout_seconds` past the
+// 120s floor still gets the longer cap they asked for, while leaving the
+// default a sensible floor for the legitimately-slow case.
+func (c *Client) worktreeAddTimeout() time.Duration {
+	a, b := c.Timeout, c.WorktreeAddTimeout
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // isOurTimeout reports whether the child ctx deadlined because of *our*
@@ -195,8 +263,18 @@ func (c *Client) DeleteBranch(ctx context.Context, dir, name string, force bool)
 }
 
 // AddWorktree creates a worktree at path checking out branch.
+//
+// Worktree-add uses its own (longer) timeout per WorktreeAddTimeout and
+// surfaces a recovery hint on timeout pointing the operator at
+// `bosun init --resume` — without that breadcrumb, an operator hitting
+// the cap has no signal about how to proceed.
 func (c *Client) AddWorktree(ctx context.Context, dir, path, branch string) error {
-	_, err := c.run(ctx, dir, "worktree", "add", path, branch)
+	_, err := c.runWithTimeout(ctx, c.worktreeAddTimeout(), dir, "worktree", "add", path, branch)
+	var to *TimeoutError
+	if errors.As(err, &to) {
+		to.Hint = "system likely under fsync pressure; check `uptime` and retry, or `bosun init --resume` to continue."
+		return to
+	}
 	return err
 }
 

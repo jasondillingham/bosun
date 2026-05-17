@@ -18,12 +18,14 @@ package status
 //	number          int     1-based session number; 0 for named sessions
 //	branch          string  e.g. "bosun/session-1"
 //	path            string  absolute worktree path
-//	state           string  "WORKING" | "DONE" | "STUCK"
+//	state           string  "WORKING" | "DONE" | "STUCK" | "CRASHED"
 //	ahead           int     commits ahead of base branch
 //	dirty           int     count of uncommitted tracked-file changes
 //	claimed         int     count of distinct claimed paths
 //	running         bool    true when an agent process lives in the worktree
 //	running_pid     int     pid; omitted when running=false (omitempty)
+//	stale           bool    true when WORKING+heartbeat older than 5min; omitted when false (omitempty)
+//	heartbeat_unix  int64   unix timestamp of last heartbeat; omitted when no heartbeat recorded
 //	last_sha        string  short SHA of the last commit; omitted when ahead=0
 //	last_subject    string  subject line of the last commit; omitted when ahead=0
 //	last_relative   string  human relative time, e.g. "3 minutes ago"; omitted when ahead=0
@@ -64,21 +66,23 @@ const JSONSchemaVersion = "v0.4.0"
 // sessionJSON is the per-session row in the public payload. Field tags are
 // the stable wire names — see the package doc above before renaming.
 type sessionJSON struct {
-	Name        string `json:"name"`
-	Number      int    `json:"number"`
-	Branch      string `json:"branch"`
-	Path        string `json:"path"`
-	State       string `json:"state"`
-	Ahead       int    `json:"ahead"`
-	Dirty       int    `json:"dirty"`
-	Claimed     int    `json:"claimed"`
-	Running     bool   `json:"running"`
-	RunningPID  int    `json:"running_pid,omitempty"`
-	LastSHA     string `json:"last_sha,omitempty"`
-	LastSubject string `json:"last_subject,omitempty"`
-	LastRel     string `json:"last_relative,omitempty"`
-	LastUnix    int64  `json:"last_unix,omitempty"`
-	StateMsg    string `json:"state_message,omitempty"`
+	Name          string `json:"name"`
+	Number        int    `json:"number"`
+	Branch        string `json:"branch"`
+	Path          string `json:"path"`
+	State         string `json:"state"`
+	Ahead         int    `json:"ahead"`
+	Dirty         int    `json:"dirty"`
+	Claimed       int    `json:"claimed"`
+	Running       bool   `json:"running"`
+	RunningPID    int    `json:"running_pid,omitempty"`
+	Stale         bool   `json:"stale,omitempty"`
+	HeartbeatUnix int64  `json:"heartbeat_unix,omitempty"`
+	LastSHA       string `json:"last_sha,omitempty"`
+	LastSubject   string `json:"last_subject,omitempty"`
+	LastRel       string `json:"last_relative,omitempty"`
+	LastUnix      int64  `json:"last_unix,omitempty"`
+	StateMsg      string `json:"state_message,omitempty"`
 }
 
 type overlapJSON struct {
@@ -108,7 +112,11 @@ func RenderJSON(w io.Writer, sessions []session.Session, overlaps []claims.Overl
 			Claimed:    s.Claimed,
 			Running:    s.Running,
 			RunningPID: s.RunningPID,
+			Stale:      s.Stale,
 			StateMsg:   s.StateMsg,
+		}
+		if !s.HeartbeatAt.IsZero() {
+			row.HeartbeatUnix = s.HeartbeatAt.Unix()
 		}
 		if s.Last != nil {
 			row.LastSHA = s.Last.ShortSHA

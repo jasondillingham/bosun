@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jasondillingham/bosun/internal/config"
 	"github.com/jasondillingham/bosun/internal/git"
@@ -23,7 +24,17 @@ const (
 	StateWorking State = "WORKING"
 	StateDone    State = "DONE"
 	StateStuck   State = "STUCK"
+	// StateCrashed is derived during Derive — a WORKING session whose agent
+	// process is no longer present in the worktree AND whose worktree has
+	// uncommitted dirty files. Not persisted to any marker file; it's a
+	// display-only state recomputed on each Derive call.
+	StateCrashed State = "CRASHED"
 )
+
+// HeartbeatStaleAfter is the threshold past which a recorded heartbeat is
+// considered stale. WORKING sessions whose heartbeat is older than this
+// surface as Stale=true (a derived flag, not a separate State value).
+const HeartbeatStaleAfter = 5 * time.Minute
 
 // Session is the aggregated view of one bosun-managed session.
 //
@@ -40,11 +51,20 @@ type Session struct {
 	Ahead      int           // commits ahead of base
 	Dirty      int           // count of tracked-file changes
 	Claimed    int           // count of distinct claimed paths
-	State      State         // WORKING / DONE / STUCK
+	State      State         // WORKING / DONE / STUCK / CRASHED
 	StateMsg   string        // optional body of the state file
 	Last       *git.LogEntry // last commit ahead of base (nil if none)
 	Running    bool          // true when an agent process (claude/claude-code/code-cli) is live in Path
 	RunningPID int           // pid of that agent process; 0 when Running is false
+	// Stale is a derived flag — set when a WORKING (not CRASHED) session has
+	// a recorded heartbeat older than HeartbeatStaleAfter. Kept off the
+	// State enum so the wire-stable state values stay compact; UI surfaces
+	// (status table, JSON) render it as a separate marker alongside State.
+	Stale bool
+	// HeartbeatAt is the most recent heartbeat timestamp on disk, or the
+	// zero time when no heartbeat exists. Useful for the operator to see
+	// how long it has been since the agent last checked in.
+	HeartbeatAt time.Time
 }
 
 // Derive computes the Session list for repoRoot. It calls into the git
@@ -56,6 +76,12 @@ type Session struct {
 // type and we'd get a cycle otherwise.
 type StateReader interface {
 	Read(repoRoot, sessionName string) (state State, msg string, err error)
+	// Heartbeat returns the most recent heartbeat timestamp for sessionName.
+	// `exists` is false when no heartbeat file has been written; in that
+	// case `at` is the zero time. A missing heartbeat must not be confused
+	// with a stale one — agents that never call bosun_heartbeat shouldn't
+	// be flagged STALE.
+	Heartbeat(repoRoot, sessionName string) (at time.Time, exists bool, err error)
 }
 
 type ClaimsReader interface {
@@ -133,20 +159,48 @@ func Derive(ctx context.Context, c *git.Client, cfg config.Config, repoRoot stri
 		// worst case is a false negative on the RUNNING column.
 		runPID, running, _ := proc.Running(wt.Path)
 
+		// Heartbeat is best-effort too: a missing or unreadable file is
+		// treated as "no heartbeat recorded", not an error. Surfacing
+		// a status render failure because an agent never called
+		// bosun_heartbeat would be worse than rendering without the
+		// stale flag.
+		hbAt, hbExists, _ := sr.Heartbeat(repoRoot, name)
+
+		// CRASHED is a derived display state: a WORKING session whose
+		// agent process is gone but whose worktree has uncommitted dirty
+		// files. DONE/STUCK sessions are never crashed — they declared
+		// their own terminal state. We only flip WORKING here.
+		if state == StateWorking && !running && dirty > 0 {
+			state = StateCrashed
+		}
+
+		// STALE is a derived flag, not a State value: a WORKING (not
+		// CRASHED) session that recorded a heartbeat which has since
+		// gone older than HeartbeatStaleAfter. No heartbeat ever
+		// recorded → not stale (we can't distinguish "agent doesn't
+		// emit heartbeats" from "agent is hung", so we avoid the false
+		// positive).
+		stale := false
+		if state == StateWorking && hbExists && time.Since(hbAt) > HeartbeatStaleAfter {
+			stale = true
+		}
+
 		result = append(result, Session{
-			Number:     number,
-			Name:       name,
-			Label:      label,
-			Branch:     branch,
-			Path:       wt.Path,
-			Ahead:      ahead,
-			Dirty:      dirty,
-			Claimed:    claimed,
-			State:      state,
-			StateMsg:   msg,
-			Last:       last,
-			Running:    running,
-			RunningPID: runPID,
+			Number:      number,
+			Name:        name,
+			Label:       label,
+			Branch:      branch,
+			Path:        wt.Path,
+			Ahead:       ahead,
+			Dirty:       dirty,
+			Claimed:     claimed,
+			State:       state,
+			StateMsg:    msg,
+			Last:        last,
+			Running:     running,
+			RunningPID:  runPID,
+			Stale:       stale,
+			HeartbeatAt: hbAt,
 		})
 	}
 

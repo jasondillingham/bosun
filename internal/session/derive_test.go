@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jasondillingham/bosun/internal/config"
 	"github.com/jasondillingham/bosun/internal/git"
@@ -44,13 +45,24 @@ func (f *fakeRunner) Run(_ context.Context, dir string, args ...string) (string,
 	return "", "", nil
 }
 
-type fakeState struct{ states map[string]State }
+type fakeState struct {
+	states     map[string]State
+	heartbeats map[string]time.Time
+}
 
 func (f *fakeState) Read(_, name string) (State, string, error) {
 	if s, ok := f.states[name]; ok {
 		return s, "", nil
 	}
 	return StateWorking, "", nil
+}
+
+func (f *fakeState) Heartbeat(_, name string) (time.Time, bool, error) {
+	if f.heartbeats == nil {
+		return time.Time{}, false, nil
+	}
+	t, ok := f.heartbeats[name]
+	return t, ok, nil
 }
 
 type fakeClaims struct{ counts map[string]int }
@@ -138,6 +150,242 @@ func TestDerive_SortsAndFilters(t *testing.T) {
 	}
 	if s2.State != StateWorking {
 		t.Errorf("session-2 State = %s, want WORKING", s2.State)
+	}
+}
+
+// TestDerive_CrashedWhenProcGoneAndDirty covers the CRASHED derivation
+// path: a WORKING session whose worktree has uncommitted dirty files but
+// whose agent process is gone should surface as CRASHED. The runner
+// fixture sets dirty=1 (one " M" line, untracked " M" excluded) and the
+// proc lister implicitly reports nothing running for non-existent paths.
+func TestDerive_CrashedWhenProcGoneAndDirty(t *testing.T) {
+	r := &fakeRunner{
+		t: t,
+		worktree: strings.Join([]string{
+			"worktree /repo",
+			"HEAD aaa",
+			"branch refs/heads/main",
+			"",
+			"worktree /repo-bosun-1",
+			"HEAD bbb",
+			"branch refs/heads/bosun/session-1",
+			"",
+		}, "\n"),
+		revCount: map[string]string{"/repo-bosun-1": "0\n"},
+		status:   map[string]string{"/repo-bosun-1": " M a.go\n"},
+	}
+	c := &git.Client{Runner: r}
+	got, err := Derive(context.Background(), c, config.Defaults(), "/repo",
+		&fakeState{}, &fakeClaims{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d sessions, want 1", len(got))
+	}
+	if got[0].State != StateCrashed {
+		t.Errorf("State = %q, want CRASHED (proc not running + dirty)", got[0].State)
+	}
+}
+
+// TestDerive_NotCrashedWhenClean covers the negative side of CRASHED: a
+// WORKING session that's clean (no dirty files) stays WORKING even when
+// the agent process is gone. Otherwise every idle session would flicker
+// CRASHED the moment the operator closed its terminal window.
+func TestDerive_NotCrashedWhenClean(t *testing.T) {
+	r := &fakeRunner{
+		t: t,
+		worktree: strings.Join([]string{
+			"worktree /repo",
+			"HEAD aaa",
+			"branch refs/heads/main",
+			"",
+			"worktree /repo-bosun-1",
+			"HEAD bbb",
+			"branch refs/heads/bosun/session-1",
+			"",
+		}, "\n"),
+		revCount: map[string]string{"/repo-bosun-1": "0\n"},
+		status:   map[string]string{"/repo-bosun-1": ""},
+	}
+	c := &git.Client{Runner: r}
+	got, err := Derive(context.Background(), c, config.Defaults(), "/repo",
+		&fakeState{}, &fakeClaims{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0].State != StateWorking {
+		t.Errorf("State = %q, want WORKING (clean worktree)", got[0].State)
+	}
+}
+
+// TestDerive_DoneNotCrashedEvenWhenDirty: DONE sessions stay DONE even if
+// their worktree still has uncommitted files (which can happen when an
+// agent marks done then continues exploring, or when bosun_done is called
+// before a stray edit lands). CRASHED is reserved for the WORKING path.
+func TestDerive_DoneNotCrashedEvenWhenDirty(t *testing.T) {
+	r := &fakeRunner{
+		t: t,
+		worktree: strings.Join([]string{
+			"worktree /repo",
+			"HEAD aaa",
+			"branch refs/heads/main",
+			"",
+			"worktree /repo-bosun-1",
+			"HEAD bbb",
+			"branch refs/heads/bosun/session-1",
+			"",
+		}, "\n"),
+		revCount: map[string]string{"/repo-bosun-1": "1\n"},
+		status:   map[string]string{"/repo-bosun-1": " M leftover.go\n"},
+		log:      map[string]string{"/repo-bosun-1": "abc1234|1700000000|2 hours ago|wire auth\n"},
+	}
+	c := &git.Client{Runner: r}
+	got, err := Derive(context.Background(), c, config.Defaults(), "/repo",
+		&fakeState{states: map[string]State{"session-1": StateDone}},
+		&fakeClaims{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0].State != StateDone {
+		t.Errorf("State = %q, want DONE (CRASHED must not override terminal state)", got[0].State)
+	}
+}
+
+// TestDerive_StaleFlagSetWhenHeartbeatOld: a WORKING session with a
+// heartbeat older than HeartbeatStaleAfter surfaces Stale=true. The
+// session state itself stays WORKING — STALE is a derived flag, not a
+// State enum value.
+func TestDerive_StaleFlagSetWhenHeartbeatOld(t *testing.T) {
+	r := &fakeRunner{
+		t: t,
+		worktree: strings.Join([]string{
+			"worktree /repo",
+			"HEAD aaa",
+			"branch refs/heads/main",
+			"",
+			"worktree /repo-bosun-1",
+			"HEAD bbb",
+			"branch refs/heads/bosun/session-1",
+			"",
+		}, "\n"),
+		revCount: map[string]string{"/repo-bosun-1": "0\n"},
+		status:   map[string]string{"/repo-bosun-1": ""},
+	}
+	c := &git.Client{Runner: r}
+	got, err := Derive(context.Background(), c, config.Defaults(), "/repo",
+		&fakeState{heartbeats: map[string]time.Time{
+			"session-1": time.Now().Add(-10 * time.Minute),
+		}},
+		&fakeClaims{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0].State != StateWorking {
+		t.Errorf("State = %q, want WORKING (stale doesn't change state)", got[0].State)
+	}
+	if !got[0].Stale {
+		t.Errorf("Stale = false, want true (heartbeat 10m old, threshold 5m)")
+	}
+}
+
+// TestDerive_StaleFalseWhenHeartbeatFresh: heartbeat within the threshold
+// keeps the session non-stale even though one is recorded.
+func TestDerive_StaleFalseWhenHeartbeatFresh(t *testing.T) {
+	r := &fakeRunner{
+		t: t,
+		worktree: strings.Join([]string{
+			"worktree /repo",
+			"HEAD aaa",
+			"branch refs/heads/main",
+			"",
+			"worktree /repo-bosun-1",
+			"HEAD bbb",
+			"branch refs/heads/bosun/session-1",
+			"",
+		}, "\n"),
+		revCount: map[string]string{"/repo-bosun-1": "0\n"},
+		status:   map[string]string{"/repo-bosun-1": ""},
+	}
+	c := &git.Client{Runner: r}
+	got, err := Derive(context.Background(), c, config.Defaults(), "/repo",
+		&fakeState{heartbeats: map[string]time.Time{
+			"session-1": time.Now().Add(-1 * time.Minute),
+		}},
+		&fakeClaims{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0].Stale {
+		t.Errorf("Stale = true, want false (heartbeat 1m old, threshold 5m)")
+	}
+}
+
+// TestDerive_StaleFalseWhenNoHeartbeat: a session that has never recorded
+// a heartbeat must NOT be flagged stale. We can't distinguish "agent
+// doesn't emit heartbeats" from "agent is hung" without the file, so the
+// absence-of-evidence path stays quiet.
+func TestDerive_StaleFalseWhenNoHeartbeat(t *testing.T) {
+	r := &fakeRunner{
+		t: t,
+		worktree: strings.Join([]string{
+			"worktree /repo",
+			"HEAD aaa",
+			"branch refs/heads/main",
+			"",
+			"worktree /repo-bosun-1",
+			"HEAD bbb",
+			"branch refs/heads/bosun/session-1",
+			"",
+		}, "\n"),
+		revCount: map[string]string{"/repo-bosun-1": "0\n"},
+		status:   map[string]string{"/repo-bosun-1": ""},
+	}
+	c := &git.Client{Runner: r}
+	got, err := Derive(context.Background(), c, config.Defaults(), "/repo",
+		&fakeState{}, &fakeClaims{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0].Stale {
+		t.Errorf("Stale = true, want false (no heartbeat recorded)")
+	}
+}
+
+// TestDerive_StaleNotSetOnCrashed: a CRASHED session shouldn't carry the
+// stale flag — the operator already has the more useful CRASHED signal.
+// (Heartbeat may still be old when an agent crashed long ago, but
+// surfacing both CRASHED + STALE is noise.)
+func TestDerive_StaleNotSetOnCrashed(t *testing.T) {
+	r := &fakeRunner{
+		t: t,
+		worktree: strings.Join([]string{
+			"worktree /repo",
+			"HEAD aaa",
+			"branch refs/heads/main",
+			"",
+			"worktree /repo-bosun-1",
+			"HEAD bbb",
+			"branch refs/heads/bosun/session-1",
+			"",
+		}, "\n"),
+		revCount: map[string]string{"/repo-bosun-1": "0\n"},
+		status:   map[string]string{"/repo-bosun-1": " M a.go\n"},
+	}
+	c := &git.Client{Runner: r}
+	got, err := Derive(context.Background(), c, config.Defaults(), "/repo",
+		&fakeState{heartbeats: map[string]time.Time{
+			"session-1": time.Now().Add(-30 * time.Minute),
+		}},
+		&fakeClaims{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0].State != StateCrashed {
+		t.Errorf("State = %q, want CRASHED", got[0].State)
+	}
+	if got[0].Stale {
+		t.Errorf("Stale = true on CRASHED session — should not double up")
 	}
 }
 

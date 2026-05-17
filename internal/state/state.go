@@ -102,6 +102,63 @@ func (s *Store) Clear(sessionName string) error {
 	})
 }
 
+// WriteHeartbeat records the current time as the session's latest heartbeat
+// in .bosun/state/<sessionName>.heartbeat. The file body is the RFC3339-Nano
+// timestamp; bosun status / Derive read it to decide whether to flag a
+// session STALE.
+//
+// Heartbeats live under the same state directory as DONE/STUCK markers so
+// they share the same cross-process flock (.bosun/state/.lock). Two
+// concurrent bosun_heartbeat calls — common when an agent process and a
+// detached MCP daemon race — therefore can't tear each other's writes.
+func (s *Store) WriteHeartbeat(sessionName string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := os.MkdirAll(s.dir(), 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", s.dir(), err)
+	}
+	return withStateLock(s.dir(), func() error {
+		body := time.Now().UTC().Format(time.RFC3339Nano) + "\n"
+		if err := os.WriteFile(s.path(sessionName, "heartbeat"), []byte(body), 0o644); err != nil {
+			return fmt.Errorf("write heartbeat: %w", err)
+		}
+		return nil
+	})
+}
+
+// Heartbeat returns the most recent heartbeat timestamp for sessionName.
+// `exists` is false (and at is the zero time) when no heartbeat file is
+// present. A malformed body returns an error so callers can surface it; a
+// missing file is the silent "no heartbeat yet" path. Implements the
+// session.StateReader interface.
+func (s *Store) Heartbeat(repoRoot, sessionName string) (time.Time, bool, error) {
+	store := s
+	if repoRoot != s.repoRoot {
+		store = NewStore(repoRoot)
+	}
+	body, ok, err := readIfExists(store.path(sessionName, "heartbeat"))
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	if !ok {
+		return time.Time{}, false, nil
+	}
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return time.Time{}, false, nil
+	}
+	t, err := time.Parse(time.RFC3339Nano, body)
+	if err != nil {
+		// Fall back to RFC3339 (without nanos) for forward-compat with any
+		// agent that records second-resolution timestamps.
+		t, err = time.Parse(time.RFC3339, body)
+		if err != nil {
+			return time.Time{}, false, fmt.Errorf("parse heartbeat %q: %w", body, err)
+		}
+	}
+	return t, true, nil
+}
+
 // Read returns the session's current state plus the marker body.
 // Returns (WORKING, "", nil) if no marker is present.
 func (s *Store) Read(repoRoot, sessionName string) (session.State, string, error) {

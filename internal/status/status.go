@@ -64,7 +64,7 @@ func RenderText(w io.Writer, opts RenderOptions) error {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%d\t%d\t%s\t%s\n",
 			s.Name,
 			s.Branch,
-			colorState(s.State, useColor),
+			renderStateCell(s, useColor),
 			s.Ahead,
 			s.Dirty,
 			s.Claimed,
@@ -89,7 +89,7 @@ func RenderText(w io.Writer, opts RenderOptions) error {
 // buckets are listed (DONE, WORKING, STUCK order). Overlap count is only
 // included when WithOverlaps is set.
 func writeSummary(w io.Writer, opts RenderOptions, useColor bool) {
-	var doneN, workingN, stuckN, totalAhead int
+	var doneN, workingN, stuckN, crashedN, totalAhead int
 	for _, s := range opts.Sessions {
 		switch s.State {
 		case session.StateDone:
@@ -98,6 +98,8 @@ func writeSummary(w io.Writer, opts RenderOptions, useColor bool) {
 			workingN++
 		case session.StateStuck:
 			stuckN++
+		case session.StateCrashed:
+			crashedN++
 		}
 		totalAhead += s.Ahead
 	}
@@ -111,6 +113,9 @@ func writeSummary(w io.Writer, opts RenderOptions, useColor bool) {
 	}
 	if stuckN > 0 {
 		stateParts = append(stateParts, fmt.Sprintf("%d %s", stuckN, colorState(session.StateStuck, useColor)))
+	}
+	if crashedN > 0 {
+		stateParts = append(stateParts, fmt.Sprintf("%d %s", crashedN, colorState(session.StateCrashed, useColor)))
 	}
 
 	line := fmt.Sprintf("%d %s", len(opts.Sessions), pluralize("session", len(opts.Sessions)))
@@ -198,10 +203,28 @@ func colorState(st session.State, color bool) string {
 		return tui.Colorize(string(st), tui.Green(), true)
 	case session.StateStuck:
 		return tui.Colorize(string(st), tui.Red(), true)
+	case session.StateCrashed:
+		return tui.Colorize(string(st), tui.Red(), true)
 	case session.StateWorking:
 		return tui.Colorize(string(st), tui.Yellow(), true)
 	}
 	return string(st)
+}
+
+// renderStateCell builds the STATE column value: the colored state name
+// followed by a "(STALE)" suffix when the session is flagged stale. STALE
+// stays attached to the State column so the operator scans one column for
+// "is this session OK?" instead of two.
+func renderStateCell(s session.Session, color bool) string {
+	cell := colorState(s.State, color)
+	if !s.Stale {
+		return cell
+	}
+	tag := "STALE"
+	if color {
+		tag = tui.Colorize(tag, tui.Yellow(), true)
+	}
+	return cell + " (" + tag + ")"
 }
 
 // formatRunning renders the RUNNING column: the pid of the live agent when

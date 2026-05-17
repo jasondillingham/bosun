@@ -3730,3 +3730,108 @@ func TestScenario_CleanupPurgeAndIgnoreRunningCompose(t *testing.T) {
 	s.AssertWorktreeMissing(1)
 	s.AssertBranchMissing("bosun/session-1")
 }
+
+// --- v0.6 round-1 session-3: CRASHED state + rescue + heartbeat ---
+
+// TestScenario_StatusReportsCrashedWhenWorktreeDirty walks bosun status
+// end-to-end for the CRASHED derivation: spin up a session, leave a
+// modified file behind, and confirm the JSON status reports state=CRASHED
+// without us having to send any liveness signal. proc.Running is false
+// because no agent ever started here.
+func TestScenario_StatusReportsCrashedWhenWorktreeDirty(t *testing.T) {
+	s := newScenario(t)
+	s.Bosun("init", "1")
+
+	wt := s.WorktreePath(1)
+	// Stage nothing — just leave an unmerged tracked-file change so
+	// DirtyCount comes back non-zero. README.md exists from gitInit().
+	s.WriteFileIn(wt, "README.md", "# dirty\n")
+
+	payload := s.StatusJSON()
+	got := payload.SessionByNumber(1)
+	if got == nil {
+		t.Fatalf("session-1 missing from status:\n%+v", payload)
+	}
+	if got.State != "CRASHED" {
+		t.Errorf("State = %q, want CRASHED (proc not running + dirty worktree)", got.State)
+	}
+}
+
+// TestScenario_StatusStaysWorkingWhenClean is the negative for the
+// previous test: a session with a clean worktree and no live agent must
+// stay WORKING. Otherwise every idle session would flicker CRASHED
+// between `bosun init` and the operator's first edit.
+func TestScenario_StatusStaysWorkingWhenClean(t *testing.T) {
+	s := newScenario(t)
+	s.Bosun("init", "1")
+
+	payload := s.StatusJSON()
+	got := payload.SessionByNumber(1)
+	if got == nil {
+		t.Fatalf("session-1 missing from status:\n%+v", payload)
+	}
+	if got.State != "WORKING" {
+		t.Errorf("State = %q, want WORKING (clean worktree)", got.State)
+	}
+}
+
+// TestScenario_RescueRefusesNonCrashed: `bosun rescue` is the narrow
+// recovery tool; running it on a healthy WORKING session must exit
+// non-zero with a clear message rather than producing an empty
+// snapshot dir.
+func TestScenario_RescueRefusesNonCrashed(t *testing.T) {
+	s := newScenario(t)
+	s.Bosun("init", "1")
+
+	out, err := s.BosunErr("rescue", "1")
+	if err == nil {
+		t.Fatalf("rescue on non-CRASHED session should exit non-zero, got:\n%s", out)
+	}
+	if !strings.Contains(out, "not CRASHED") {
+		t.Errorf("rescue refusal output missing 'not CRASHED' hint:\n%s", out)
+	}
+}
+
+// TestScenario_RescueSnapshotsCrashedWorktree: leave a dirty file behind
+// on a session with no live agent (which surfaces as CRASHED), run
+// `bosun rescue`, and verify `.bosun/rescues/<session>-<ts>/` exists
+// with the dirty content inside. The original worktree must be left
+// untouched.
+func TestScenario_RescueSnapshotsCrashedWorktree(t *testing.T) {
+	s := newScenario(t)
+	s.Bosun("init", "1")
+
+	wt := s.WorktreePath(1)
+	s.WriteFileIn(wt, "README.md", "# half-finished work\n")
+	s.WriteFileIn(wt, "untracked.txt", "agent left this behind\n")
+
+	out := s.Bosun("rescue", "1")
+	if !strings.Contains(out, "rescued") {
+		t.Errorf("rescue output missing 'rescued' confirmation:\n%s", out)
+	}
+
+	rescues := filepath.Join(s.repo, ".bosun", "rescues")
+	entries, err := os.ReadDir(rescues)
+	if err != nil {
+		t.Fatalf("read rescues dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("rescue dir entries = %d, want 1: %+v", len(entries), entries)
+	}
+	snap := filepath.Join(rescues, entries[0].Name())
+	if !strings.HasPrefix(entries[0].Name(), "session-1-") {
+		t.Errorf("rescue dir name %q should start with session-1-", entries[0].Name())
+	}
+
+	// Dirty README + untracked file both landed.
+	for _, rel := range []string{"README.md", "untracked.txt"} {
+		if _, err := os.Stat(filepath.Join(snap, rel)); err != nil {
+			t.Errorf("snapshot missing %s: %v", rel, err)
+		}
+	}
+	// Original worktree untouched.
+	body, err := os.ReadFile(filepath.Join(wt, "README.md"))
+	if err != nil || string(body) != "# half-finished work\n" {
+		t.Errorf("worktree README mutated by rescue: body=%q err=%v", body, err)
+	}
+}

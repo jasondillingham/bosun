@@ -41,6 +41,11 @@ type RenderOptions struct {
 	// terminals — the same data `bosun status` would derive, minus the
 	// per-session breakdown.
 	SummaryOnly bool
+	// NoTree forces the flat one-row-per-session table even when spawn
+	// trees exist. Set by `bosun status --no-tree` for scripts that parse
+	// the table. Default (false) renders tree-shaped output indented
+	// under each parent.
+	NoTree bool
 }
 
 // RenderText writes a human-readable table (and optional overlap section) to w.
@@ -60,9 +65,21 @@ func RenderText(w io.Writer, opts RenderOptions) error {
 
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "SESSION\tBRANCH\tSTATE\tAHEAD\tDIRTY\tCLAIMED\tRUNNING\tLAST_COMMIT")
-	for _, s := range opts.Sessions {
+	rows := opts.Sessions
+	if !opts.NoTree {
+		rows = treeOrdered(opts.Sessions)
+	}
+	for _, s := range rows {
+		name := s.Name
+		if !opts.NoTree && s.Depth > 0 {
+			// One indent level per depth step + a tree-prefix glyph at
+			// the leaf. Children of the same parent show └─ uniformly;
+			// renderers more clever about │ / ├─ aren't worth the code
+			// when --no-tree exists for scripts that care.
+			name = indent(s.Depth) + "└─ " + s.Name
+		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%d\t%d\t%s\t%s\n",
-			s.Name,
+			name,
 			s.Branch,
 			renderStateCell(s, useColor),
 			s.Ahead,
@@ -261,4 +278,68 @@ func writeOverlaps(w io.Writer, overlaps []claims.Overlap) {
 		fmt.Fprintf(tw, "  %s\t%s\n", o.Path, strings.Join(o.Sessions, ", "))
 	}
 	_ = tw.Flush()
+}
+
+// treeOrdered reorders sessions so each parent is immediately followed
+// by its children (in the order spawntree.Store reports them). Sessions
+// with no Parent entry are emitted at the top of their group in their
+// original sort order (which session.Derive already sorts by number).
+// A session that references a Parent not present in the slice falls
+// through to the orphan-pass at the bottom — defensive against
+// spawn-tree drift after a parent has been reaped.
+func treeOrdered(sessions []session.Session) []session.Session {
+	if len(sessions) == 0 {
+		return sessions
+	}
+	// Key on Name rather than Label — they're canonically the same
+	// (struct doc: "Label matches Name") but Derive populates both
+	// while many test fixtures only set Name. Name is the resilient
+	// pick when consumers might be either.
+	byName := make(map[string]session.Session, len(sessions))
+	childrenOf := make(map[string][]string, len(sessions))
+	for _, s := range sessions {
+		byName[s.Name] = s
+		if s.Parent != "" {
+			childrenOf[s.Parent] = append(childrenOf[s.Parent], s.Name)
+		}
+	}
+	emitted := make(map[string]bool, len(sessions))
+	out := make([]session.Session, 0, len(sessions))
+	var emit func(name string)
+	emit = func(name string) {
+		if emitted[name] {
+			return
+		}
+		s, ok := byName[name]
+		if !ok {
+			return
+		}
+		emitted[name] = true
+		out = append(out, s)
+		for _, child := range childrenOf[name] {
+			emit(child)
+		}
+	}
+	// First pass: top-level sessions in original order.
+	for _, s := range sessions {
+		if s.Parent == "" {
+			emit(s.Name)
+		}
+	}
+	// Orphan pass: anything still un-emitted (Parent named a session not
+	// in the snapshot — usually because the parent was reaped but the
+	// spawn-tree.json reference lingers). Emit at the bottom so the
+	// operator can see them; tree-prefix indentation still fires since
+	// Depth was populated.
+	for _, s := range sessions {
+		emit(s.Name)
+	}
+	return out
+}
+
+// indent returns the leading whitespace for a tree-level. Two spaces
+// per depth step makes parent/child visually distinct without
+// consuming horizontal space in the terminal table.
+func indent(depth int) string {
+	return strings.Repeat("  ", depth)
 }

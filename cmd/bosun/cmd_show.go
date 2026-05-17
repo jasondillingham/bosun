@@ -8,6 +8,7 @@ import (
 
 	"github.com/jasondillingham/bosun/internal/brief"
 	"github.com/jasondillingham/bosun/internal/session"
+	"github.com/jasondillingham/bosun/internal/spawntree"
 	"github.com/jasondillingham/bosun/internal/status"
 	"github.com/spf13/cobra"
 )
@@ -140,6 +141,16 @@ func renderShowText(rc *runCtx, s *session.Session) error {
 	fmt.Fprintln(os.Stdout)
 	fmt.Fprintf(os.Stdout, "Ahead:    %d\n", s.Ahead)
 	fmt.Fprintf(os.Stdout, "Dirty:    %d\n", s.Dirty)
+
+	// v0.9 spawn-tree info, if this session is part of one.
+	if tree := spawntree.NewStore(rc.repoRoot); tree != nil {
+		if parent, err := tree.ParentOf(s.Name); err == nil && parent != "" {
+			fmt.Fprintf(os.Stdout, "Parent:   %s\n", parent)
+		}
+		if children, err := tree.ChildrenOf(s.Name); err == nil && len(children) > 0 {
+			fmt.Fprintf(os.Stdout, "Children: %s\n", strings.Join(children, ", "))
+		}
+	}
 
 	c, err := rc.claims.Read(s.Name)
 	if err != nil {

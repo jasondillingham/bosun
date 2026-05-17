@@ -362,3 +362,84 @@ func TestRenderJSON_RunningFields(t *testing.T) {
 		t.Errorf("session-2 json: %+v, want running=false pid=0", g)
 	}
 }
+
+// TestRenderText_TreeOrderingIndentsSubsUnderParents pins the v0.9 tree
+// rendering: a parent session followed by its sub-sessions (Depth > 0
+// + Parent set) renders the children indented immediately below.
+// Sub-sessions show the tree-prefix glyph; top-level rows are unchanged.
+func TestRenderText_TreeOrderingIndentsSubsUnderParents(t *testing.T) {
+	sessions := []session.Session{
+		{Number: 1, Name: "session-1", Label: "session-1", Branch: "bosun/session-1",
+			Path: "/code/wt-1", State: session.StateWorking},
+		// Sub-sessions of session-1; they appear AFTER session-2 in the
+		// input slice to verify treeOrdered reorders them under the
+		// parent rather than respecting input order.
+		{Number: 0, Name: "session-1.auth", Label: "session-1.auth", Branch: "bosun/session-1.auth",
+			Path: "/code/wt-1-auth", State: session.StateDone,
+			Parent: "session-1", Depth: 1},
+		{Number: 2, Name: "session-2", Label: "session-2", Branch: "bosun/session-2",
+			Path: "/code/wt-2", State: session.StateWorking},
+		{Number: 0, Name: "session-1.http", Label: "session-1.http", Branch: "bosun/session-1.http",
+			Path: "/code/wt-1-http", State: session.StateWorking,
+			Parent: "session-1", Depth: 1},
+	}
+	var buf bytes.Buffer
+	if err := RenderText(&buf, RenderOptions{Sessions: sessions, NoColor: true}); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+
+	// Order check: walk the rendered output line-by-line and record
+	// the row each session appears on. tabwriter padding makes exact
+	// position matching brittle, so the line-based index is more
+	// robust against future column changes.
+	lineOf := func(needle string) int {
+		for i, line := range strings.Split(out, "\n") {
+			if strings.Contains(line, needle) {
+				return i
+			}
+		}
+		return -1
+	}
+	l1 := lineOf("session-1 ")        // top-level session-1's row (trailing space disambiguates from session-1.*)
+	la := lineOf("└─ session-1.auth") // sub
+	lh := lineOf("└─ session-1.http") // sub
+	l2 := lineOf("session-2 ")        // top-level session-2
+	if !(l1 < la && la < lh && lh < l2) {
+		t.Errorf("tree order wrong: session-1=%d auth=%d http=%d session-2=%d\n--- output ---\n%s",
+			l1, la, lh, l2, out)
+	}
+
+	// Children must show the tree-prefix glyph.
+	for _, want := range []string{"└─ session-1.auth", "└─ session-1.http"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q\n--- output ---\n%s", want, out)
+		}
+	}
+
+	// Top-level sessions must NOT carry the glyph.
+	if strings.Contains(out, "└─ session-1\n") || strings.Contains(out, "└─ session-2\n") {
+		t.Errorf("top-level session got a tree-prefix glyph\n%s", out)
+	}
+}
+
+// TestRenderText_NoTreeForcesFlatOrder pins the --no-tree opt-out: rows
+// render in input order with no indentation, regardless of Parent/Depth.
+func TestRenderText_NoTreeForcesFlatOrder(t *testing.T) {
+	sessions := []session.Session{
+		{Number: 1, Name: "session-1", Label: "session-1", Branch: "bosun/session-1",
+			Path: "/code/wt-1", State: session.StateWorking},
+		{Number: 0, Name: "session-1.auth", Label: "session-1.auth", Branch: "bosun/session-1.auth",
+			Path: "/code/wt-1-auth", State: session.StateDone,
+			Parent: "session-1", Depth: 1},
+	}
+	var buf bytes.Buffer
+	if err := RenderText(&buf, RenderOptions{Sessions: sessions, NoColor: true, NoTree: true}); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	// No tree-prefix glyph anywhere.
+	if strings.Contains(out, "└─") {
+		t.Errorf("--no-tree should not produce tree glyphs:\n%s", out)
+	}
+}

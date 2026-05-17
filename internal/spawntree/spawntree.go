@@ -274,6 +274,47 @@ func (s *Store) CountChildren(label string) (int, error) {
 	return len(kids), nil
 }
 
+// EnrichSessions populates Parent / Children / Depth on each entry in
+// sessions by looking up its Label in this tree. Sessions not in the
+// tree are left at their zero values (top-level, depth 0, no
+// children). Designed as the bridge for renderers — status, list,
+// show — that need tree info without their own spawntree imports
+// at every call site.
+//
+// Lives in spawntree (not internal/session) so internal/session stays
+// independent of the spawn-tree package. Callers that don't care
+// about tree info just skip the call.
+//
+// Uses a SessionLike interface so spawntree doesn't have to import
+// internal/session and risk a cycle. The shape matches session.Session
+// exactly; any future consumer can satisfy it without dragging in the
+// whole session package.
+func (s *Store) EnrichSessions(sessions []SessionLike) error {
+	if len(sessions) == 0 {
+		return nil
+	}
+	t, err := s.Load()
+	if err != nil {
+		return err
+	}
+	for _, sess := range sessions {
+		node, ok := t.Sessions[sess.GetLabel()]
+		if !ok {
+			continue
+		}
+		sess.SetTreeInfo(node.Parent, append([]string(nil), node.Children...), node.Depth)
+	}
+	return nil
+}
+
+// SessionLike is the slice element shape EnrichSessions consumes. A
+// pointer to session.Session satisfies it via the SetTreeInfo /
+// GetLabel methods session.Session implements.
+type SessionLike interface {
+	GetLabel() string
+	SetTreeInfo(parent string, children []string, depth int)
+}
+
 // writeLocked persists the tree to disk. Caller must hold the flock
 // — invoked only inside lockfile.WithLock callbacks above.
 func (s *Store) writeLocked(t *Tree) error {

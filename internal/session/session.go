@@ -65,6 +65,29 @@ type Session struct {
 	// zero time when no heartbeat exists. Useful for the operator to see
 	// how long it has been since the agent last checked in.
 	HeartbeatAt time.Time
+	// Parent is the label of the session that spawned this one via
+	// `bosun_spawn` (v0.9+). Empty for top-level sessions. Renderers
+	// use Parent + Depth to build the tree-shaped status output.
+	Parent string
+	// Children is the labels of sub-sessions this session has spawned.
+	// Sorted alphabetically. Empty for leaf sessions.
+	Children []string
+	// Depth is 0 for top-level sessions, parent.Depth+1 for sub-
+	// sessions. Populated from internal/spawntree when the caller
+	// passes a non-nil SpawnTreeReader to Derive.
+	Depth int
+}
+
+// GetLabel + SetTreeInfo satisfy spawntree.SessionLike so a
+// *Session can be passed to spawntree.Store.EnrichSessions without
+// internal/session having to import internal/spawntree (avoids the
+// cycle; v0.9 spawn-tree enrichment runs on the caller side).
+func (s *Session) GetLabel() string { return s.Label }
+
+func (s *Session) SetTreeInfo(parent string, children []string, depth int) {
+	s.Parent = parent
+	s.Children = children
+	s.Depth = depth
 }
 
 // Derive computes the Session list for repoRoot. It calls into the git

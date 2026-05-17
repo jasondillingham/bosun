@@ -11,6 +11,7 @@ import (
 	"github.com/jasondillingham/bosun/internal/claims"
 	bosunmcp "github.com/jasondillingham/bosun/internal/mcp"
 	"github.com/jasondillingham/bosun/internal/session"
+	"github.com/jasondillingham/bosun/internal/spawntree"
 	"github.com/jasondillingham/bosun/internal/status"
 	"github.com/jasondillingham/bosun/internal/tui"
 	"github.com/spf13/cobra"
@@ -29,6 +30,7 @@ func newStatusCmd() *cobra.Command {
 		watch        bool
 		interval     int
 		summaryOnly  bool
+		noTree       bool
 	)
 
 	cmd := &cobra.Command{
@@ -44,6 +46,7 @@ func newStatusCmd() *cobra.Command {
 				jsonOut:      jsonOut,
 				noColor:      noColor,
 				summaryOnly:  summaryOnly,
+				noTree:       noTree,
 			}
 			if watch {
 				if jsonOut {
@@ -64,6 +67,7 @@ func newStatusCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&watch, "watch", false, "re-render the table on an interval until interrupted (Ctrl-C)")
 	cmd.Flags().IntVar(&interval, "interval", 2, "seconds between refreshes when --watch is set")
 	cmd.Flags().BoolVar(&summaryOnly, "summary-only", false, "print just the one-line summary (no table, events, or overlaps)")
+	cmd.Flags().BoolVar(&noTree, "no-tree", false, "force the flat table even when spawn trees exist (for scripts that parse the output)")
 
 	return cmd
 }
@@ -73,6 +77,7 @@ type statusOpts struct {
 	jsonOut      bool
 	noColor      bool
 	summaryOnly  bool
+	noTree       bool
 }
 
 func runStatus(cmd *cobra.Command, opts statusOpts) error {
@@ -90,6 +95,12 @@ func renderStatusOnce(w io.Writer, rc *runCtx, opts statusOpts) error {
 	if err != nil {
 		return gitErr("derive sessions", err)
 	}
+
+	// v0.9: enrich with spawn-tree info so the renderer can group
+	// parents + children. Best-effort — a missing/torn spawn-tree
+	// shouldn't break status; we just fall through to the flat
+	// rendering when there's no parent/child data.
+	enrichWithSpawnTree(rc.repoRoot, sessions)
 
 	var overlaps []claims.Overlap
 	if opts.withOverlaps {
@@ -113,7 +124,23 @@ func renderStatusOnce(w io.Writer, rc *runCtx, opts statusOpts) error {
 		NoColor:      opts.noColor,
 		Events:       recentEvents(rc.repoRoot),
 		SummaryOnly:  opts.summaryOnly,
+		NoTree:       opts.noTree,
 	})
+}
+
+// enrichWithSpawnTree populates Parent / Children / Depth on each
+// session by looking up its label in .bosun/spawn-tree.json. Failures
+// are swallowed because the tree is advisory — a missing or torn file
+// shouldn't break status rendering. Callers that need the tree info
+// for correctness (cleanup --tree, merge --tree) handle errors at
+// their own level.
+func enrichWithSpawnTree(repoRoot string, sessions []session.Session) {
+	tree := spawntree.NewStore(repoRoot)
+	likes := make([]spawntree.SessionLike, len(sessions))
+	for i := range sessions {
+		likes[i] = &sessions[i]
+	}
+	_ = tree.EnrichSessions(likes)
 }
 
 // recentEvents pulls the last few bosun_announce entries from

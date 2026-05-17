@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -94,16 +95,15 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 		return err
 	}
 
-	labels, err := resolveInitLabels(args, rc.cfg)
-	if err != nil {
-		return err
-	}
-
 	// Resume / refuse-on-stale gate. We do this before any pre-flight
 	// (phantom scan, load average, hooks) so an operator who Ctrl-C'd a
 	// prior init isn't surprised by the same flaky pre-flight running
 	// twice. The two states are mutually exclusive: plain `init` with a
 	// state file = refuse; `init --resume` without a state file = refuse.
+	//
+	// State is read before labels are resolved so `--resume` can derive
+	// count + brief + label set from init.state — the operator should be
+	// able to run `bosun init --resume` from anywhere with zero other args.
 	istate, err := initstate.Load(rc.repoRoot)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
@@ -112,7 +112,7 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 		if opts.resume {
 			return userErr("--resume requested but no %s found; remove the flag for a fresh init", initstate.Path(rc.repoRoot))
 		}
-		istate = initstate.New(len(labels), opts.brief)
+		istate = nil
 	case err != nil:
 		return userErr("read %s: %v", initstate.Path(rc.repoRoot), err)
 	case opts.force && !opts.resume:
@@ -122,7 +122,7 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 		if err := initstate.ClearFile(rc.repoRoot); err != nil {
 			return internalErr("clear stale init state", err)
 		}
-		istate = initstate.New(len(labels), opts.brief)
+		istate = nil
 	case !opts.resume:
 		return userErr(
 			"previous bosun init didn't finish (see %s).\n"+
@@ -130,15 +130,47 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 			initstate.Path(rc.repoRoot),
 			initstate.Path(rc.repoRoot),
 		)
-	default:
-		// --resume with valid state.
+	}
+
+	// Resolve the label set. --resume drives it entirely off init.state so
+	// argless invocation works; any positional args supplied alongside
+	// --resume are advisory (warning + ignored) rather than a hard mismatch.
+	var labels []string
+	if opts.resume {
 		fmt.Fprintf(os.Stdout, "Resuming previous init (started %s).\n", istate.StartedAt.Format(time.RFC3339))
-		if istate.TotalSessions != len(labels) {
-			return userErr(
-				"--resume label count (%d) doesn't match prior init (%d). Re-run with the same args, or remove %s to start fresh.",
-				len(labels), istate.TotalSessions, initstate.Path(rc.repoRoot),
-			)
+		labels = istate.SessionLabels()
+		if len(args) > 0 {
+			argLabels, derr := resolveInitLabels(args, rc.cfg)
+			if derr != nil {
+				return derr
+			}
+			if !sameLabels(argLabels, labels) {
+				fmt.Fprintf(os.Stderr,
+					"bosun: warning: --resume ignoring CLI args (%d session(s)); using init.state labels from prior run (%d session(s))\n",
+					len(argLabels), len(labels),
+				)
+			}
 		}
+		// --brief override: state's plan path wins. If the operator passed
+		// a different --brief, warn instead of failing — they probably typed
+		// the same path out of habit.
+		switch {
+		case opts.brief == "" && istate.PlanPath != "":
+			opts.brief = istate.PlanPath
+			fmt.Fprintf(os.Stdout, "Using brief from init.state: %s\n", opts.brief)
+		case opts.brief != "" && istate.PlanPath != "" && opts.brief != istate.PlanPath:
+			fmt.Fprintf(os.Stderr,
+				"bosun: warning: --brief %q differs from prior init's plan (%s); using init.state value\n",
+				opts.brief, istate.PlanPath,
+			)
+			opts.brief = istate.PlanPath
+		}
+	} else {
+		labels, err = resolveInitLabels(args, rc.cfg)
+		if err != nil {
+			return err
+		}
+		istate = initstate.New(labels, opts.brief)
 	}
 
 	// Pre-flight #1: phantom-branch detection. Cheap directory scan that
@@ -209,34 +241,63 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 		return userErr("%v", err)
 	}
 
-	// Pre-flight: check for existing worktree paths. Completed-in-prior-run
-	// labels are exempt under --resume — we explicitly want to reuse those
-	// worktrees, not refuse on them.
-	for _, label := range labels {
-		path := session.WorktreePathForLabel(rc.repoRoot, rc.cfg, label)
-		if _, err := os.Stat(path); err == nil {
-			if opts.resume && istate.IsCompleted(label) {
-				continue
-			}
-			if !opts.force {
-				return userErr("worktree path already exists: %s (use --force to overwrite)", path)
-			}
+	// Snapshot the worktrees git knows about — used for the pre-flight
+	// "already exists" check, the --force cleanup, and the per-session
+	// resume reconciliation. One call up front instead of three.
+	existingWorktrees, err := rc.git.ListWorktrees(rc.ctx, rc.repoRoot)
+	if err != nil {
+		return gitErr("list worktrees", err)
+	}
+	registeredByPath := map[string]bool{}
+	registeredByBranch := map[string]bool{}
+	for _, wt := range existingWorktrees {
+		registeredByPath[wt.Path] = true
+		if wt.Branch != "" {
+			registeredByBranch[wt.Branch] = true
 		}
 	}
 
-	// If --force: remove existing worktrees first.
-	if opts.force {
-		existing, err := rc.git.ListWorktrees(rc.ctx, rc.repoRoot)
-		if err != nil {
-			return gitErr("list worktrees", err)
+	// Pre-flight: check for existing worktree paths. Completed-in-prior-run
+	// labels are exempt under --resume — we explicitly want to reuse those
+	// worktrees, not refuse on them. So is the in-progress session: the
+	// recoverable case the resume breadcrumb exists for is exactly an
+	// AddWorktree that succeeded enough to register the worktree but
+	// failed (or was killed) before bosun could mark it complete.
+	for _, label := range labels {
+		path := session.WorktreePathForLabel(rc.repoRoot, rc.cfg, label)
+		if _, err := os.Stat(path); err != nil {
+			continue
 		}
+		if opts.resume && istate.IsCompleted(label) {
+			continue
+		}
+		if opts.resume && registeredByPath[path] {
+			// In-progress worktree — git knows about it, we'll reconcile
+			// (and unlock if necessary) inside the per-session loop.
+			continue
+		}
+		if !opts.force {
+			return userErr("worktree path already exists: %s (use --force to overwrite)", path)
+		}
+	}
+
+	// If --force: remove existing worktrees first. Also `rm -rf` any
+	// stale on-disk dirs that aren't registered with git — without that,
+	// the upcoming AddWorktree would still hit "already exists".
+	if opts.force {
 		for _, label := range labels {
 			branch := rc.cfg.BranchForLabel(label)
-			for _, wt := range existing {
-				if wt.Branch == "refs/heads/"+branch {
+			path := session.WorktreePathForLabel(rc.repoRoot, rc.cfg, label)
+			for _, wt := range existingWorktrees {
+				if wt.Branch == "refs/heads/"+branch || wt.Path == path {
 					if err := rc.git.RemoveWorktree(rc.ctx, rc.repoRoot, wt.Path, true); err != nil {
 						return gitErr(fmt.Sprintf("remove existing worktree %s", wt.Path), err)
 					}
+				}
+			}
+			if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
+				if err := os.RemoveAll(path); err != nil {
+					return internalErr("force-remove stale worktree dir "+path, err)
 				}
 			}
 			if exists, _ := rc.git.BranchExists(rc.ctx, rc.repoRoot, branch); exists {
@@ -244,6 +305,12 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 					return gitErr(fmt.Sprintf("delete existing branch %s", branch), err)
 				}
 			}
+		}
+		// The cleanup invalidated the snapshot; refresh so the per-session
+		// loop's registered-check reflects post-cleanup state.
+		existingWorktrees, err = rc.git.ListWorktrees(rc.ctx, rc.repoRoot)
+		if err != nil {
+			return gitErr("list worktrees", err)
 		}
 	}
 
@@ -314,24 +381,32 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 		}
 
 		// On --resume, the worktree path may already exist if the prior
-		// run completed AddWorktree but failed afterwards. Detect that
-		// case via `git worktree list` and skip the re-add so we don't
-		// hit "already exists" errors. A bare directory at the path that
-		// git doesn't know about is still a hard error — that's the
-		// operator-fingerprint case the safety contract wants to surface.
+		// run completed AddWorktree but failed afterwards. Use the snapshot
+		// taken pre-loop to detect the registered case (skip the re-add)
+		// vs unregistered-dir (already refused above without --force, or
+		// removed by --force). A locked worktree (from a prior kill) is
+		// unlocked here so the subsequent state-write and brief-write can
+		// proceed.
 		if opts.resume {
-			worktrees, listErr := rc.git.ListWorktrees(rc.ctx, rc.repoRoot)
-			if listErr != nil {
-				return gitErr("list worktrees", listErr)
-			}
-			registered := false
-			for _, wt := range worktrees {
+			var match *workTreeRef
+			for j := range existingWorktrees {
+				wt := existingWorktrees[j]
 				if wt.Path == path || wt.Branch == "refs/heads/"+branch {
-					registered = true
+					match = &workTreeRef{path: wt.Path, locked: wt.Locked}
 					break
 				}
 			}
-			if registered {
+			if match != nil {
+				if match.locked {
+					if err := unlockWorktree(rc.ctx, rc.repoRoot, match.path); err != nil {
+						return userErr(
+							"resume: worktree %s is locked and unlock failed (another process may hold the lock): %v\n"+
+								"  if you know it's safe: git worktree unlock %s",
+							match.path, err, match.path,
+						)
+					}
+					fmt.Fprintf(os.Stdout, "Unlocked stale worktree for %s.\n", label)
+				}
 				fmt.Fprintf(os.Stdout, "Reusing existing worktree for %s (%d/%d).\n", label, i+1, len(labels))
 			} else {
 				fmt.Fprintf(os.Stdout, "Creating worktree %s (%d/%d)...\n", label, i+1, len(labels))
@@ -482,6 +557,44 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 		}
 	}
 
+	return nil
+}
+
+// workTreeRef is the small subset of git.Worktree fields the per-session
+// resume reconciliation needs. Kept anonymous here so cmd_init.go doesn't
+// import the git package solely to spell the type.
+type workTreeRef struct {
+	path   string
+	locked bool
+}
+
+// sameLabels reports whether two label slices represent the same ordered set.
+// Used by --resume to decide whether positional args agree with init.state's
+// snapshot — a disagreement is downgraded to a warning rather than a hard
+// error per the v0.6.1 fix.
+func sameLabels(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// unlockWorktree wraps `git worktree unlock`. Implemented as a free
+// function via os/exec rather than threaded through internal/git so this
+// file owns the resume-recovery surface without colliding with session-1's
+// timeout work in internal/git. Bosun's locking discipline is narrow:
+// the only place anything gets locked is the recovery path after a
+// killed worktree-add, so a one-line unlock is the right shape.
+var unlockWorktree = func(ctx context.Context, repoRoot, path string) error {
+	out, err := exec.CommandContext(ctx, "git", "-C", repoRoot, "worktree", "unlock", path).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
+	}
 	return nil
 }
 

@@ -59,6 +59,7 @@ type InitState struct {
 	StartedAt         time.Time `json:"started_at"`
 	PlanPath          string    `json:"plan_path,omitempty"`
 	TotalSessions     int       `json:"total_sessions"`
+	Labels            []string  `json:"labels,omitempty"`
 	CompletedSessions []string  `json:"completed_sessions"`
 	CurrentSession    string    `json:"current_session,omitempty"`
 	CurrentStep       string    `json:"current_step,omitempty"`
@@ -70,14 +71,36 @@ type InitState struct {
 
 // New returns a freshly-stamped InitState ready to be Save'd. It does not
 // touch the filesystem; the caller decides when to persist.
-func New(totalSessions int, planPath string) *InitState {
+func New(labels []string, planPath string) *InitState {
+	stored := append([]string(nil), labels...)
 	return &InitState{
 		Version:           stateVersion,
 		StartedAt:         time.Now().UTC(),
 		PlanPath:          planPath,
-		TotalSessions:     totalSessions,
+		TotalSessions:     len(labels),
+		Labels:            stored,
 		CompletedSessions: []string{},
 	}
+}
+
+// SessionLabels returns the full ordered list of session labels this init
+// was created with. Newer state files store labels explicitly; older or
+// hand-edited ones may only carry TotalSessions, so we fall back to the
+// numbered form (`session-1..session-N`) — the only label scheme bosun
+// generates without an explicit list — so `--resume` can still recover.
+func (s *InitState) SessionLabels() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.Labels) > 0 {
+		out := make([]string, len(s.Labels))
+		copy(out, s.Labels)
+		return out
+	}
+	out := make([]string, 0, s.TotalSessions)
+	for i := 1; i <= s.TotalSessions; i++ {
+		out = append(out, fmt.Sprintf("session-%d", i))
+	}
+	return out
 }
 
 // Load reads `.bosun/init.state` from repoRoot. Returns (nil, fs.ErrNotExist)

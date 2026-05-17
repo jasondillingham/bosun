@@ -102,3 +102,30 @@ func mustWrite(t *testing.T, path, content string) {
 		t.Fatalf("write %s: %v", path, err)
 	}
 }
+
+func TestSameLabels(t *testing.T) {
+	// sameLabels gates the --resume "args contradict state" warning. The
+	// fix downgraded the contradiction from a fatal error to a warning, so
+	// the comparator's correctness is what controls whether the operator
+	// sees the warning at all.
+	cases := []struct {
+		name string
+		a, b []string
+		want bool
+	}{
+		{"both empty", nil, nil, true},
+		{"identical numbered", []string{"session-1", "session-2"}, []string{"session-1", "session-2"}, true},
+		{"identical named", []string{"auth", "http"}, []string{"auth", "http"}, true},
+		{"differ in count", []string{"session-1", "session-2", "session-3"}, []string{"session-1", "session-2"}, false},
+		{"differ in order", []string{"auth", "http"}, []string{"http", "auth"}, false},
+		{"differ in content", []string{"auth"}, []string{"storage"}, false},
+		{"empty vs non-empty", nil, []string{"session-1"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sameLabels(tc.a, tc.b); got != tc.want {
+				t.Errorf("sameLabels(%v, %v) = %v, want %v", tc.a, tc.b, got, tc.want)
+			}
+		})
+	}
+}

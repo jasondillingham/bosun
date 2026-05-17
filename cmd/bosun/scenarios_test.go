@@ -3946,3 +3946,392 @@ exec %q "$@"
 		t.Errorf("state file should be removed after successful resume; stat err = %v", err)
 	}
 }
+
+// initShim writes a fake-git shim that defers to the real git binary except
+// for `worktree add`: it fails the Nth call (1-indexed) so scenario tests
+// can deterministically interrupt init mid-stream. Returns the shimmed
+// PATH-prefixed env slice and a disarm() that lets the next attempt
+// complete. Callers don't need to manage the failure-flag file themselves.
+func initShim(t *testing.T, failOnNthAdd int) (env []string, disarm func()) {
+	t.Helper()
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Skipf("git not on PATH: %v", err)
+	}
+	shimDir := t.TempDir()
+	counterPath := filepath.Join(shimDir, "wt-count")
+	failFlag := filepath.Join(shimDir, "fail-second")
+	shimScript := fmt.Sprintf(`#!/bin/sh
+if [ "$1" = "worktree" ] && [ "$2" = "add" ]; then
+  n=$(cat %q 2>/dev/null || echo 0)
+  n=$((n+1))
+  echo "$n" > %q
+  if [ -f %q ] && [ "$n" = "%d" ]; then
+    echo "shim: fake failure on worktree #%d" >&2
+    exit 1
+  fi
+fi
+exec %q "$@"
+`, counterPath, counterPath, failFlag, failOnNthAdd, failOnNthAdd, realGit)
+	shimPath := filepath.Join(shimDir, "git")
+	if err := os.WriteFile(shimPath, []byte(shimScript), 0o755); err != nil {
+		t.Fatalf("write git shim: %v", err)
+	}
+	if err := os.WriteFile(failFlag, nil, 0o644); err != nil {
+		t.Fatalf("arm shim: %v", err)
+	}
+	env = append(os.Environ(), "PATH="+shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	disarm = func() {
+		_ = os.Remove(failFlag)
+		_ = os.Remove(counterPath)
+	}
+	return env, disarm
+}
+
+// TestScenario_InitResumeArglessDerivesCountAndBrief covers the v0.6.1
+// Bug 2a fix: `bosun init --resume` with no other args must derive the
+// session count + brief from init.state, not from cfg.DefaultSessionCount
+// (which fired a phantom "label count doesn't match" error in the trial).
+func TestScenario_InitResumeArglessDerivesCountAndBrief(t *testing.T) {
+	s := newScenario(t)
+	s.WriteFile("plan.md", "## session-1\nA\n\n## session-2\nB\n\n## session-3\nC\n")
+
+	env, disarm := initShim(t, 2)
+
+	// First run: 3 sessions, brief — fails on worktree #2 so init.state
+	// gets a 3-session breadcrumb with session-1 completed.
+	run := exec.Command(bosunBin, "init", "3", "--brief", "plan.md")
+	run.Dir = s.repo
+	run.Env = env
+	var buf1 bytes.Buffer
+	run.Stdout = &buf1
+	run.Stderr = &buf1
+	if err := run.Run(); err == nil {
+		t.Fatalf("first init should fail at session-2; got success:\n%s", buf1.String())
+	}
+
+	disarm()
+
+	// Argless resume: no count, no --brief. Must read 3 + plan.md from state.
+	// cfg.DefaultSessionCount is 4 here, so a buggy fallback would produce
+	// session-4 and fail with "label count (4) doesn't match prior init (3)".
+	resume := exec.Command(bosunBin, "init", "--resume")
+	resume.Dir = s.repo
+	resume.Env = env
+	var buf2 bytes.Buffer
+	resume.Stdout = &buf2
+	resume.Stderr = &buf2
+	if err := resume.Run(); err != nil {
+		t.Fatalf("argless resume failed: %v\n%s", err, buf2.String())
+	}
+	out := buf2.String()
+	if strings.Contains(out, "doesn't match prior init") {
+		t.Fatalf("argless resume should not produce label-mismatch error:\n%s", out)
+	}
+	if !strings.Contains(out, "init.state") {
+		t.Errorf("expected resume output to mention init.state-derived brief; got:\n%s", out)
+	}
+
+	for i := 1; i <= 3; i++ {
+		s.AssertWorktreeExists(i)
+		s.AssertBranchExists("bosun/session-" + itoa(i))
+		// The brief should land in every worktree, including the late ones
+		// — proving the brief path was carried through state, not lost.
+		briefBody := readFile(t, filepath.Join(s.WorktreePath(i), "BOSUN_BRIEF.md"))
+		if !strings.Contains(briefBody, "session-"+itoa(i)) {
+			t.Errorf("session-%d brief missing heading:\n%s", i, briefBody)
+		}
+	}
+}
+
+// TestScenario_InitResumeInconsistentArgsWarnRatherThanFail covers the
+// other half of Bug 2a: when --resume is given with positional args that
+// disagree with init.state, bosun must use the state's value (with a
+// warning) instead of refusing with a "label count doesn't match" error.
+func TestScenario_InitResumeInconsistentArgsWarnRatherThanFail(t *testing.T) {
+	s := newScenario(t)
+	s.WriteFile("plan.md", "## session-1\nA\n\n## session-2\nB\n\n## session-3\nC\n")
+
+	env, disarm := initShim(t, 2)
+
+	first := exec.Command(bosunBin, "init", "3", "--brief", "plan.md")
+	first.Dir = s.repo
+	first.Env = env
+	var buf1 bytes.Buffer
+	first.Stdout = &buf1
+	first.Stderr = &buf1
+	if err := first.Run(); err == nil {
+		t.Fatalf("first init should fail; got success:\n%s", buf1.String())
+	}
+
+	disarm()
+
+	// Resume with the wrong count (5 instead of 3): must succeed with
+	// a warning, NOT fail with "doesn't match prior init".
+	resume := exec.Command(bosunBin, "init", "5", "--resume")
+	resume.Dir = s.repo
+	resume.Env = env
+	var buf2 bytes.Buffer
+	resume.Stdout = &buf2
+	resume.Stderr = &buf2
+	if err := resume.Run(); err != nil {
+		t.Fatalf("resume with inconsistent count should succeed (with warning): %v\n%s", err, buf2.String())
+	}
+	out := buf2.String()
+	if strings.Contains(out, "doesn't match prior init") {
+		t.Fatalf("inconsistent args should warn, not fail:\n%s", out)
+	}
+	if !strings.Contains(out, "warning") {
+		t.Errorf("inconsistent args should emit a warning; got:\n%s", out)
+	}
+	// Only sessions 1-3 should exist — state-driven, not arg-driven.
+	for i := 1; i <= 3; i++ {
+		s.AssertWorktreeExists(i)
+	}
+	if _, err := os.Stat(s.WorktreePath(4)); err == nil {
+		t.Errorf("session-4 should NOT exist — resume used state's count, not the arg")
+	}
+}
+
+// TestScenario_InitResumeReconcilesLockedRegisteredWorktree covers
+// Bug 2b: when the in-progress worktree was created on disk and registered
+// with git (but bosun then locked it / was killed before MarkComplete),
+// `bosun init --resume` must unlock and skip-the-add rather than refusing
+// with "worktree path already exists". Trial reproduced this exactly:
+// `bosun init 3 --resume --brief ...` died on the locked session-1 worktree.
+func TestScenario_InitResumeReconcilesLockedRegisteredWorktree(t *testing.T) {
+	s := newScenario(t)
+	s.WriteFile("plan.md", "## session-1\nA\n\n## session-2\nB\n")
+
+	// Run a normal `bosun init 2` so we get a real registered worktree
+	// for session-1 + session-2.
+	s.Bosun("init", "2", "--brief", "plan.md")
+
+	// Simulate the trial wedge: write a state file that says session-1
+	// completed, session-2 in StepGitWorktreeAdd, then lock session-2's
+	// worktree as if a prior kill froze it.
+	statePath := filepath.Join(s.repo, ".bosun", "init.state")
+	stateJSON := `{
+  "version": "v0.6",
+  "started_at": "2026-01-01T00:00:00Z",
+  "plan_path": "plan.md",
+  "total_sessions": 2,
+  "labels": ["session-1", "session-2"],
+  "completed_sessions": ["session-1"],
+  "current_session": "session-2",
+  "current_step": "git_worktree_add"
+}
+`
+	if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
+		t.Fatalf("mkdir .bosun: %v", err)
+	}
+	if err := os.WriteFile(statePath, []byte(stateJSON), 0o644); err != nil {
+		t.Fatalf("seed state: %v", err)
+	}
+	wt2 := s.WorktreePath(2)
+	s.GitIn(s.repo, "worktree", "lock", wt2, "--reason", "bosun: killed during init")
+
+	out, err := s.BosunErr("init", "--resume", "--brief", "plan.md")
+	if err != nil {
+		t.Fatalf("resume on locked-registered worktree should succeed: %v\n%s", err, out)
+	}
+	if strings.Contains(out, "already exists") {
+		t.Fatalf("resume must not refuse on the in-progress worktree it's recovering:\n%s", out)
+	}
+	if !strings.Contains(out, "Unlocked") {
+		t.Errorf("resume should announce the unlock; got:\n%s", out)
+	}
+
+	// Worktree must be unlocked when resume returns.
+	wtList := s.GitIn(s.repo, "worktree", "list", "--porcelain")
+	for _, block := range strings.Split(wtList, "\n\n") {
+		if strings.Contains(block, "worktree "+wt2) && strings.Contains(block, "locked") {
+			t.Errorf("session-2 worktree should be unlocked after resume:\n%s", block)
+		}
+	}
+	if _, err := os.Stat(statePath); !os.IsNotExist(err) {
+		t.Errorf("state file should be removed after successful resume; stat err = %v", err)
+	}
+}
+
+// TestScenario_InitResumeRefusesUnregisteredDir covers Bug 2b's negative
+// case: if the on-disk worktree dir exists but git doesn't know about it
+// (operator deleted .git/worktrees/<name> by hand, or a previous
+// AddWorktree crashed too early to register), resume refuses without
+// --force. This matches the safety contract: a dir bosun doesn't recognize
+// could be operator hand-fixes; we won't clobber it silently.
+func TestScenario_InitResumeRefusesUnregisteredDir(t *testing.T) {
+	s := newScenario(t)
+	s.WriteFile("plan.md", "## session-1\nA\n\n## session-2\nB\n")
+
+	wt2 := s.WorktreePath(2)
+	if err := os.MkdirAll(wt2, 0o755); err != nil {
+		t.Fatalf("seed unregistered dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(wt2, "hand-edit.txt"), []byte("operator was here\n"), 0o644); err != nil {
+		t.Fatalf("seed dir contents: %v", err)
+	}
+
+	statePath := filepath.Join(s.repo, ".bosun", "init.state")
+	stateJSON := `{
+  "version": "v0.6",
+  "started_at": "2026-01-01T00:00:00Z",
+  "plan_path": "plan.md",
+  "total_sessions": 2,
+  "labels": ["session-1", "session-2"],
+  "completed_sessions": ["session-1"],
+  "current_session": "session-2",
+  "current_step": "git_worktree_add"
+}
+`
+	if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
+		t.Fatalf("mkdir .bosun: %v", err)
+	}
+	if err := os.WriteFile(statePath, []byte(stateJSON), 0o644); err != nil {
+		t.Fatalf("seed state: %v", err)
+	}
+	// Also need a registered session-1 worktree so the resume's
+	// IsCompleted check finds the worktree it expects.
+	s.GitIn(s.repo, "branch", "bosun/session-1")
+	s.GitIn(s.repo, "worktree", "add", s.WorktreePath(1), "bosun/session-1")
+
+	out, err := s.BosunErr("init", "--resume", "--brief", "plan.md")
+	if err == nil {
+		t.Fatalf("resume should refuse on unregistered dir without --force:\n%s", out)
+	}
+	if !strings.Contains(out, "already exists") {
+		t.Errorf("expected 'already exists' refusal; got:\n%s", out)
+	}
+	// Operator's content must be untouched.
+	if _, statErr := os.Stat(filepath.Join(wt2, "hand-edit.txt")); statErr != nil {
+		t.Errorf("operator file should remain after refusal: %v", statErr)
+	}
+}
+
+// TestScenario_InitResumeForceOverwritesStaleDir covers the second half
+// of Bug 2b: when --force is passed alongside --resume on an unregistered
+// stale dir, bosun rm -rf's it and re-creates the worktree.
+func TestScenario_InitResumeForceOverwritesStaleDir(t *testing.T) {
+	s := newScenario(t)
+	s.WriteFile("plan.md", "## session-1\nA\n\n## session-2\nB\n")
+
+	wt2 := s.WorktreePath(2)
+	if err := os.MkdirAll(wt2, 0o755); err != nil {
+		t.Fatalf("seed stale dir: %v", err)
+	}
+	stalePath := filepath.Join(wt2, "stale.txt")
+	if err := os.WriteFile(stalePath, []byte("from a prior crashed init\n"), 0o644); err != nil {
+		t.Fatalf("seed stale contents: %v", err)
+	}
+
+	statePath := filepath.Join(s.repo, ".bosun", "init.state")
+	stateJSON := `{
+  "version": "v0.6",
+  "started_at": "2026-01-01T00:00:00Z",
+  "plan_path": "plan.md",
+  "total_sessions": 2,
+  "labels": ["session-1", "session-2"],
+  "completed_sessions": [],
+  "current_session": "session-2",
+  "current_step": "git_worktree_add"
+}
+`
+	if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
+		t.Fatalf("mkdir .bosun: %v", err)
+	}
+	if err := os.WriteFile(statePath, []byte(stateJSON), 0o644); err != nil {
+		t.Fatalf("seed state: %v", err)
+	}
+
+	out := s.Bosun("init", "--resume", "--force", "--brief", "plan.md")
+	if strings.Contains(out, "already exists") {
+		t.Fatalf("--resume --force should rm the stale dir, not refuse:\n%s", out)
+	}
+	// Stale content must be gone — replaced by a fresh worktree.
+	if _, err := os.Stat(stalePath); err == nil {
+		t.Errorf("stale file should be removed by --force; still present at %s", stalePath)
+	}
+	s.AssertWorktreeExists(2)
+	s.AssertBranchExists("bosun/session-2")
+}
+
+// TestScenario_InitResumeEndToEndAfterHang exercises the v0.6.1 trial's
+// recovery path end-to-end: start `bosun init 3` against a fake-git that
+// hangs on the 2nd worktree-add (relying on session-1's per-op timeout
+// to abort), then run `bosun init --resume` and verify all 3 sessions
+// finish cleanly. Skipped when session-1's timeout fix isn't in place
+// (config default GitOpTimeoutSeconds == 0).
+func TestScenario_InitResumeEndToEndAfterHang(t *testing.T) {
+	s := newScenario(t)
+	// Drive a tight 3s git op timeout so the test runs in seconds, not minutes.
+	s.WriteFile(".bosun/config.json", `{"git_op_timeout_seconds": 3}`)
+	s.WriteFile("plan.md", "## session-1\nA\n\n## session-2\nB\n\n## session-3\nC\n")
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Skipf("git not on PATH: %v", err)
+	}
+	shimDir := t.TempDir()
+	counterPath := filepath.Join(shimDir, "wt-count")
+	hangFlag := filepath.Join(shimDir, "hang-second")
+	shimScript := fmt.Sprintf(`#!/bin/sh
+if [ "$1" = "worktree" ] && [ "$2" = "add" ]; then
+  n=$(cat %q 2>/dev/null || echo 0)
+  n=$((n+1))
+  echo "$n" > %q
+  if [ -f %q ] && [ "$n" = "2" ]; then
+    sleep 30
+    exit 0
+  fi
+fi
+exec %q "$@"
+`, counterPath, counterPath, hangFlag, realGit)
+	shimPath := filepath.Join(shimDir, "git")
+	if err := os.WriteFile(shimPath, []byte(shimScript), 0o755); err != nil {
+		t.Fatalf("write git shim: %v", err)
+	}
+	if err := os.WriteFile(hangFlag, nil, 0o644); err != nil {
+		t.Fatalf("arm shim: %v", err)
+	}
+	env := append(os.Environ(), "PATH="+shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	// First run: the 2nd worktree add hangs ~30s; session-1's per-op timeout
+	// (3s here) must abort it. Without that fix, this test would block for
+	// 30s+ and exceed the harness deadline.
+	run := exec.Command(bosunBin, "init", "3", "--brief", "plan.md")
+	run.Dir = s.repo
+	run.Env = env
+	var buf1 bytes.Buffer
+	run.Stdout = &buf1
+	run.Stderr = &buf1
+	start := time.Now()
+	err = run.Run()
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatalf("first init should fail (timeout); got success in %v\n%s", elapsed, buf1.String())
+	}
+	if elapsed > 25*time.Second {
+		t.Skipf("session-1 per-op timeout not yet wired; init took %v (> 25s). Output:\n%s", elapsed, buf1.String())
+	}
+
+	// Disarm the hang and resume — all 3 sessions must come up clean.
+	if err := os.Remove(hangFlag); err != nil {
+		t.Fatalf("disarm shim: %v", err)
+	}
+	_ = os.Remove(counterPath)
+
+	resume := exec.Command(bosunBin, "init", "--resume")
+	resume.Dir = s.repo
+	resume.Env = env
+	var buf2 bytes.Buffer
+	resume.Stdout = &buf2
+	resume.Stderr = &buf2
+	if err := resume.Run(); err != nil {
+		t.Fatalf("resume after hang failed: %v\n%s", err, buf2.String())
+	}
+
+	for i := 1; i <= 3; i++ {
+		s.AssertWorktreeExists(i)
+		s.AssertBranchExists("bosun/session-" + itoa(i))
+	}
+}

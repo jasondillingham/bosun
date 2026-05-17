@@ -143,7 +143,7 @@ bosun serve [--port N]      HTTP dashboard with SSE event stream
 - Go 1.25+ to build (the MCP SDK requires it)
 
 Runs on macOS, Linux, and Windows (x86_64 + arm64 binaries available).
-**macOS users:** keep the bosun project **out of** `~/Documents/` and `~/Desktop/` — both are iCloud-synced by default, which creates phantom-duplicate files inside worktrees. `bosun doctor` warns when it detects this. The phantom-file filter inside bosun mitigates the symptoms but the root cause is iCloud Drive.
+**macOS users:** keep the bosun project **out of** `~/Documents/` and `~/Desktop/` — both are iCloud-synced by default, which creates phantom-duplicate files inside worktrees. `bosun doctor` warns when it detects this. See [`docs/macos-setup.md`](./docs/macos-setup.md) for the full first-time-setup guide and the recipe to relocate an existing repo out of iCloud.
 
 ## Status
 

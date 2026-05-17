@@ -53,6 +53,7 @@ var configRecognizedKeys = []string{
 	"git_op_timeout_seconds",
 	"hooks",
 	"suggest",
+	"agent_spawn",
 }
 
 func newConfigCmd() *cobra.Command {

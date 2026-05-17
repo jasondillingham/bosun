@@ -25,7 +25,9 @@ import (
 	"sync"
 
 	"github.com/jasondillingham/bosun/internal/claims"
+	"github.com/jasondillingham/bosun/internal/config"
 	"github.com/jasondillingham/bosun/internal/git"
+	"github.com/jasondillingham/bosun/internal/spawntree"
 	"github.com/jasondillingham/bosun/internal/state"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -81,9 +83,29 @@ type Server struct {
 	gitClient *git.Client
 	listener  net.Listener
 
+	// v0.9 spawn support — populated via WithSpawnSupport when the
+	// MCP daemon is wired with agent-spawn capability. nil is the
+	// "spawn tool not available" sentinel for the spawn tool itself.
+	cfg       *config.Config
+	spawnTree *spawntree.Store
+
 	mu       sync.Mutex
 	connWG   sync.WaitGroup
 	stopping bool
+}
+
+// WithSpawnSupport wires the bosun config and spawn-tree store the
+// v0.9 bosun_spawn tool needs. Optional — daemons that don't call
+// this still serve every other tool; bosun_spawn refuses with a
+// "spawn-support not configured" error when invoked.
+//
+// Production callers (cmd/bosun/cmd_mcp.go) call this immediately
+// after NewServer; in-process tests that don't need spawn can skip
+// it without ceremony.
+func (s *Server) WithSpawnSupport(cfg config.Config, tree *spawntree.Store) *Server {
+	s.cfg = &cfg
+	s.spawnTree = tree
+	return s
 }
 
 // toolRegistrations holds every tool registration function the package

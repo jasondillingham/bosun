@@ -19,6 +19,7 @@ import (
 	bosunmcp "github.com/jasondillingham/bosun/internal/mcp"
 	"github.com/jasondillingham/bosun/internal/preflight"
 	"github.com/jasondillingham/bosun/internal/session"
+	"github.com/jasondillingham/bosun/internal/spawntree"
 	"github.com/jasondillingham/bosun/internal/state"
 	"github.com/jasondillingham/bosun/internal/suggest"
 	"github.com/spf13/cobra"
@@ -509,6 +510,14 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 
 		if err := istate.MarkComplete(rc.repoRoot, label); err != nil {
 			return internalErr("persist init state", err)
+		}
+
+		// Record the freshly-created top-level session in the v0.9
+		// spawn tree so the bosun_spawn quota/depth machinery can see
+		// it. Best-effort: a failure here doesn't unwind the worktree
+		// (spawn-tree is advisory; status/cleanup work without it).
+		if err := spawntree.NewStore(rc.repoRoot).AddTopLevel(label); err != nil {
+			fmt.Fprintf(os.Stderr, "bosun: warning: record %s in spawn tree: %v\n", label, err)
 		}
 	}
 

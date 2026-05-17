@@ -8,6 +8,7 @@ import (
 	"syscall"
 
 	bosunmcp "github.com/jasondillingham/bosun/internal/mcp"
+	"github.com/jasondillingham/bosun/internal/spawntree"
 	"github.com/spf13/cobra"
 )
 
@@ -79,6 +80,10 @@ func runMcp(_ *cobra.Command, socketPath string) error {
 	bosunmcp.SetEventsLog(filepath.Join(rc.repoRoot, bosunmcp.EventLogRelative))
 
 	srv := bosunmcp.NewServer(rc.claims, rc.state, rc.git)
+	// v0.9: wire the spawn-tree + config so the bosun_spawn tool can
+	// run. Off by default (config.AgentSpawn.Enabled gates the tool
+	// itself); this just makes the dependencies available.
+	srv.WithSpawnSupport(rc.cfg, spawntree.NewStore(rc.repoRoot))
 	if err := srv.Listen(socketPath); err != nil {
 		return userErr("bind socket: %v", err)
 	}

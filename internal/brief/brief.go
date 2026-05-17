@@ -48,6 +48,18 @@ func Parse(path string) ([]Brief, error) {
 	return briefs, nil
 }
 
+// ParseString is the in-memory variant of Parse. Used by the v0.9
+// bosun_spawn MCP tool, which receives the brief markdown as a tool
+// argument rather than as a file path. Validation is identical to
+// Parse; the error wrapping just doesn't include a filename.
+func ParseString(s string) ([]Brief, error) {
+	briefs := parseContent(s)
+	if err := ValidateBriefs(briefs); err != nil {
+		return nil, fmt.Errorf("inline brief: %w", err)
+	}
+	return briefs, nil
+}
+
 // headingRe captures the session label (either `session-N` or a bare name
 // matching the bosun label charset) and an optional depends clause.
 // Match groups:

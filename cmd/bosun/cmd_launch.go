@@ -3,12 +3,19 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/jasondillingham/bosun/internal/launcher"
 	bosunmcp "github.com/jasondillingham/bosun/internal/mcp"
 	"github.com/jasondillingham/bosun/internal/session"
 	"github.com/spf13/cobra"
 )
+
+// defaultBriefPrompt is the initial-prompt string injected into a launched
+// session when no explicit --initial-prompt is passed and a BOSUN_BRIEF.md
+// is available in the worktree. Shared between `bosun init --launch` and
+// `bosun launch` so the two paths stay in lockstep.
+const defaultBriefPrompt = "Read BOSUN_BRIEF.md in this directory — it's your assignment. Read it in full, then follow the workflow it describes."
 
 func newLaunchCmd() *cobra.Command {
 	var (
@@ -74,6 +81,17 @@ func runLaunch(sessionArg string, opts launchOpts) error {
 		return userErr("%s not found (use `bosun list` to see active sessions)", label)
 	}
 
+	// When the caller didn't pass --initial-prompt, mirror `bosun init
+	// --launch`: if the worktree has a BOSUN_BRIEF.md, default to pointing
+	// the agent at it. Otherwise leave the prompt empty so the launched
+	// session opens silently (bare `claude`).
+	prompt := opts.initialPrompt
+	if prompt == "" {
+		if _, err := os.Stat(filepath.Join(s.Path, "BOSUN_BRIEF.md")); err == nil {
+			prompt = defaultBriefPrompt
+		}
+	}
+
 	// Reuse the MCP daemon when one's already up, otherwise spawn one so
 	// the launched session can talk to bosun_claim / bosun_done without
 	// falling back to filesystem coordination. Failure to bring it up is
@@ -99,7 +117,7 @@ func runLaunch(sessionArg string, opts launchOpts) error {
 		WorktreePath:  s.Path,
 		SessionName:   s.Label,
 		Command:       opts.command,
-		InitialPrompt: opts.initialPrompt,
+		InitialPrompt: prompt,
 		OpenAsTab:     opts.openAsTab,
 		Env:           env,
 	})

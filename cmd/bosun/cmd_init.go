@@ -516,7 +516,7 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 		// brief and no prompt, the launch is silent (bare `claude`).
 		prompt := opts.initialPrompt
 		if prompt == "" && opts.brief != "" {
-			prompt = "Read BOSUN_BRIEF.md in this directory — it's your assignment. Read it in full, then follow the workflow it describes."
+			prompt = defaultBriefPrompt
 		}
 
 		// Bring up (or attach to) the MCP daemon and capture the socket

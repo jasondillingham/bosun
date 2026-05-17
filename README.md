@@ -72,14 +72,42 @@ go install github.com/jasondillingham/bosun/cmd/bosun@latest
 
 Or build from source — see `Makefile`.
 
+## Quick start
+
+```
+# 1. Sanity-check your environment (one-time, recommended).
+bosun doctor
+
+# 2. Describe the work; bosun proposes the lane split for you.
+bosun init 3 --suggest "add auth, refactor http routing, write tests"
+# (writes .bosun/suggested-plan.md, creates 3 worktrees + branches,
+#  and drops a per-session BOSUN_BRIEF.md in each)
+
+# 3. Open an agent in each session (or use --launch on init).
+bosun launch session-1
+bosun launch session-2
+bosun launch session-3
+
+# 4. Watch what's happening.
+bosun status         # one-shot table
+bosun tui            # interactive control center
+
+# 5. Each session, when ready, runs `bosun done`. Then:
+bosun merge          # squash-merge every DONE session back to your base branch
+bosun cleanup        # reap merged sessions
+```
+
+If anything looks off, `bosun doctor` is the first thing to try.
+
 ## Commands
 
 ```
-bosun init [N | label...] [--brief plan.md] [--launch] [--isolate-cache]
+bosun init [N | label...] [--brief plan.md | --suggest "<goal>"] [--launch] [--isolate-cache] [--force] [--resume]
                             Create worktrees + branches (numeric N or named
-                            labels); optionally drop per-session briefs and
-                            spawn agent sessions
-bosun launch <session>      Spawn a launcher window for an existing session
+                            labels). --suggest generates a brief from a goal
+                            description; --brief consumes a hand-written one.
+bosun launch <session> [--initial-prompt "..."]
+                            Spawn an agent window for an existing session
 bosun status [--with-overlaps] [--watch] [--json] [--summary-only]
                             Print a table of session states + path collisions
 bosun show <session> [--json]
@@ -87,13 +115,23 @@ bosun show <session> [--json]
 bosun claim <session> <paths...>
                             Session declares paths it's editing (advisory)
 bosun done <session>        Session signals it is ready to merge
-bosun merge [<session>...] [--dry-run]
+bosun merge [<session>...] [--dry-run] [--undo <sha>] [--no-load-check]
                             Squash-merge DONE sessions back to base
-bosun remove <session>      Tear down a session cleanly
-bosun cleanup [--orphans]   Reap sessions that no longer have work to keep
+bosun rescue <session> [--launch]
+                            Recover a CRASHED session: snapshot its dirty
+                            files to .bosun/rescues/, or relaunch a window
+bosun remove <session> [--force]
+                            Tear down a session cleanly; --force salvages
+                            uncommitted files into .bosun/rescues/ first
+bosun cleanup [--orphans] [--purge]
+                            Reap DONE or empty sessions in bulk
 bosun list [--ready] [--json]
                             Print session names (--ready for DONE only)
-bosun config show|set|...   Inspect or edit .bosun/config.json
+bosun config show|set|get|unset|init|validate
+                            Inspect or edit .bosun/config.json
+bosun predict <plan.md>     Heuristic conflict prediction across a plan's lanes
+bosun suggest "<goal>"      Propose disjoint lanes for a goal; write a plan
+bosun doctor                System health check before bosun goes to work
 bosun mcp [--socket path]   Run the MCP server (foreground)
 bosun tui                   Bubbletea control center
 bosun serve [--port N]      HTTP dashboard with SSE event stream
@@ -101,23 +139,27 @@ bosun serve [--port N]      HTTP dashboard with SSE event stream
 
 ## Requirements
 
-- Git on PATH
-- Go 1.25+ to build (the MCP SDK requires it; v0.1 was Go 1.23+)
+- Git on PATH (>= 2.40)
+- Go 1.25+ to build (the MCP SDK requires it)
 
 Runs on macOS, Linux, and Windows (x86_64 + arm64 binaries available).
+**macOS users:** keep the bosun project **out of** `~/Documents/` and `~/Desktop/` — both are iCloud-synced by default, which creates phantom-duplicate files inside worktrees. `bosun doctor` warns when it detects this. The phantom-file filter inside bosun mitigates the symptoms but the root cause is iCloud Drive.
 
 ## Status
 
-**v0.4.0-rc1 shipped 2026-05-16.** See `RELEASES.md` for the full history, `SPEC.md` for the v0.1 implementation spec, and `CLAUDE.md` if you're a Claude Code session contributing to this codebase.
+**v0.7 landed locally; v0.8 in progress** (public-launch readiness sprint — see `docs/v0.8-roadmap.md`). The repo is private until the v0.8 gates are cleared. See `RELEASES.md` for full version history, `SPEC.md` for the v0.1 implementation spec, and `CLAUDE.md` if you're a Claude Code session contributing to this codebase.
 
 ## Roadmap
 
 - **v0.1** — init/status/show/claim/done/merge/remove/list. Filesystem-based coordination. Optional brief fan-out + session launcher.
 - **v0.2** — MCP server interface: `bosun_claim` / `bosun_release` / `bosun_done` / `bosun_stuck` / `bosun_announce` / `bosun_check` tool calls, plus polish (`--summary-only`, `bosun launch`, `cleanup --orphans`, dependency-aware briefs, non-Ghostty tab support).
 - **v0.3** — Bubbletea TUI control center (`bosun tui`), HTTP dashboard (`bosun serve`), custom session labels, agent process detection, cross-process claims `flock`.
-- **v0.4** *(current)* — Lifecycle hooks scaffolding, `merge --dry-run`, `list/show --json`, web brief preview + events feed, orphan-dir recovery, `bosun config`.
-- **v0.5** — Remaining hook call-sites (pre-merge / post-merge / pre-cleanup / post-cleanup / pre-remove), kickoff robustness (per-op timeouts, progress reporting), predictive conflict analysis (heuristic). See `docs/v0.5-roadmap.md`.
+- **v0.4** — Lifecycle hooks scaffolding, `merge --dry-run`, `list/show --json`, web brief preview + events feed, orphan-dir recovery, `bosun config`.
+- **v0.5** — All hook call-sites wired (pre-merge / post-merge / pre-cleanup / post-cleanup / pre-remove), kickoff robustness (per-op timeouts, progress reporting), predictive conflict analysis (`bosun predict`), `bosun suggest` brief authoring.
+- **v0.6** — Resilience anchor: agent-liveness gate on destructive ops, pre-merge `git fsck`, reflog-based `merge --undo`, CRASHED state + `bosun rescue`, heartbeat MCP tool, hook timeout enforcement, init resumability (`bosun init --resume`), README "Safety contract" section.
+- **v0.7** — Polish round: launch UX, predictor accuracy (Files-avoid exclusion), pre-flight robustness (stale-branch refusal in init, load check at merge), state+rescue resilience (Spotlight phantom filter, corrupted-gitdir recovery, salvage on `remove --force`). Plus a bug-hunt wave: proc detection via cmdline, MCP goroutine leak, rescue salvage error surfacing, cleanup/merge silent-error fixes. Refactors: `internal/phantom`, `internal/lockfile`. Fuzz + stress test targets via `make fuzz` and `make stress`.
+- **v0.8** *(in progress)* — Public-launch readiness: `bosun doctor` system preflight, `init --suggest` for one-step onboarding, external-repo trial #2, CI on macOS/Linux/Windows, README + LICENSE + RELEASES.md catchup. After v0.8: the repo flips public.
 
 ## License
 
-MIT — see `LICENSE`.
+Apache 2.0 — see [`LICENSE`](./LICENSE).

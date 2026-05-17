@@ -1,5 +1,77 @@
 # Releases
 
+## v0.7 — 2026-05-17 (private; v0.8 will be the first public tag)
+
+Polish round + bug-hunt + refactor + future-bug-hunting test suite, all landed locally. Not yet tagged or pushed publicly — `CLAUDE.md`'s release stance gates the public visibility flip on v0.8's launch checklist.
+
+**Polish round (4 lanes):**
+
+- `bosun launch <session>` defaults to the brief prompt when `BOSUN_BRIEF.md` is present (matches `init --launch` behavior; the standalone path no longer drops the operator at an empty prompt).
+- Predictor (`bosun predict`) no longer counts paths under "Files (avoid)" headings as predicted edits. False-positive overlap counts dropped 79 → 12 on the v0.6 round-1 plan.
+- Init refuses when `bosun/session-N` exists at a SHA that diverges from base (the post-cleanup-without-branch-delete case that silently used stale code). `--force` resets cleanly. Merge picked up the same 1-minute load pre-flight init has had since v0.5.
+- macOS Spotlight / iCloud phantom-file filter in the state and claims dirs; `bosun rescue` and `bosun remove --force` now detect corrupted worktree gitdirs (HEAD/commondir missing) and salvage files into `.bosun/rescues/` before destruction.
+
+**Bug-hunt waves:**
+
+- Claims dir was ingesting `session-2 3.json` phantoms as additional CLAIMED counts on real sessions; filter applied, stale claims cleared on init.
+- `bosun init`'s `unlockWorktree` was bypassing `Client.run` timeout enforcement; migrated to a proper `git.Client.UnlockWorktree` method.
+- `bosun suggest` was calling `git ls-files` / `rev-parse` / `log` without timeout context; bounded each at 30s.
+- `proc.Running()` couldn't detect Claude Code on macOS because the binary lives at `~/.local/share/claude/versions/<X.Y.Z>/` and `p.Name()` returned the version directory's basename rather than "claude". Now also checks the cmdline's first token, recovering the recognizable name. `BOSUN_PROC_DEBUG=1` surfaces candidate-skip reasons.
+- `bosun init --force` was silent during the orphan-worktree-dir cleanup (observed ~6 minutes recursing through a Go module cache); now reports progress per-label.
+- MCP server's `Serve` ctx-watcher goroutine leaked when Accept returned an error not caused by Stop; closed with a done channel.
+- `bosun rescue` salvage's `copyWorktreeBestEffort` silently `return nil`'d on every per-file error, lying about what made it into the snapshot. Now tracks skipped paths with reasons and logs them to stderr.
+- `executeCleanupOne` and `mergeOne` (4 sites) were `_ = rc.{state,claims}.Clear(name)` — silent failures left stale `.bosun/` metadata. Extracted `clearSessionMetadata` helper; warnings go to stderr.
+
+**Refactors:**
+
+- `internal/phantom` — extracted the Spotlight/iCloud duplicate-detection regex from `internal/state` + `internal/claims` (was on its way to a third copy). One `IsLikelyPhantom(name, exts...)` helper.
+- `internal/lockfile` — consolidated four POSIX flock helpers (`withInitLock` / `withStateLock` / `withStoreLock` / `withMcpSpawnLock`) into one `WithLock` / `WithLockResult[T]` package. Behavior preserved; Go generics handle the mcp-autostart's payload-returning case.
+
+**Future-bug-hunting test suite:**
+
+- 5 fuzz targets behind `make fuzz` (default 30s each, configurable via `FUZZTIME`): brief parser, predictor extractor, label validator, phantom detector, uptime-load parser. Found a real bug on first run — `parseUptimeLoad` accepted negative load values; fixed.
+- 1 new stress test (`claims.TestStress_MixedOpsAcrossManySessions` — 32 sessions × 50 ops) + broadened `make stress` target pattern.
+- Failing fuzz corpora persist under `testdata/fuzz/<target>/` so a regression caught once gets replayed every subsequent run.
+
+See `docs/v0.7-roadmap.md` for the strategic shape. The four lane briefs landed via `v0.7-round1-plan.md` (gitignored, see `STATUS.md` from the round if needed).
+
+---
+
+## v0.6.2 — 2026-05-17 (private)
+
+Single-session round closing the timeout coverage gap that v0.6.1's dogfood loop surfaced: `bosun merge` hung 11 minutes on `git fsck` under load because three call sites (`fsck`, `rev-parse HEAD`, `reset --hard`) bypassed `Client.run`'s configured timeout by shelling out via `exec.CommandContext` directly. Centralized all git invocations through `Client.run`; added a table-driven test that exercises every public Client method against a fake-hung-git shim to prevent backsliding.
+
+## v0.6.1 — 2026-05-17 (private)
+
+Trial blockers from v0.6's external-repo trial:
+- **session-1** (`internal/git/`) — `git worktree add` ignored the configured per-op timeout under fsync pressure; wrapped through Client.run with a worktree-specific 120s floor and a clear `bosun init --resume` recovery hint on timeout.
+- **session-2** (`cmd/bosun/cmd_init.go` + `internal/init/state.go`) — `bosun init --resume` refused with arg-count mismatch on the no-arg invocation and refused on the locked-in-progress-worktree case the breadcrumb existed for. Resume now derives count + brief + label set from `init.state`, unlocks the in-progress worktree, and reconciles to the next step.
+
+## v0.6 — 2026-05-16 (private)
+
+**Resilience anchor.** Closes the gap between "main is safe via git-worktree isolation" and "bosun won't make things worse when something already went sideways."
+
+- Agent-liveness gate on destructive ops (`bosun merge` / `remove` / `cleanup` refuse when a live agent has uncommitted work; `--ignore-running` opts in).
+- Pre-merge `git fsck` on the source worktree — catches torn-write corruption before the squash.
+- Reflog-based `bosun merge --undo` (resets main to a pre-merge SHA only when main hasn't advanced past it).
+- CRASHED state (`proc.Running() == false && worktree dirty`) + `bosun rescue <session>` to snapshot the dirty worktree under `.bosun/rescues/`.
+- MCP `bosun_heartbeat` tool + STALE derived state for sessions that haven't pinged in 5 minutes.
+- Hook timeout enforcement (`hooks.Run` now respects `TimeoutSeconds`; 30s default when zero).
+- `bosun init --resume` for partial-init recovery (per-step state in `.bosun/init.state`).
+- README "Safety contract" section spelling out exactly what bosun does without being asked.
+
+See `docs/v0.6-roadmap.md` for the eight asks and lane breakdown.
+
+## v0.5 — 2026-05-15 (private)
+
+- `bosun suggest "<goal>"` — Claude-API-backed brief authoring. Inspects the repo (RepoIntel), proposes N disjoint lanes, validates, renders to plan markdown.
+- Remaining hook call-sites wired: `pre-merge`, `post-merge`, `pre-cleanup`, `post-cleanup`, `pre-remove`.
+- Kickoff robustness: per-op git timeout (30s default), init progress reporting, 1-minute load-average pre-flight on `bosun init`.
+- `bosun predict <plan.md>` — heuristic conflict prediction across a brief's lanes.
+- `bosun config` round-out: `unset`, `validate`, `init`.
+
+See `docs/v0.5-roadmap.md` and `docs/v0.5-suggest-spec.md`.
+
 ## v0.4.0-rc1 — 2026-05-16
 
 Lifecycle hooks land as a real extension point, the operator gets the integration-rehearsal flags they kept asking for (`merge --dry-run`, `list/show --json`), the web dashboard grows the brief preview + announcement feed, and the round-2 follow-ups close the loop on orphan-dir recovery, in-place config editing, and the bug-hunt findings.

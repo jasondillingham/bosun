@@ -1,12 +1,10 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -420,7 +418,7 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 			}
 			if match != nil {
 				if match.locked {
-					if err := unlockWorktree(rc.ctx, rc.repoRoot, match.path); err != nil {
+					if err := rc.git.UnlockWorktree(rc.ctx, rc.repoRoot, match.path); err != nil {
 						return userErr(
 							"resume: worktree %s is locked and unlock failed (another process may hold the lock): %v\n"+
 								"  if you know it's safe: git worktree unlock %s",
@@ -659,19 +657,6 @@ func sameLabels(a, b []string) bool {
 	return true
 }
 
-// unlockWorktree wraps `git worktree unlock`. Implemented as a free
-// function via os/exec rather than threaded through internal/git so this
-// file owns the resume-recovery surface without colliding with session-1's
-// timeout work in internal/git. Bosun's locking discipline is narrow:
-// the only place anything gets locked is the recovery path after a
-// killed worktree-add, so a one-line unlock is the right shape.
-var unlockWorktree = func(ctx context.Context, repoRoot, path string) error {
-	out, err := exec.CommandContext(ctx, "git", "-C", repoRoot, "worktree", "unlock", path).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
-	}
-	return nil
-}
 
 // resolveInitLabels classifies the positional args into either numbered or
 // named mode and returns the canonical label list bosun init should create.

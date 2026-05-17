@@ -376,6 +376,15 @@ func (c *Client) RemoveWorktree(ctx context.Context, dir, path string, force boo
 	return err
 }
 
+// UnlockWorktree releases a `git worktree lock` on path. Used by the
+// init --resume path to recover a worktree left locked by a prior killed
+// init. Goes through c.run so the configured timeout applies — pre-v0.7+
+// the call site lived in cmd_init.go and bypassed timeout enforcement.
+func (c *Client) UnlockWorktree(ctx context.Context, dir, path string) error {
+	_, err := c.run(ctx, dir, "worktree", "unlock", path)
+	return err
+}
+
 // chmodWritableTree walks root and ORs the user-write (and, for directories,
 // user-execute) bits onto every entry's permission mode. Errors at any
 // individual entry are swallowed — the function returns nil unless the walk

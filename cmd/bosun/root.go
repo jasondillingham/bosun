@@ -32,6 +32,7 @@ worktree, with one place to see what every session is doing.`,
 		newServeCmd(),
 		newSuggestCmd(),
 		newPredictCmd(),
+		newDoctorCmd(),
 	)
 
 	return root

@@ -15,11 +15,12 @@ import (
 
 func newCleanupCmd() *cobra.Command {
 	var (
-		dryRun     bool
-		force      bool
-		purge      bool
-		orphansArg int
-		orphanDirs bool
+		dryRun        bool
+		force         bool
+		purge         bool
+		orphansArg    int
+		orphanDirs    bool
+		ignoreRunning bool
 	)
 
 	cmd := &cobra.Command{
@@ -48,7 +49,7 @@ the v0.3 corruption left behind. Independent of --orphans (which filters by
 session number).`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			opts := cleanupOpts{dryRun: dryRun, force: force, purge: purge, orphanDirs: orphanDirs}
+			opts := cleanupOpts{dryRun: dryRun, force: force, purge: purge, orphanDirs: orphanDirs, ignoreRunning: ignoreRunning}
 			if cmd.Flags().Changed("orphans") {
 				opts.orphansMode = true
 				opts.orphansKeep = orphansArg
@@ -62,6 +63,7 @@ session number).`,
 	cmd.Flags().BoolVar(&purge, "purge", false, "also remove sessions whose committed work isn't on base yet — discards those commits")
 	cmd.Flags().IntVar(&orphansArg, "orphans", 0, "only act on sessions whose number is greater than this (0 means use config.default_session_count)")
 	cmd.Flags().BoolVar(&orphanDirs, "orphan-dirs", false, "also scan parent dir for worktree directories git no longer tracks and remove them")
+	cmd.Flags().BoolVar(&ignoreRunning, "ignore-running", false, "bypass the live-agent safety gate for every session in the batch (discards uncommitted work agents are editing)")
 	// NoOptDefVal lets `--orphans` work without a value (cobra parses it as
 	// `--orphans=0`), at which point runCleanup falls back to the config
 	// default. The string form is what cobra requires here.
@@ -96,6 +98,14 @@ type cleanupOpts struct {
 	// (the v0.3 corruption case: data on disk, admin metadata pruned).
 	// Acts in addition to the normal session sweep.
 	orphanDirs bool
+	// ignoreRunning bypasses the live-agent safety gate for every
+	// session in the batch. The gate skips a session when an agent
+	// process is alive in the worktree AND the worktree is dirty,
+	// because removing it would silently destroy work the agent is
+	// mid-edit on. --force/--purge are orthogonal: those handle the
+	// committed-work-not-on-base case, this handles the in-flight
+	// uncommitted case.
+	ignoreRunning bool
 }
 
 type cleanupAction int
@@ -131,6 +141,21 @@ func planCleanup(sessions []session.Session, opts cleanupOpts, isSquashed squash
 	plans := make([]cleanupPlan, 0, len(sessions))
 	for i := range sessions {
 		s := &sessions[i]
+
+		// Liveness gate: a live agent + dirty worktree means the agent
+		// is mid-edit on uncommitted work. Removing it would silently
+		// destroy that work. Skip with a clear reason — the global
+		// --ignore-running flag is the documented override. Runs before
+		// the committed-work checks so the operator sees the liveness
+		// reason instead of a confusing "would discard" message.
+		if !opts.ignoreRunning && s.Running && s.Dirty > 0 {
+			plans = append(plans, cleanupPlan{
+				s:      s,
+				action: cleanupSkip,
+				reason: fmt.Sprintf("live agent (pid %d) with dirty work (use --ignore-running to override)", s.RunningPID),
+			})
+			continue
+		}
 
 		// Compute the danger signal once. Sessions with no commits ahead
 		// can't lose anything on removal — skip the git calls entirely.

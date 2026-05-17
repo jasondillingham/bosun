@@ -197,6 +197,129 @@ func TestPlanCleanup_NoAheadSkipsGitChecks(t *testing.T) {
 	}
 }
 
+// TestPlanCleanup_LivenessGate is the table-driven coverage of the v0.6
+// agent-liveness safety gate: a session whose worktree has a live agent
+// AND uncommitted changes must be skipped by cleanup so we don't destroy
+// in-flight work. --ignore-running bypasses the gate; it composes with
+// --purge so a session that needs both (live agent + committed work not
+// on base) is reachable in one invocation.
+func TestPlanCleanup_LivenessGate(t *testing.T) {
+	liveDirty := session.Session{
+		Name: "session-1", Branch: "bosun/session-1",
+		State: session.StateWorking, Ahead: 0, Dirty: 1,
+		Running: true, RunningPID: 12345,
+	}
+	liveClean := session.Session{
+		// Live agent but nothing to lose — the gate intentionally
+		// doesn't fire here. Cleanup falls through to "empty" remove.
+		Name: "session-2", Branch: "bosun/session-2",
+		State: session.StateWorking, Ahead: 0, Dirty: 0,
+		Running: true, RunningPID: 12346,
+	}
+	liveDirtyAhead := session.Session{
+		// Live agent, dirty, AND committed work not on base. The
+		// liveness gate fires before the would-discard gate so the
+		// operator gets the more actionable message.
+		Name: "session-3", Branch: "bosun/session-3",
+		State: session.StateWorking, Ahead: 2, Dirty: 1,
+		Running: true, RunningPID: 12347,
+	}
+	deadDirty := session.Session{
+		// No agent process — gate doesn't fire even though dirty.
+		// Existing dirty-only path handles this (skip without --force).
+		Name: "session-4", Branch: "bosun/session-4",
+		State: session.StateWorking, Ahead: 0, Dirty: 1,
+	}
+
+	cases := []struct {
+		name           string
+		sess           session.Session
+		opts           cleanupOpts
+		stub           stubChecks
+		wantAction     cleanupAction
+		reasonContains string
+	}{
+		{
+			name:           "live + dirty → SKIP with liveness reason",
+			sess:           liveDirty,
+			opts:           cleanupOpts{},
+			wantAction:     cleanupSkip,
+			reasonContains: "live agent (pid 12345)",
+		},
+		{
+			name:           "live + dirty + --force → still SKIP (force is orthogonal)",
+			sess:           liveDirty,
+			opts:           cleanupOpts{force: true},
+			wantAction:     cleanupSkip,
+			reasonContains: "--ignore-running",
+		},
+		{
+			name:           "live + dirty + --ignore-running → falls through; --force still required for dirty",
+			sess:           liveDirty,
+			opts:           cleanupOpts{ignoreRunning: true},
+			wantAction:     cleanupSkip,
+			reasonContains: "uncommitted",
+		},
+		{
+			name:           "live + dirty + --ignore-running --force → REMOVE",
+			sess:           liveDirty,
+			opts:           cleanupOpts{ignoreRunning: true, force: true},
+			wantAction:     cleanupRemove,
+			reasonContains: "force-remove",
+		},
+		{
+			name:       "live + clean → gate doesn't fire, empty session is removable",
+			sess:       liveClean,
+			opts:       cleanupOpts{},
+			wantAction: cleanupRemove,
+			// Liveness gate skipped; falls through to empty-session removal.
+			reasonContains: "empty",
+		},
+		{
+			name:           "live + dirty + ahead-with-discard → liveness gate wins over discard gate",
+			sess:           liveDirtyAhead,
+			opts:           cleanupOpts{},
+			stub:           stubChecks{discard: map[string]bool{"bosun/session-3": true}},
+			wantAction:     cleanupSkip,
+			reasonContains: "live agent",
+		},
+		{
+			name:           "live + dirty + ahead + --ignore-running --purge --force → REMOVE (flags compose)",
+			sess:           liveDirtyAhead,
+			opts:           cleanupOpts{ignoreRunning: true, purge: true, force: true},
+			stub:           stubChecks{discard: map[string]bool{"bosun/session-3": true}},
+			wantAction:     cleanupRemove,
+			reasonContains: "--purge",
+		},
+		{
+			name:           "dead + dirty → gate doesn't fire; existing dirty path",
+			sess:           deadDirty,
+			opts:           cleanupOpts{},
+			wantAction:     cleanupSkip,
+			reasonContains: "uncommitted",
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			plans, err := planCleanup([]session.Session{c.sess}, c.opts, c.stub.isSquashed, c.stub.wouldDiscard)
+			if err != nil {
+				t.Fatalf("planCleanup err = %v", err)
+			}
+			if len(plans) != 1 {
+				t.Fatalf("got %d plans, want 1", len(plans))
+			}
+			p := plans[0]
+			if p.action != c.wantAction {
+				t.Fatalf("action = %v, want %v (reason: %q)", p.action, c.wantAction, p.reason)
+			}
+			if c.reasonContains != "" && !strings.Contains(p.reason, c.reasonContains) {
+				t.Fatalf("reason %q does not contain %q", p.reason, c.reasonContains)
+			}
+		})
+	}
+}
+
 // TestCleanupReason maps each invocation shape to the canonical reason
 // string the pre-cleanup hook env will carry. Operators wire on this to
 // filter manual sweeps from automated orphan trims, so a typo here would

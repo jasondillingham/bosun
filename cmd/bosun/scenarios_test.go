@@ -3352,17 +3352,18 @@ func TestScenario_PredictMissingPlan_ExitsNonZero(t *testing.T) {
 	}
 }
 
-// --- v0.6: merge safety (agent-liveness gate, fsck, undo log) ---
 
-// spawnFakeAgent launches the test-only `claude` binary (built in
-// TestMain) with CWD=worktree so proc.Running detects it as a live
-// agent. Returns a cleanup function that kills + reaps the subprocess.
-// Polls `bosun status --json` until the running flag flips on so the
-// subsequent merge invocation definitely sees the process.
-func spawnFakeAgent(t *testing.T, worktree string) func() {
+// --- v0.6: shared fake-agent helper (used by merge/remove/cleanup tests) ---
+
+// startFakeAgent execs the test-built "claude" binary (compiled by
+// TestMain in scenario_test.go) with cwd=worktree so `proc.Running`
+// (which matches on basename + CWD) sees a live agent there. Caller's
+// t.Cleanup kills the process. Skips on Windows (scenarios already
+// skip there) or if the binary wasn't built.
+func startFakeAgent(t *testing.T, worktree string) *exec.Cmd {
 	t.Helper()
 	if runtime.GOOS == "windows" {
-		t.Skip("fake-agent helper uses POSIX process semantics")
+		t.Skip("fake-agent helper uses POSIX exec")
 	}
 	if fakeAgentBin == "" {
 		t.Skip("fake-agent binary not built (see TestMain)")
@@ -3372,23 +3373,18 @@ func spawnFakeAgent(t *testing.T, worktree string) func() {
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start fake claude: %v", err)
 	}
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		c := exec.Command(bosunBin, "status", "--json")
-		c.Dir = worktree
-		out, _ := c.Output()
-		if strings.Contains(string(out), `"running":true`) {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	return func() {
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-			_, _ = cmd.Process.Wait()
-		}
-	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+	})
+	// Absorb scheduler jitter — the process is visible to gopsutil
+	// essentially immediately after Start returns, but a brief pause
+	// before the first bosun call avoids race-skip on busy CI runners.
+	time.Sleep(200 * time.Millisecond)
+	return cmd
 }
+
+// --- v0.6: merge safety (agent-liveness gate, fsck, undo log) ---
 
 func TestScenario_MergeRefusesLiveAgentWithDirtyFiles(t *testing.T) {
 	s := newScenario(t)
@@ -3412,8 +3408,7 @@ func TestScenario_MergeRefusesLiveAgentWithDirtyFiles(t *testing.T) {
 		t.Fatalf("scratch.txt should be untracked, got:\n%s", out)
 	}
 
-	stop := spawnFakeAgent(t, wt1)
-	defer stop()
+	startFakeAgent(t, wt1)
 
 	mergeOut, err := s.BosunErr("merge")
 	if err == nil {
@@ -3444,8 +3439,7 @@ func TestScenario_MergeIgnoreRunningBypassesGate(t *testing.T) {
 	s.Bosun("done", "session-1")
 	s.WriteFileIn(wt1, "scratch.txt", "in progress\n")
 
-	stop := spawnFakeAgent(t, wt1)
-	defer stop()
+	startFakeAgent(t, wt1)
 
 	mergeOut := s.Bosun("merge", "--ignore-running")
 	s.AssertContains(mergeOut, "session-1: merged")
@@ -3606,4 +3600,133 @@ func TestScenario_MergeListUndoEmptyLog(t *testing.T) {
 	s := newScenario(t)
 	out := s.Bosun("merge", "--list-undo")
 	s.AssertContains(out, "no merge history")
+}
+
+// --- v0.6 r1: remove + cleanup agent-liveness gate ---
+
+func TestScenario_RemoveRefusesLiveAgentWithDirty(t *testing.T) {
+	s := newScenario(t)
+	s.Bosun("init", "1")
+
+	wt1 := s.WorktreePath(1)
+	// Dirty the worktree (tracked-file edit; untracked don't count toward Dirty).
+	s.WriteFileIn(wt1, "README.md", "# dirty\n")
+	startFakeAgent(t, wt1)
+
+	out, err := s.BosunErr("remove", "session-1")
+	if err == nil {
+		t.Fatalf("remove with live agent + dirty should refuse; got:\n%s", out)
+	}
+	s.AssertContainsAll(out,
+		"session-1",
+		"live agent",
+		"refusing remove",
+		"--ignore-running",
+	)
+	s.AssertWorktreeExists(1)
+	s.AssertBranchExists("bosun/session-1")
+}
+
+func TestScenario_RemoveIgnoreRunningProceeds(t *testing.T) {
+	s := newScenario(t)
+	s.Bosun("init", "1")
+
+	wt1 := s.WorktreePath(1)
+	s.WriteFileIn(wt1, "README.md", "# dirty\n")
+	startFakeAgent(t, wt1)
+
+	// --ignore-running bypasses the liveness gate; --force is still needed
+	// for the existing dirty gate. Document that both must compose by
+	// asserting --ignore-running alone is not enough.
+	if _, err := s.BosunErr("remove", "session-1", "--ignore-running"); err == nil {
+		t.Fatal("--ignore-running alone should still refuse dirty without --force")
+	}
+	s.Bosun("remove", "session-1", "--ignore-running", "--force")
+	s.AssertWorktreeMissing(1)
+	s.AssertBranchMissing("bosun/session-1")
+}
+
+func TestScenario_CleanupSkipsLiveAgentSessionsProcessesOthers(t *testing.T) {
+	s := newScenario(t)
+	s.Bosun("init", "3")
+
+	// session-1: live agent + dirty → should be skipped by cleanup.
+	wt1 := s.WorktreePath(1)
+	s.WriteFileIn(wt1, "README.md", "# dirty\n")
+	startFakeAgent(t, wt1)
+
+	// session-2: DONE + merged → removable.
+	wt2 := s.WorktreePath(2)
+	s.WriteFileIn(wt2, "feature.txt", "x\n")
+	s.CommitIn(wt2, "feature")
+	s.Bosun("done", "session-2")
+	s.Bosun("merge")
+
+	// session-3: empty → removable.
+
+	out := s.Bosun("cleanup")
+	s.AssertContainsAll(out,
+		"session-1: skipped",
+		"live agent",
+		"--ignore-running",
+		"session-2: removed",
+		"session-3: removed",
+		"removed 2, skipped 1",
+	)
+	s.AssertWorktreeExists(1)
+	s.AssertWorktreeMissing(2)
+	s.AssertWorktreeMissing(3)
+}
+
+func TestScenario_CleanupIgnoreRunningProcessesEverything(t *testing.T) {
+	s := newScenario(t)
+	s.Bosun("init", "2")
+
+	wt1 := s.WorktreePath(1)
+	s.WriteFileIn(wt1, "README.md", "# dirty\n")
+	startFakeAgent(t, wt1)
+
+	// session-2: also dirty (no live agent) — covered by --force.
+	wt2 := s.WorktreePath(2)
+	s.WriteFileIn(wt2, "README.md", "# dirty too\n")
+
+	// --ignore-running bypasses the liveness gate; --force handles the
+	// existing dirty path. Both sessions should be removed.
+	out := s.Bosun("cleanup", "--ignore-running", "--force")
+	s.AssertContainsAll(out, "session-1: removed", "session-2: removed")
+	s.AssertWorktreeMissing(1)
+	s.AssertWorktreeMissing(2)
+}
+
+func TestScenario_CleanupPurgeAndIgnoreRunningCompose(t *testing.T) {
+	// A session that needs BOTH gates bypassed to remove: live agent +
+	// uncommitted changes (liveness gate) AND committed work not on
+	// base (purge gate). --ignore-running --purge --force together should
+	// remove it; any subset should leave it alone.
+	s := newScenario(t)
+	s.Bosun("init", "1")
+
+	wt1 := s.WorktreePath(1)
+	// Committed work that isn't on base (would-discard shape).
+	s.WriteFileIn(wt1, "feature.txt", "x\n")
+	s.CommitIn(wt1, "feature")
+	// Uncommitted edit on top.
+	s.WriteFileIn(wt1, "README.md", "# dirty\n")
+	startFakeAgent(t, wt1)
+
+	// Plain cleanup: liveness gate fires first.
+	out := s.Bosun("cleanup")
+	s.AssertContainsAll(out, "session-1: skipped", "live agent")
+	s.AssertWorktreeExists(1)
+
+	// --ignore-running alone: falls through to purge gate, still skipped.
+	out = s.Bosun("cleanup", "--ignore-running")
+	s.AssertContains(out, "session-1: skipped")
+	s.AssertWorktreeExists(1)
+
+	// All three together → removable.
+	out = s.Bosun("cleanup", "--ignore-running", "--purge", "--force")
+	s.AssertContains(out, "session-1: removed")
+	s.AssertWorktreeMissing(1)
+	s.AssertBranchMissing("bosun/session-1")
 }

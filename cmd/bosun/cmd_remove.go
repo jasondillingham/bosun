@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strconv"
 
 	"github.com/jasondillingham/bosun/internal/hooks"
@@ -17,23 +18,27 @@ func init() {
 }
 
 func newRemoveCmd() *cobra.Command {
-	var force bool
+	var (
+		force         bool
+		ignoreRunning bool
+	)
 
 	cmd := &cobra.Command{
 		Use:   "remove <session>",
 		Short: "Tear down a session's worktree + branch",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runRemove(cmd, args[0], force)
+			return runRemove(cmd, args[0], force, ignoreRunning)
 		},
 	}
 
 	cmd.Flags().BoolVar(&force, "force", false, "remove even if dirty or unmerged")
+	cmd.Flags().BoolVar(&ignoreRunning, "ignore-running", false, "bypass the live-agent safety gate (discards uncommitted work the agent is editing)")
 
 	return cmd
 }
 
-func runRemove(cmd *cobra.Command, sessionArg string, force bool) error {
+func runRemove(cmd *cobra.Command, sessionArg string, force, ignoreRunning bool) error {
 	rc, err := loadCtx()
 	if err != nil {
 		return err
@@ -76,6 +81,16 @@ func runRemove(cmd *cobra.Command, sessionArg string, force bool) error {
 		_ = rc.state.Clear(label)
 		printf("bosun: removed %s (worktree dir was already gone; cleaned up branch + state)\n", label)
 		return nil
+	}
+
+	// Liveness gate: if an agent is actively editing this worktree AND
+	// the tree is dirty, refuse before touching anything. The committed
+	// work is recoverable from the branch; the uncommitted work the agent
+	// is mid-edit on is what `rm -rf` would silently destroy. --force
+	// alone is too coarse here (operators reach for it routinely) — the
+	// --ignore-running opt-in is loud enough that no one trips it twice.
+	if !ignoreRunning && s.Running && s.Dirty > 0 {
+		return userErr("%s", liveAgentRemoveMessage(label, s.RunningPID))
 	}
 
 	// destructive controls whether we let git's own safety checks (`branch -d`,
@@ -130,4 +145,19 @@ func runRemove(cmd *cobra.Command, sessionArg string, force bool) error {
 
 	printf("bosun: removed %s (worktree + branch + state)\n", label)
 	return nil
+}
+
+// liveAgentRemoveMessage is the user-facing error returned when the
+// liveness gate fires on `bosun remove`. The recovery hint names both
+// the "let it finish" path (the safe default) and the --ignore-running
+// escape hatch so the operator never has to grep our docs to recover.
+// Returned as a single multi-line string — userErr stitches the
+// "bosun: " prefix on the first line via its formatter.
+func liveAgentRemoveMessage(label string, pid int) string {
+	return fmt.Sprintf(
+		"%s has a live agent (pid %d) and uncommitted changes — refusing remove\n"+
+			"       to avoid losing in-flight work. Recovery:\n"+
+			"       - let the agent finish, OR\n"+
+			"       - bosun remove %s --ignore-running (discards uncommitted work)",
+		label, pid, label)
 }

@@ -49,20 +49,98 @@ func TestPredict_OwnedAvoidLists(t *testing.T) {
 		"internal/predict/types.go",
 		"internal/predict/predict.go",
 		"internal/predict/predict_test.go",
-		"cmd/bosun/",
-		"internal/mcp/",
 	} {
 		if !containsPath(got.Predicted, want) {
 			t.Errorf("missing predicted path %q in %v", want, got.Predicted)
+		}
+	}
+	for _, avoided := range []string{"cmd/bosun/", "internal/mcp/"} {
+		if containsPath(got.Predicted, avoided) {
+			t.Errorf("avoid-list path %q must NOT appear in Predicted: %v", avoided, got.Predicted)
+		}
+		if !containsPath(got.Avoid, avoided) {
+			t.Errorf("expected %q in Avoid, got %v", avoided, got.Avoid)
 		}
 	}
 	idxOwned := indexOf(got.Predicted, "internal/predict/types.go")
 	if idxOwned < 0 || got.Source[idxOwned] != "owned list" {
 		t.Errorf("expected `owned list` source for types.go, got %q", got.Source[idxOwned])
 	}
-	idxAvoid := indexOf(got.Predicted, "internal/mcp/")
-	if idxAvoid < 0 || got.Source[idxAvoid] != "avoid list" {
-		t.Errorf("expected `avoid list` source for internal/mcp/, got %q", got.Source[idxAvoid])
+}
+
+// TestPredict_AvoidListExcludedFromOverlaps is the regression test for
+// the v0.6-round1 false-positive blowup: when two briefs both put a
+// shared lane like `internal/auth/` on their "Files (avoid)" list, the
+// predictor must not flag that as an overlap — neither session is
+// going to touch it.
+func TestPredict_AvoidListExcludedFromOverlaps(t *testing.T) {
+	briefs := []brief.Brief{
+		{
+			Label: "session-1",
+			Body: strings.Join([]string{
+				"Files (own):",
+				"- `internal/foo/foo.go`",
+				"",
+				"Files (avoid):",
+				"- `internal/shared/`",
+				"- `cmd/bosun/cmd_merge.go`",
+			}, "\n"),
+		},
+		{
+			Label: "session-2",
+			Body: strings.Join([]string{
+				"Files (own):",
+				"- `internal/bar/bar.go`",
+				"",
+				"Files (avoid):",
+				"- `internal/shared/`",
+				"- `cmd/bosun/cmd_merge.go`",
+			}, "\n"),
+		},
+	}
+	preds, overlaps, err := New().Predict(briefs)
+	if err != nil {
+		t.Fatalf("Predict: %v", err)
+	}
+	if len(overlaps) != 0 {
+		t.Errorf("two sessions sharing only an avoid list must not overlap, got %d: %+v", len(overlaps), overlaps)
+	}
+	for _, p := range preds {
+		for _, avoided := range []string{"internal/shared/", "cmd/bosun/cmd_merge.go"} {
+			if containsPath(p.Predicted, avoided) {
+				t.Errorf("%s: avoid-list path %q leaked into Predicted: %v", p.Session, avoided, p.Predicted)
+			}
+		}
+	}
+}
+
+// TestPredict_AvoidListSuppressesInlineMention covers a subtler case:
+// even if a path appears in prose elsewhere in the brief, listing it
+// under "Files (avoid)" should keep it out of the predicted set —
+// otherwise the inline-mention scan would re-introduce the false
+// positive the explicit list was meant to suppress.
+func TestPredict_AvoidListSuppressesInlineMention(t *testing.T) {
+	briefs := []brief.Brief{{
+		Label: "session-1",
+		Body: strings.Join([]string{
+			"Edit internal/foo/foo.go and leave cmd/bosun/cmd_merge.go alone.",
+			"",
+			"Files (own):",
+			"- `internal/foo/foo.go`",
+			"",
+			"Files (avoid):",
+			"- `cmd/bosun/cmd_merge.go`",
+		}, "\n"),
+	}}
+	preds, _, err := New().Predict(briefs)
+	if err != nil {
+		t.Fatalf("Predict: %v", err)
+	}
+	if containsPath(preds[0].Predicted, "cmd/bosun/cmd_merge.go") {
+		t.Errorf("avoid-listed path picked up by inline mention: %v", preds[0].Predicted)
+	}
+	if !containsPath(preds[0].Avoid, "cmd/bosun/cmd_merge.go") {
+		t.Errorf("expected cmd/bosun/cmd_merge.go in Avoid, got %v", preds[0].Avoid)
 	}
 }
 

@@ -27,13 +27,14 @@ func (h *Heuristic) Predict(briefs []brief.Brief) ([]Prediction, []Overlap, erro
 	preds := make([]Prediction, 0, len(briefs))
 	for _, b := range briefs {
 		label := labelOf(b)
-		paths, sources := extractPaths(b.Body)
+		paths, sources, avoid := extractPaths(b.Body)
 		pred := Prediction{
 			Session:   label,
 			Scope:     firstNonEmptyLine(b.Body),
 			Paths:     make([]PredictedPath, 0, len(paths)),
 			Predicted: paths,
 			Source:    sources,
+			Avoid:     avoid,
 		}
 		for i, p := range paths {
 			reason := ""
@@ -101,12 +102,16 @@ var knownExts = map[string]bool{
 	".dockerfile": true, ".lock": true, ".mod": true, ".sum": true,
 }
 
-// extractPaths returns the predicted paths and a parallel slice of
-// source labels explaining why each was predicted. Entries are deduped
-// preserving the first occurrence (highest-confidence source wins,
-// since we scan owned/avoid lists before code blocks before inline
-// mentions).
-func extractPaths(body string) ([]string, []string) {
+// extractPaths returns the predicted paths, a parallel slice of source
+// labels explaining why each was predicted, and the avoid list parsed
+// from the brief (kept separate so the predictor doesn't conflate
+// "session-N must NOT touch X" with "session-N is predicted to touch
+// X"). Predicted entries are deduped preserving the first occurrence
+// (highest-confidence source wins, since we scan the owned list before
+// code blocks before inline mentions). Avoid-listed paths are also
+// excluded from inline-mention pickups so a brief that names a file
+// only to forbid it doesn't get it counted as a prediction.
+func extractPaths(body string) ([]string, []string, []string) {
 	type entry struct {
 		path   string
 		source string
@@ -114,9 +119,29 @@ func extractPaths(body string) ([]string, []string) {
 	var entries []entry
 	seen := make(map[string]struct{})
 
+	// Pre-compute the avoid set so later inline-mention scans skip
+	// anything the brief has explicitly told the session NOT to touch.
+	avoidRaw := extractListSection(body, "Files (avoid)")
+	avoidSet := make(map[string]struct{}, len(avoidRaw))
+	avoid := make([]string, 0, len(avoidRaw))
+	for _, p := range avoidRaw {
+		clean := cleanPath(p)
+		if clean == "" || !isPathLike(clean) {
+			continue
+		}
+		if _, dup := avoidSet[clean]; dup {
+			continue
+		}
+		avoidSet[clean] = struct{}{}
+		avoid = append(avoid, clean)
+	}
+
 	add := func(raw, src string) {
 		p := cleanPath(raw)
 		if p == "" || !isPathLike(p) {
+			return
+		}
+		if _, blocked := avoidSet[p]; blocked {
 			return
 		}
 		if _, dup := seen[p]; dup {
@@ -126,13 +151,11 @@ func extractPaths(body string) ([]string, []string) {
 		entries = append(entries, entry{path: p, source: src})
 	}
 
-	// 1. Explicit owned / avoid lists — the operator (or `bosun suggest`)
-	//    put them there on purpose. Highest confidence.
+	// 1. Explicit owned list — highest confidence. The avoid list is
+	//    intentionally NOT added to predicted: it documents what the
+	//    session must steer clear of, not what it's going to edit.
 	for _, p := range extractListSection(body, "Files (own)") {
 		add(p, "owned list")
-	}
-	for _, p := range extractListSection(body, "Files (avoid)") {
-		add(p, "avoid list")
 	}
 
 	// 2. Code-block fences — concrete file references almost always.
@@ -164,7 +187,7 @@ func extractPaths(body string) ([]string, []string) {
 		paths[i] = e.path
 		sources[i] = e.source
 	}
-	return paths, sources
+	return paths, sources, avoid
 }
 
 // cleanPath strips markdown noise (backticks, surrounding quotes,

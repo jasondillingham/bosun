@@ -33,6 +33,13 @@ type Prediction struct {
 	// this merge. New callers should use Paths.
 	Predicted []string `json:"-"`
 	Source    []string `json:"-"`
+
+	// Avoid is the set of paths the brief explicitly told this session
+	// NOT to touch (parsed from the "Files (avoid)" list). These paths
+	// are excluded from Predicted / Paths — the predictor surfaces them
+	// here so an operator-side check or future MCP tool can flag a
+	// claim that crosses into another session's avoid lane.
+	Avoid []string `json:"avoid,omitempty"`
 }
 
 // PredictedPath is one path the heuristic expects a session to touch and

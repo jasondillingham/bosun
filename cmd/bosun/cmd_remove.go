@@ -254,9 +254,19 @@ func salvageWorktreeContent(rc *runCtx, label, worktreePath string) (string, int
 	if err := os.MkdirAll(dest, 0o755); err != nil {
 		return "", 0, err
 	}
-	n, err := copyWorktreeBestEffort(worktreePath, dest)
+	n, skipped, err := copyWorktreeBestEffort(worktreePath, dest)
 	if err != nil {
 		return "", 0, err
+	}
+	// Surface every dropped file individually + a summary line. In a
+	// corrupted-gitdir rescue the operator NEEDS to know which files
+	// didn't make it into the snapshot; the silent "salvaged N" count
+	// the previous shape produced was load-bearing misinformation.
+	for _, s := range skipped {
+		fmt.Fprintf(os.Stderr, "bosun: rescue: skipped %s (%s)\n", s.rel, s.reason)
+	}
+	if len(skipped) > 0 {
+		fmt.Fprintf(os.Stderr, "bosun: rescue: %d file(s) couldn't be salvaged — see warnings above\n", len(skipped))
 	}
 	if n == 0 {
 		_ = os.Remove(dest)
@@ -265,18 +275,35 @@ func salvageWorktreeContent(rc *runCtx, label, worktreePath string) (string, int
 	return dest, n, nil
 }
 
+// skippedItem records one file the best-effort salvage couldn't copy.
+// In a corrupted-gitdir crisis, the operator needs to know which files
+// were preserved vs lost — silently returning a "salvaged N files"
+// count without naming the rest is a foot-gun.
+type skippedItem struct {
+	rel    string
+	reason string
+}
+
 // copyWorktreeBestEffort walks src and copies every regular file (and
 // symlink) under it to dest, skipping `.git` (a stale pointer file that
 // would make the snapshot itself look like a broken worktree). Used as
 // the fallback when `git status` fails because the gitdir is corrupted.
-func copyWorktreeBestEffort(src, dest string) (int, error) {
+//
+// Returns (copied, skipped, walkErr). Per-file errors (unreadable
+// symlinks, copyFile failures) are not fatal — the salvage is
+// best-effort — but they ARE recorded in skipped so the caller can
+// surface the list to the operator instead of pretending the snapshot
+// is complete.
+func copyWorktreeBestEffort(src, dest string) (int, []skippedItem, error) {
 	n := 0
+	var skipped []skippedItem
 	err := filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil
-		}
 		rel, rerr := filepath.Rel(src, path)
 		if rerr != nil {
+			rel = path
+		}
+		if err != nil {
+			skipped = append(skipped, skippedItem{rel: rel, reason: fmt.Sprintf("walk error: %v", err)})
 			return nil
 		}
 		if rel == "." {
@@ -299,12 +326,14 @@ func copyWorktreeBestEffort(src, dest string) (int, error) {
 		case info.Mode()&os.ModeSymlink != 0:
 			target, terr := os.Readlink(path)
 			if terr != nil {
+				skipped = append(skipped, skippedItem{rel: rel, reason: fmt.Sprintf("readlink: %v", terr)})
 				return nil
 			}
 			if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
 				return err
 			}
 			if err := os.Symlink(target, out); err != nil {
+				skipped = append(skipped, skippedItem{rel: rel, reason: fmt.Sprintf("symlink: %v", err)})
 				return nil
 			}
 			n++
@@ -313,13 +342,14 @@ func copyWorktreeBestEffort(src, dest string) (int, error) {
 				return err
 			}
 			if err := copyFile(path, out, info.Mode().Perm()); err != nil {
+				skipped = append(skipped, skippedItem{rel: rel, reason: fmt.Sprintf("copy: %v", err)})
 				return nil
 			}
 			n++
 		}
 		return nil
 	})
-	return n, err
+	return n, skipped, err
 }
 
 // liveAgentRemoveMessage is the user-facing error returned when the

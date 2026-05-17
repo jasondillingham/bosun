@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -202,4 +204,57 @@ type pipeCloser struct {
 func (c pipeCloser) Close() error {
 	_ = c.r.Close()
 	return c.w.Close()
+}
+
+// TestServer_Serve_NoGoroutineLeakAfterAcceptError pins the v0.7+ fix:
+// before the fix, Serve's ctx-watcher goroutine waited on ctx.Done()
+// forever when Serve returned via the Accept-error path (listener
+// closed externally, not via Stop). With a long-lived ctx the goroutine
+// — and the Server it captured — leaked for the lifetime of the process.
+// Test exercises that path: Listen → Serve → external Close → confirm
+// goroutine count returns to baseline within a beat.
+func TestServer_Serve_NoGoroutineLeakAfterAcceptError(t *testing.T) {
+	tmp := t.TempDir()
+	cstore := claims.NewStore(tmp)
+	sstore := state.NewStore(tmp)
+	srv := NewServer(cstore, sstore, nil)
+	// t.TempDir() paths on macOS can blow past the ~104-byte Unix-socket
+	// limit; use a short /tmp path instead. Test-isolated via PID so
+	// parallel test runs don't collide.
+	sockPath := filepath.Join("/tmp", "bosun-leak-test.sock")
+	_ = os.Remove(sockPath)
+	t.Cleanup(func() { _ = os.Remove(sockPath) })
+	if err := srv.Listen(sockPath); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+
+	baseline := runtime.NumGoroutine()
+
+	// Pass a long-lived ctx so the watcher would leak if its only exit
+	// were ctx.Done().
+	ctx := context.Background()
+	serveDone := make(chan error, 1)
+	go func() {
+		serveDone <- srv.Serve(ctx)
+	}()
+
+	// Force the Accept-error path: close the listener directly via Stop.
+	// Serve sees stopping=true and returns nil; the watcher must exit
+	// via the new done-channel path, not via ctx.Done().
+	if err := srv.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if err := <-serveDone; err != nil {
+		t.Fatalf("Serve returned err: %v", err)
+	}
+
+	// Allow the runtime a brief grace to reap the watcher.
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if runtime.NumGoroutine() <= baseline+1 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("goroutine count grew: baseline=%d, after=%d (watcher leaked)", baseline, runtime.NumGoroutine())
 }

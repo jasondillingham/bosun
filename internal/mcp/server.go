@@ -159,10 +159,20 @@ func (s *Server) Serve(ctx context.Context) error {
 	if s.listener == nil {
 		return errors.New("mcp: Serve called before Listen")
 	}
-	// Close the listener when ctx is cancelled so Accept unblocks.
+	// Close the listener when ctx is cancelled so Accept unblocks. The
+	// done channel lets the watcher goroutine exit when Serve returns
+	// for any other reason (Accept error not caused by Stop) — without
+	// it, the goroutine waits on ctx.Done() forever, holding a reference
+	// to s. In a long-running MCP daemon those leaks compound over the
+	// lifetime of the process.
+	done := make(chan struct{})
+	defer close(done)
 	go func() {
-		<-ctx.Done()
-		_ = s.Stop()
+		select {
+		case <-ctx.Done():
+			_ = s.Stop()
+		case <-done:
+		}
 	}()
 
 	for {

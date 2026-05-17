@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jasondillingham/bosun/internal/lockfile"
 	"github.com/jasondillingham/bosun/internal/phantom"
 	"github.com/jasondillingham/bosun/internal/session"
 )
@@ -80,7 +81,7 @@ func isPhantomStateFile(name string) bool {
 // expected DONE or STUCK). mu covers in-process callers; cross-process
 // callers (e.g. a `bosun done` CLI invocation racing the MCP daemon's
 // bosun_done tool) serialize via the POSIX flock on .bosun/state/.lock
-// — see lock_unix.go for the full rationale.
+// — see internal/lockfile for the shared implementation.
 type Store struct {
 	repoRoot string
 	mu       sync.Mutex
@@ -111,7 +112,7 @@ func (s *Store) MarkDone(sessionName, message string) error {
 	if err := os.MkdirAll(s.dir(), 0o755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", s.dir(), err)
 	}
-	return withStateLock(s.dir(), func() error {
+	return lockfile.WithLock(filepath.Join(s.dir(), ".lock"), func() error {
 		body := buildBody(message)
 		if err := os.WriteFile(s.path(sessionName, "done"), []byte(body), 0o644); err != nil {
 			return fmt.Errorf("write done marker: %w", err)
@@ -129,7 +130,7 @@ func (s *Store) MarkStuck(sessionName, message string) error {
 	if err := os.MkdirAll(s.dir(), 0o755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", s.dir(), err)
 	}
-	return withStateLock(s.dir(), func() error {
+	return lockfile.WithLock(filepath.Join(s.dir(), ".lock"), func() error {
 		body := buildBody(message)
 		if err := os.WriteFile(s.path(sessionName, "stuck"), []byte(body), 0o644); err != nil {
 			return fmt.Errorf("write stuck marker: %w", err)
@@ -145,7 +146,7 @@ func (s *Store) MarkStuck(sessionName, message string) error {
 func (s *Store) Clear(sessionName string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return withStateLock(s.dir(), func() error {
+	return lockfile.WithLock(filepath.Join(s.dir(), ".lock"), func() error {
 		for _, suffix := range []string{"done", "stuck"} {
 			err := os.Remove(s.path(sessionName, suffix))
 			if err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -171,7 +172,7 @@ func (s *Store) WriteHeartbeat(sessionName string) error {
 	if err := os.MkdirAll(s.dir(), 0o755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", s.dir(), err)
 	}
-	return withStateLock(s.dir(), func() error {
+	return lockfile.WithLock(filepath.Join(s.dir(), ".lock"), func() error {
 		body := time.Now().UTC().Format(time.RFC3339Nano) + "\n"
 		if err := os.WriteFile(s.path(sessionName, "heartbeat"), []byte(body), 0o644); err != nil {
 			return fmt.Errorf("write heartbeat: %w", err)

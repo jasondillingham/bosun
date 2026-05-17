@@ -26,6 +26,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/jasondillingham/bosun/internal/lockfile"
 )
 
 // Step labels for the per-session pipeline. Stored in InitState.CurrentStep
@@ -231,7 +233,7 @@ func (s *InitState) writeLocked(repoRoot string) error {
 	if err := os.MkdirAll(filepath.Join(repoRoot, dirRelative), 0o755); err != nil {
 		return fmt.Errorf("mkdir .bosun: %w", err)
 	}
-	return withInitLock(repoRoot, func() error {
+	return lockfile.WithLock(filepath.Join(repoRoot, lockRelative), func() error {
 		data, err := json.MarshalIndent(s, "", "  ")
 		if err != nil {
 			return fmt.Errorf("marshal init state: %w", err)

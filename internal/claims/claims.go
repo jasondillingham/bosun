@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jasondillingham/bosun/internal/lockfile"
 	"github.com/jasondillingham/bosun/internal/phantom"
 )
 
@@ -70,7 +71,7 @@ func (s *Store) Add(session string, paths []string) error {
 	if err := os.MkdirAll(s.dir(), 0o755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", s.dir(), err)
 	}
-	return withStoreLock(s.dir(), func() error {
+	return lockfile.WithLock(filepath.Join(s.dir(), ".lock"), func() error {
 		existing, err := s.readLocked(session)
 		if err != nil {
 			return err
@@ -95,7 +96,7 @@ func (s *Store) Replace(session string, paths []string) error {
 	if err := os.MkdirAll(s.dir(), 0o755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", s.dir(), err)
 	}
-	return withStoreLock(s.dir(), func() error {
+	return lockfile.WithLock(filepath.Join(s.dir(), ".lock"), func() error {
 		merged := dedupe(normalizeAll(paths))
 		sort.Strings(merged)
 		c := &Claim{Session: session, Paths: merged, UpdatedAt: time.Now().UTC()}
@@ -112,7 +113,7 @@ func (s *Store) Remove(session string, paths []string) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var removed int
-	err := withStoreLock(s.dir(), func() error {
+	err := lockfile.WithLock(filepath.Join(s.dir(), ".lock"), func() error {
 		existing, err := s.readLocked(session)
 		if err != nil {
 			return err
@@ -154,7 +155,7 @@ func (s *Store) Remove(session string, paths []string) (int, error) {
 func (s *Store) Clear(session string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return withStoreLock(s.dir(), func() error {
+	return lockfile.WithLock(filepath.Join(s.dir(), ".lock"), func() error {
 		return s.clearLocked(session)
 	})
 }

@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jasondillingham/bosun/internal/lockfile"
 	bosunmcp "github.com/jasondillingham/bosun/internal/mcp"
 )
 
@@ -49,7 +50,7 @@ func ensureMcp(repoRoot string) (mcpServerInfo, error) {
 			return mcpServerInfo{socketPath: sock}, nil
 		}
 	}
-	return withMcpSpawnLock(repoRoot, func() (mcpServerInfo, error) {
+	return lockfile.WithLockResult(filepath.Join(repoRoot, ".bosun", "mcp.lock"), func() (mcpServerInfo, error) {
 		// Re-check inside the lock: another caller may have spawned a
 		// daemon while we were waiting for the flock.
 		if info, ok := readMcpPidfile(repoRoot); ok && isProcessAlive(info.pid) && isSocketAlive(info.socketPath) {

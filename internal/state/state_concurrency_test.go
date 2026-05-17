@@ -67,7 +67,7 @@ func TestMarkConcurrent_AlwaysOneMarker(t *testing.T) {
 // be DONE or STUCK.
 func TestMarkConcurrent_CrossProcessFlock(t *testing.T) {
 	if runtime.GOOS == "windows" {
-		t.Skip("withStateLock is a no-op on Windows builds")
+		t.Skip("lockfile.WithLock is a no-op on Windows builds")
 	}
 	dir := t.TempDir()
 	storeA := NewStore(dir)
@@ -124,7 +124,7 @@ func TestMarkConcurrent_CrossProcessFlock(t *testing.T) {
 // final state being DONE rather than WORKING.
 func TestClearConcurrent_CrossProcessFlock(t *testing.T) {
 	if runtime.GOOS == "windows" {
-		t.Skip("withStateLock is a no-op on Windows builds")
+		t.Skip("lockfile.WithLock is a no-op on Windows builds")
 	}
 	dir := t.TempDir()
 	storeA := NewStore(dir)

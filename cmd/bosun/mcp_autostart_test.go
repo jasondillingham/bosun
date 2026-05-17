@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jasondillingham/bosun/internal/lockfile"
 	bosunmcp "github.com/jasondillingham/bosun/internal/mcp"
 )
 
@@ -66,7 +67,7 @@ func TestInheritedSocketBelongsToRepo(t *testing.T) {
 // holding the lock and asserts the counter never observed >1 in flight.
 func TestWithMcpSpawnLock_SerializesCallers(t *testing.T) {
 	if runtime.GOOS == "windows" {
-		t.Skip("withMcpSpawnLock is a no-op on Windows builds")
+		t.Skip("lockfile.WithLockResult is a no-op on Windows builds")
 	}
 	repoRoot := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(repoRoot, ".bosun"), 0o755); err != nil {
@@ -82,7 +83,7 @@ func TestWithMcpSpawnLock_SerializesCallers(t *testing.T) {
 	for i := 0; i < callers; i++ {
 		go func() {
 			defer wg.Done()
-			_, err := withMcpSpawnLock(repoRoot, func() (mcpServerInfo, error) {
+			_, err := lockfile.WithLockResult(filepath.Join(repoRoot, ".bosun", "mcp.lock"), func() (mcpServerInfo, error) {
 				cur := atomic.AddInt32(&inFlight, 1)
 				for {
 					prev := atomic.LoadInt32(&maxInFlight)
@@ -113,7 +114,7 @@ func TestWithMcpSpawnLock_SerializesCallers(t *testing.T) {
 // socketPath without re-spawning. The spawn counter must end at 1.
 func TestWithMcpSpawnLock_ReuseShortCircuit(t *testing.T) {
 	if runtime.GOOS == "windows" {
-		t.Skip("withMcpSpawnLock is a no-op on Windows builds")
+		t.Skip("lockfile.WithLockResult is a no-op on Windows builds")
 	}
 	repoRoot := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(repoRoot, ".bosun"), 0o755); err != nil {
@@ -154,7 +155,7 @@ func TestWithMcpSpawnLock_ReuseShortCircuit(t *testing.T) {
 	for i := 0; i < callers; i++ {
 		go func(i int) {
 			defer wg.Done()
-			info, err := withMcpSpawnLock(repoRoot, doSpawn)
+			info, err := lockfile.WithLockResult(filepath.Join(repoRoot, ".bosun", "mcp.lock"), doSpawn)
 			if err != nil {
 				t.Errorf("caller %d: %v", i, err)
 				return

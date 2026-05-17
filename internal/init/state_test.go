@@ -246,7 +246,7 @@ func TestSessionLabels_PersistsAcrossReload(t *testing.T) {
 // only thing serialising them.
 func TestConcurrentWritesDoNotTear(t *testing.T) {
 	if runtime.GOOS == "windows" {
-		t.Skip("withInitLock is a no-op on Windows builds")
+		t.Skip("lockfile.WithLock is a no-op on Windows builds")
 	}
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, dirRelative), 0o755); err != nil {

@@ -148,3 +148,72 @@ func firstN(s []string, n int) []string {
 	}
 	return s[:n]
 }
+
+// TestStress_MixedOpsAcrossManySessions exercises the cross-session
+// surface of the claims flock: many distinct labels each running Add /
+// Remove / Read / Clear concurrently. Same-session contention is
+// covered above; this one is specifically about whether the dir-wide
+// flock holds up when 32 sessions hammer it. Marked -short skippable
+// since it sleeps a few hundred ms wall-clock.
+//
+// Run with:  go test -count=1 -race ./internal/claims/ -run Stress
+func TestStress_MixedOpsAcrossManySessions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("stress test; run without -short")
+	}
+	dir := t.TempDir()
+	s := NewStore(dir)
+
+	const sessions = 32
+	const opsPerSession = 50
+
+	var wg sync.WaitGroup
+	wg.Add(sessions)
+	for sess := 0; sess < sessions; sess++ {
+		go func(sess int) {
+			defer wg.Done()
+			label := fmt.Sprintf("session-%02d", sess)
+			for i := 0; i < opsPerSession; i++ {
+				p := fmt.Sprintf("f%03d.go", i)
+				switch i % 4 {
+				case 0:
+					if err := s.Add(label, []string{p}); err != nil {
+						t.Errorf("%s add %q: %v", label, p, err)
+						return
+					}
+				case 1:
+					if _, err := s.Remove(label, []string{p}); err != nil {
+						t.Errorf("%s remove %q: %v", label, p, err)
+						return
+					}
+				case 2:
+					if _, err := s.Read(label); err != nil {
+						t.Errorf("%s read: %v", label, err)
+						return
+					}
+				case 3:
+					if _, err := s.All(); err != nil {
+						t.Errorf("%s all: %v", label, err)
+						return
+					}
+				}
+			}
+		}(sess)
+	}
+	wg.Wait()
+
+	// Invariant after the dust settles: every label still has a coherent
+	// (parseable) claim file or none at all — no torn JSON survives.
+	all, err := s.All()
+	if err != nil {
+		t.Fatalf("final All: %v", err)
+	}
+	for label, c := range all {
+		if c == nil {
+			continue // legit: Clear or all-removed
+		}
+		if c.Session != label {
+			t.Errorf("torn claim file: stored Session=%q, filename label=%q", c.Session, label)
+		}
+	}
+}

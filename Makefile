@@ -2,7 +2,13 @@ BINARY := bosun
 PKG := github.com/jasondillingham/bosun/cmd/bosun
 DIST := dist
 
-.PHONY: build test test-race test-cover check vet tidy cross clean install demo help
+.PHONY: build test test-race test-cover check vet tidy cross clean install demo help fuzz stress
+
+# How long each fuzz target runs when invoked via `make fuzz`. Override
+# with `FUZZTIME=5m make fuzz` for deeper sessions. The Go fuzzer keeps
+# any new failing inputs in testdata/fuzz/<target>/ so a regression
+# stays caught even after the time-bounded run completes.
+FUZZTIME ?= 30s
 
 help:
 	@echo "Bosun — make targets:"
@@ -17,6 +23,8 @@ help:
 	@echo "  demo        Run the interactive end-to-end demo in a sandbox"
 	@echo "  demo-fast   Run the demo without pausing between steps"
 	@echo "  check       vet + race tests + demo dry-run (run before commits)"
+	@echo "  fuzz        Run every Fuzz* target for FUZZTIME each (default 30s)"
+	@echo "  stress      Run stress + concurrency tests (no -short)"
 
 build:
 	go build -o $(BINARY) ./cmd/bosun
@@ -58,6 +66,44 @@ demo: build
 
 demo-fast: build
 	@./examples/demo.sh --no-wait
+
+# Run every Fuzz* target for FUZZTIME each. Go fuzz is per-package
+# (only one Fuzz* can run at a time per `go test` invocation), so we
+# enumerate packages explicitly. Failing corpus entries land in
+# testdata/fuzz/<target>/ and get replayed on every subsequent run.
+#
+# Use:
+#   make fuzz                       # default 30s per target
+#   FUZZTIME=5m make fuzz           # deeper run before a release
+#   FUZZTIME=1h make fuzz           # overnight session
+fuzz:
+	@for pkg in \
+		./internal/brief/ \
+		./internal/predict/ \
+		./internal/session/ \
+		./internal/phantom/ \
+		./internal/preflight/; do \
+		echo ""; \
+		printf '\033[1;36m▶ fuzz %s (%s)\033[0m\n' $$pkg "$(FUZZTIME)"; \
+		funcs=$$(grep -h '^func Fuzz' $$pkg*_test.go 2>/dev/null | awk '{print $$2}' | sed 's/(.*//') ; \
+		for fn in $$funcs; do \
+			echo "  $$fn"; \
+			go test -run=^$$ -fuzz=^$$fn$$ -fuzztime=$(FUZZTIME) $$pkg || exit 1; \
+		done; \
+	done
+
+# Stress + concurrency tests. Skipped under -short; some sleep ~hundred
+# ms wall-clock to surface races that wouldn't fire under a couple of
+# goroutines. Run periodically (weekly?) to catch concurrency drift.
+# Pattern intentionally broad: any test whose name includes Stress,
+# Concurrent, Serializ(es|e), or NoTear qualifies.
+stress:
+	@printf '\n\033[1;36m▶ stress + race tests\033[0m\n'
+	go test -race -count=1 -run 'Stress|Concurrent|Serializ|NoTear|NoGoroutineLeak' \
+		./internal/claims/ \
+		./internal/state/ \
+		./internal/lockfile/ \
+		./internal/mcp/
 
 # Full health check: vet, race tests, scenario coverage, and demo dry-run.
 # Run this before committing anything non-trivial.

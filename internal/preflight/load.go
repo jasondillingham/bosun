@@ -120,5 +120,16 @@ func parseUptimeLoad(text string) (float64, error) {
 	if len(fields) == 0 {
 		return 0, fmt.Errorf("unexpected uptime output: %q", text)
 	}
-	return strconv.ParseFloat(fields[0], 64)
+	v, err := strconv.ParseFloat(fields[0], 64)
+	if err != nil {
+		return 0, err
+	}
+	// Real uptime output never reports a negative load average. A negative
+	// here means the input was malformed (or a bad uptime binary); reject
+	// rather than letting it cascade into a load comparison that will
+	// silently accept any threshold. Caught by FuzzParseUptimeLoad.
+	if v < 0 || v != v { // v != v catches NaN
+		return 0, fmt.Errorf("nonsensical load value %v parsed from %q", v, text)
+	}
+	return v, nil
 }

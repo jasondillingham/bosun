@@ -270,8 +270,7 @@ func mergeOne(rc *runCtx, s *session.Session, opts mergeOpts) (status, reason st
 		return "", "", gitErr("check unmerged patches for "+s.Branch, err)
 	}
 	if unmerged == 0 {
-		_ = rc.state.Clear(s.Name)
-		_ = rc.claims.Clear(s.Name)
+		clearSessionMetadata(rc, s.Name)
 		return mergeStatusSkipped, "already merged", nil
 	}
 
@@ -286,8 +285,7 @@ func mergeOne(rc *runCtx, s *session.Session, opts mergeOpts) (status, reason st
 		return "", "", gitErr("check tree-equivalence for "+s.Branch, err)
 	}
 	if treeEqual {
-		_ = rc.state.Clear(s.Name)
-		_ = rc.claims.Clear(s.Name)
+		clearSessionMetadata(rc, s.Name)
 		return mergeStatusSkipped, "already merged (tree-equivalent to base)", nil
 	}
 
@@ -349,8 +347,7 @@ func mergeOne(rc *runCtx, s *session.Session, opts mergeOpts) (status, reason st
 			return "", "", gitErr("check staged after squash", err)
 		}
 		if staged == 0 {
-			_ = rc.state.Clear(s.Name)
-			_ = rc.claims.Clear(s.Name)
+			clearSessionMetadata(rc, s.Name)
 			return mergeStatusSkipped, "already merged", nil
 		}
 		if err := rc.git.Commit(rc.ctx, rc.repoRoot, commitMsg); err != nil {
@@ -390,9 +387,23 @@ func mergeOne(rc *runCtx, s *session.Session, opts mergeOpts) (status, reason st
 		printf("bosun: warning: post-merge hook: %v\n", err)
 	}
 
-	_ = rc.state.Clear(s.Name)
-	_ = rc.claims.Clear(s.Name)
+	clearSessionMetadata(rc, s.Name)
 	return mergeStatusMerged, fmt.Sprintf("%d commit(s) squashed", s.Ahead), nil
+}
+
+// clearSessionMetadata wipes the .bosun/{state,claims}/<name>.* files
+// after a session has either merged or been determined already-merged.
+// Failures are non-fatal (the load-bearing git side already succeeded)
+// but they get logged so a permission-denied or filesystem-gone error
+// doesn't silently leave stale entries that confuse `bosun status`
+// forever after.
+func clearSessionMetadata(rc *runCtx, name string) {
+	if err := rc.state.Clear(name); err != nil {
+		fmt.Fprintf(os.Stderr, "bosun: warning: clear state for %s: %v\n", name, err)
+	}
+	if err := rc.claims.Clear(name); err != nil {
+		fmt.Fprintf(os.Stderr, "bosun: warning: clear claims for %s: %v\n", name, err)
+	}
 }
 
 // mergeHookEnv returns the env injected into pre-merge and post-merge

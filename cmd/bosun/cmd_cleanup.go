@@ -279,8 +279,14 @@ func executeCleanupOne(rc *runCtx, p cleanupPlan) error {
 	if err := rc.git.DeleteBranch(rc.ctx, rc.repoRoot, p.s.Branch, forceBranch); err != nil {
 		return gitErr("delete branch "+p.s.Branch, err)
 	}
-	_ = rc.claims.Clear(p.s.Name)
-	_ = rc.state.Clear(p.s.Name)
+	// Clear .bosun/ metadata. We log-and-continue rather than fail the
+	// cleanup: the worktree and branch (the load-bearing artifacts) are
+	// already gone, so any subsequent `bosun status` won't show the
+	// session. But surface the failure (via clearSessionMetadata) so the
+	// operator knows to investigate — silently swallowed errors here
+	// meant a permission-denied claims dir could leave stale entries
+	// forever.
+	clearSessionMetadata(rc, p.s.Name)
 	return nil
 }
 

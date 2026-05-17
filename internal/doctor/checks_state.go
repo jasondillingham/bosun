@@ -53,6 +53,17 @@ func CheckStaleInitLock(_ context.Context, repoRoot string) Result {
 		Status:  Warn,
 		Message: fmt.Sprintf("init.lock is %s old (prior init may have died)", roundDuration(age)),
 		Fix:     "if no `bosun init` is currently running, `rm " + lockPath + "` is safe",
+		FixFn: func(repoRoot string) error {
+			// POSIX flock auto-releases on process death so the bytes-on-disk
+			// lock file alone is harmless to remove. Idempotent: rm of a
+			// missing file is a no-op for our purposes.
+			path := filepath.Join(repoRoot, ".bosun", "init.lock")
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+			return nil
+		},
+		FixDescription: "removed stale .bosun/init.lock",
 	}
 }
 
@@ -110,6 +121,33 @@ func CheckPhantomBranchRefs(_ context.Context, repoRoot string) Result {
 		Status:  Warn,
 		Message: fmt.Sprintf("%d phantom branch ref(s): %s%s", len(phantoms), strings.Join(shown, ", "), suffix),
 		Fix:     "run `bosun init --clean-phantoms` to remove them",
+		FixFn: func(repoRoot string) error {
+			// Re-scan rather than capturing the phantoms slice — the
+			// set may have shifted (Spotlight is the source; it's
+			// non-deterministic) between Run() and ApplyFixes(). Same
+			// pattern cmd_init.go --clean-phantoms uses.
+			refsDir := filepath.Join(repoRoot, ".git", "refs", "heads", "bosun")
+			entries, err := os.ReadDir(refsDir)
+			if err != nil {
+				if os.IsNotExist(err) {
+					return nil
+				}
+				return err
+			}
+			for _, e := range entries {
+				if e.IsDir() {
+					continue
+				}
+				name := e.Name()
+				if hasDigitSuffix(name, " ") || hasParenDigitSuffix(name) {
+					if rmErr := os.Remove(filepath.Join(refsDir, name)); rmErr != nil && !os.IsNotExist(rmErr) {
+						return rmErr
+					}
+				}
+			}
+			return nil
+		},
+		FixDescription: fmt.Sprintf("removed %d phantom branch ref(s)", len(phantoms)),
 	}
 }
 

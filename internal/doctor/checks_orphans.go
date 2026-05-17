@@ -86,7 +86,47 @@ func CheckOrphanWorktrees(ctx context.Context, repoRoot string) Result {
 		Name:    "orphan-worktrees",
 		Status:  Warn,
 		Message: fmt.Sprintf("%d orphan worktree dir(s): %s%s", len(orphans), strings.Join(shown, ", "), suffix),
-		Fix:     "rename or remove the listed directories, or re-run with --fix once available",
+		Fix:     "rename or remove the listed directories, or re-run with --fix",
+		FixFn: func(repoRoot string) error {
+			// Rename rather than delete — preserves the orphan dir for the
+			// operator to inspect if they thought they had work there. Same
+			// pattern the v0.7 trial-#2 prep recommended. Targets the same
+			// set of orphans the check found by re-scanning (sneakers off
+			// the source of truth in case the dir set drifted).
+			parent := filepath.Dir(filepath.Clean(repoRoot))
+			prefix := repoRootName(repoRoot) + "-bosun-"
+			entries, err := os.ReadDir(parent)
+			if err != nil {
+				return err
+			}
+			registered, listErr := listWorktrees(context.Background(), repoRoot)
+			if listErr != nil {
+				return listErr
+			}
+			regSet := make(map[string]struct{}, len(registered))
+			for _, p := range registered {
+				regSet[filepath.Clean(p)] = struct{}{}
+			}
+			for _, e := range entries {
+				if !e.IsDir() {
+					continue
+				}
+				name := e.Name()
+				if !strings.HasPrefix(name, prefix) || strings.HasPrefix(name, "_orphan-") {
+					continue
+				}
+				path := filepath.Clean(filepath.Join(parent, name))
+				if _, ok := regSet[path]; ok {
+					continue // registered, not an orphan
+				}
+				renamed := filepath.Join(parent, "_orphan-"+name)
+				if err := os.Rename(path, renamed); err != nil {
+					return fmt.Errorf("rename %s → %s: %w", path, renamed, err)
+				}
+			}
+			return nil
+		},
+		FixDescription: fmt.Sprintf("renamed %d orphan worktree dir(s) to _orphan-*", len(orphans)),
 	}
 }
 

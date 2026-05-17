@@ -3,6 +3,7 @@ package doctor
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -244,6 +245,102 @@ func TestCheckOrphanWorktrees_NoneFound(t *testing.T) {
 	r := CheckOrphanWorktrees(context.Background(), repo)
 	if r.Status != Pass {
 		t.Errorf("fresh repo with no siblings = %v, want Pass; %q", r.Status, r.Message)
+	}
+}
+
+// TestApplyFixes_DryRunDoesNotInvokeFn pins the dry-run contract: the
+// preview path never touches FixFn. Operators rely on this to inspect
+// what --fix WOULD do without any state mutation.
+func TestApplyFixes_DryRunDoesNotInvokeFn(t *testing.T) {
+	called := false
+	results := []Result{
+		{
+			Name:    "fixable",
+			Status:  Warn,
+			Message: "needs fix",
+			FixFn:   func(string) error { called = true; return nil },
+		},
+	}
+	outcomes := ApplyFixes("/tmp", results, true)
+	if called {
+		t.Fatal("FixFn was called during --dry-run")
+	}
+	if len(outcomes) != 1 {
+		t.Fatalf("outcomes = %d, want 1", len(outcomes))
+	}
+	if !outcomes[0].DryRun {
+		t.Error("outcome should be marked DryRun=true")
+	}
+	if outcomes[0].Applied {
+		t.Error("Applied should be false for dry-run")
+	}
+}
+
+// TestApplyFixes_AppliesAndRecordsResults pins the live-run contract.
+func TestApplyFixes_AppliesAndRecordsResults(t *testing.T) {
+	calls := []string{}
+	wantErr := errors.New("boom")
+	results := []Result{
+		{Name: "pass", Status: Pass, FixFn: func(string) error { calls = append(calls, "pass"); return nil }},
+		{Name: "ok", Status: Warn, FixDescription: "did stuff",
+			FixFn: func(string) error { calls = append(calls, "ok"); return nil }},
+		{Name: "broken", Status: Warn, FixDescription: "would do stuff",
+			FixFn: func(string) error { calls = append(calls, "broken"); return wantErr }},
+		{Name: "no-fixer", Status: Warn, Message: "fix me by hand"},
+	}
+	outcomes := ApplyFixes("/tmp", results, false)
+	// Pass-status results are skipped even when they have a fixer (no
+	// reason to fix something that's already clean).
+	for _, c := range calls {
+		if c == "pass" {
+			t.Error("FixFn ran for a Pass-status result")
+		}
+	}
+	if len(outcomes) != 2 {
+		t.Fatalf("outcomes = %d, want 2 (ok + broken; no-fixer is silently skipped)", len(outcomes))
+	}
+	if !outcomes[0].Applied || outcomes[0].Err != nil {
+		t.Errorf("first outcome: Applied=%v Err=%v, want true/nil", outcomes[0].Applied, outcomes[0].Err)
+	}
+	if outcomes[1].Applied {
+		t.Error("second outcome should NOT be Applied=true (FixFn errored)")
+	}
+	if !errors.Is(outcomes[1].Err, wantErr) {
+		t.Errorf("second outcome Err = %v, want %v", outcomes[1].Err, wantErr)
+	}
+}
+
+// TestCheckStaleInitLock_FixRemoves verifies the init-lock fixer is
+// idempotent and removes a real file when invoked. Belt-and-suspenders
+// regression for the v0.8.x lane that introduced --fix.
+func TestCheckStaleInitLock_FixRemoves(t *testing.T) {
+	dir := t.TempDir()
+	bosunDir := filepath.Join(dir, ".bosun")
+	if err := os.MkdirAll(bosunDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lockPath := filepath.Join(bosunDir, "init.lock")
+	if err := os.WriteFile(lockPath, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(lockPath, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	r := CheckStaleInitLock(context.Background(), dir)
+	if r.FixFn == nil {
+		t.Fatal("Warn result should have a FixFn")
+	}
+	if err := r.FixFn(dir); err != nil {
+		t.Fatalf("FixFn: %v", err)
+	}
+	if _, err := os.Stat(lockPath); err == nil {
+		t.Fatal("init.lock still present after fix")
+	}
+	// Idempotent — second call on already-clean dir must not error.
+	if err := r.FixFn(dir); err != nil {
+		t.Fatalf("FixFn second call: %v (must be idempotent)", err)
 	}
 }
 

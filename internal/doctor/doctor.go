@@ -57,8 +57,19 @@ type Result struct {
 	// Always populated, even on PASS (e.g. "git 2.45.0").
 	Message string
 	// Fix is an optional one-line hint pointing the operator at the
-	// remediation. Empty on PASS.
+	// manual remediation. Empty on PASS.
 	Fix string
+	// FixFn applies an automated remediation when `bosun doctor --fix`
+	// runs. Nil = no autofix; the operator has to follow the manual Fix
+	// hint instead. Implementations must be idempotent and safe to call
+	// when the issue has already been remediated (e.g. by a parallel
+	// doctor run).
+	FixFn func(repoRoot string) error
+	// FixDescription names what FixFn would do, in past-tense imperative
+	// ("removed init.lock", "renamed 2 orphan dirs to _orphan-*"). Used
+	// by --dry-run output and by the final fix-summary line. Empty when
+	// FixFn is nil.
+	FixDescription string
 }
 
 // Check is one environmental probe. The function takes the repo root
@@ -139,6 +150,80 @@ func WriteReport(w io.Writer, repoRoot string, results []Result) {
 		fmt.Fprintf(w, "%d warning(s) — bosun should work but the operator should be aware.\n", warns)
 	default:
 		fmt.Fprintln(w, "All checks passed.")
+	}
+}
+
+// FixOutcome records one remediation attempt for the --fix path.
+type FixOutcome struct {
+	Name        string // matches the Result.Name that owned the fixer
+	Description string // copied from Result.FixDescription
+	Applied     bool   // true on successful execution; false on no-fix-available or dry-run
+	DryRun      bool   // true when this outcome was produced by a dry-run pass
+	Err         error  // non-nil when FixFn ran but errored
+}
+
+// ApplyFixes invokes each Result's FixFn (in result order) for results
+// that have one. When dryRun is true, FixFn is NOT called and outcomes
+// are marked DryRun=true; the operator sees what would happen without
+// any state mutation. Results without a FixFn are silently skipped —
+// they're reported in WriteReport's manual-fix hint already.
+func ApplyFixes(repoRoot string, results []Result, dryRun bool) []FixOutcome {
+	var out []FixOutcome
+	for _, r := range results {
+		if r.FixFn == nil {
+			continue
+		}
+		if r.Status == Pass {
+			// Already clean; nothing to fix even though a fixer exists.
+			continue
+		}
+		oc := FixOutcome{Name: r.Name, Description: r.FixDescription, DryRun: dryRun}
+		if !dryRun {
+			if err := r.FixFn(repoRoot); err != nil {
+				oc.Err = err
+			} else {
+				oc.Applied = true
+			}
+		}
+		out = append(out, oc)
+	}
+	return out
+}
+
+// WriteFixReport renders the outcome of ApplyFixes for human consumption.
+// Renders nothing when outcomes is empty (no fixers ran). Always called
+// AFTER WriteReport so the operator sees both the diagnosis and the
+// remediation.
+func WriteFixReport(w io.Writer, outcomes []FixOutcome) {
+	if len(outcomes) == 0 {
+		return
+	}
+	if outcomes[0].DryRun {
+		fmt.Fprintln(w, "Auto-fixes (dry-run; nothing applied):")
+	} else {
+		fmt.Fprintln(w, "Auto-fixes:")
+	}
+	var applied, failed int
+	for _, oc := range outcomes {
+		switch {
+		case oc.DryRun:
+			fmt.Fprintf(w, "  → would fix %s: %s\n", oc.Name, oc.Description)
+		case oc.Err != nil:
+			fmt.Fprintf(w, "  ✗ %s: fix failed — %v\n", oc.Name, oc.Err)
+			failed++
+		case oc.Applied:
+			fmt.Fprintf(w, "  ✓ %s: %s\n", oc.Name, oc.Description)
+			applied++
+		}
+	}
+	fmt.Fprintln(w)
+	switch {
+	case outcomes[0].DryRun:
+		fmt.Fprintf(w, "%d fix(es) would be applied — re-run without --dry-run to execute.\n", len(outcomes))
+	case failed > 0:
+		fmt.Fprintf(w, "%d fix(es) applied, %d failed — see errors above.\n", applied, failed)
+	default:
+		fmt.Fprintf(w, "%d fix(es) applied.\n", applied)
 	}
 }
 

@@ -21,6 +21,7 @@ import (
 	bosunmcp "github.com/jasondillingham/bosun/internal/mcp"
 	"github.com/jasondillingham/bosun/internal/preflight"
 	"github.com/jasondillingham/bosun/internal/session"
+	"github.com/jasondillingham/bosun/internal/state"
 	"github.com/spf13/cobra"
 )
 
@@ -478,6 +479,13 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 	// Ensure .bosun/ is in .gitignore so we don't accidentally commit it.
 	if err := ensureBosunIgnored(rc.repoRoot); err != nil {
 		fmt.Fprintf(os.Stderr, "bosun: warning: update .gitignore: %v\n", err)
+	}
+
+	// Drop the Spotlight "do not index" marker so macOS stops creating
+	// `session-1 2.done` duplicates inside .bosun/state/ that would
+	// otherwise surface as phantom sessions in `bosun list`.
+	if err := state.EnsureSpotlightMarker(rc.repoRoot); err != nil {
+		fmt.Fprintf(os.Stderr, "bosun: warning: write spotlight marker: %v\n", err)
 	}
 
 	if err := istate.SetCurrent(rc.repoRoot, "", initstate.StepHookPostInit); err != nil {

@@ -2,8 +2,12 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
+	"time"
 
+	"github.com/jasondillingham/bosun/internal/git"
 	"github.com/jasondillingham/bosun/internal/hooks"
 	"github.com/jasondillingham/bosun/internal/session"
 	"github.com/spf13/cobra"
@@ -46,6 +50,23 @@ func runRemove(cmd *cobra.Command, sessionArg string, force, ignoreRunning bool)
 	label, err := session.ParseLabel(sessionArg)
 	if err != nil {
 		return userErr("%v", err)
+	}
+
+	// Detect the v0.6.2 crash footprint (gitdir admin missing HEAD/commondir)
+	// up front: in that state Derive and `git worktree remove` both fail
+	// mid-flight. With --force we salvage anything left on disk first, then
+	// fall back to an `rm -rf` + prune. Without --force we surface the
+	// same recovery hint as `bosun rescue`.
+	worktreePath := session.WorktreePathForLabel(rc.repoRoot, rc.cfg, label)
+	if _, statErr := os.Stat(worktreePath); statErr == nil {
+		if cerr := git.WorktreeGitdirCorruption(rc.repoRoot, worktreePath); cerr != nil {
+			if !force {
+				return userErr(
+					"%s worktree gitdir is corrupted (%v) — pass --force to salvage and remove",
+					label, cerr)
+			}
+			return removeCorruptedWorktree(rc, label, worktreePath)
+		}
 	}
 
 	// Drop admin metadata for worktrees whose directory was manually
@@ -134,6 +155,21 @@ func runRemove(cmd *cobra.Command, sessionArg string, force, ignoreRunning bool)
 		return userErr("%v", err)
 	}
 
+	// Salvage uncommitted content before destruction whenever the operator
+	// is forcing past safety checks: `--force` is exactly the case where
+	// `git worktree remove --force` would otherwise discard dirty files
+	// with no recovery path. Empty snapshots (nothing dirty) are cleaned
+	// up; failures here are warnings, not fatal — the salvage is
+	// belt-and-suspenders.
+	if destructive {
+		salvagePath, n, salvageErr := salvageWorktreeContent(rc, s.Label, s.Path)
+		if salvageErr != nil {
+			fmt.Fprintf(os.Stderr, "bosun: warning: salvage %s: %v\n", s.Label, salvageErr)
+		} else if salvagePath != "" {
+			printf("bosun: salvaged %d file(s) from %s → %s\n", n, s.Label, salvagePath)
+		}
+	}
+
 	if err := rc.git.RemoveWorktree(rc.ctx, rc.repoRoot, s.Path, destructive); err != nil {
 		return gitErr("remove worktree "+s.Path, err)
 	}
@@ -145,6 +181,145 @@ func runRemove(cmd *cobra.Command, sessionArg string, force, ignoreRunning bool)
 
 	printf("bosun: removed %s (worktree + branch + state)\n", label)
 	return nil
+}
+
+// removeCorruptedWorktree handles `bosun remove <label> --force` against a
+// worktree whose gitdir admin files are missing (v0.6.2 crash footprint).
+// Standard git ops fail in this state, so we salvage everything still on
+// disk, `rm -rf` the worktree dir, and let `git worktree prune` clean up
+// the (now-orphan) admin metadata. State + claims are cleared regardless;
+// branch deletion is best-effort because it may already be unreachable.
+func removeCorruptedWorktree(rc *runCtx, label, worktreePath string) error {
+	salvagePath, n, salvageErr := salvageWorktreeContent(rc, label, worktreePath)
+	if salvageErr != nil {
+		fmt.Fprintf(os.Stderr, "bosun: warning: salvage %s: %v\n", label, salvageErr)
+	}
+
+	if err := os.RemoveAll(worktreePath); err != nil {
+		return internalErr("remove worktree dir "+worktreePath, err)
+	}
+	if err := rc.git.PruneWorktrees(rc.ctx, rc.repoRoot); err != nil {
+		// Best-effort: the orphan admin dir will be cleaned next prune cycle.
+		fmt.Fprintf(os.Stderr, "bosun: warning: prune worktree admin: %v\n", err)
+	}
+	branch := rc.cfg.BranchForLabel(label)
+	if exists, _ := rc.git.BranchExists(rc.ctx, rc.repoRoot, branch); exists {
+		if err := rc.git.DeleteBranch(rc.ctx, rc.repoRoot, branch, true); err != nil {
+			fmt.Fprintf(os.Stderr, "bosun: warning: delete branch %s: %v\n", branch, err)
+		}
+	}
+	_ = rc.claims.Clear(label)
+	_ = rc.state.Clear(label)
+
+	if salvagePath != "" {
+		printf("bosun: removed %s (gitdir was corrupted) — %d file(s) salvaged to %s\n", label, n, salvagePath)
+	} else {
+		printf("bosun: removed %s (gitdir was corrupted; nothing salvageable on disk)\n", label)
+	}
+	return nil
+}
+
+// salvageWorktreeContent snapshots uncommitted content from worktreePath
+// to `.bosun/rescues/<label>-<timestamp>/`. Tries the git-driven path
+// first (snapshot only dirty + untracked entries via `git status`); if
+// git fails — the corrupted-gitdir case — falls back to copying every
+// file in the worktree dir except `.git` itself. Returns the snapshot
+// directory path, the file count, and any error. An empty snapshot
+// (nothing to salvage) returns ("", 0, nil) and the empty dir is removed.
+func salvageWorktreeContent(rc *runCtx, label, worktreePath string) (string, int, error) {
+	if _, err := os.Stat(worktreePath); err != nil {
+		return "", 0, nil
+	}
+	ts := time.Now().UTC().Format("20060102T150405Z")
+	dest := filepath.Join(rc.repoRoot, rescueDirRelative, label+"-"+ts)
+
+	lines, statusErr := rc.git.Status(rc.ctx, worktreePath)
+	if statusErr == nil {
+		if err := os.MkdirAll(dest, 0o755); err != nil {
+			return "", 0, err
+		}
+		n, err := copyRescueFiles(worktreePath, dest, lines)
+		if err != nil {
+			return "", 0, err
+		}
+		if n == 0 {
+			_ = os.Remove(dest)
+			return "", 0, nil
+		}
+		return dest, n, nil
+	}
+
+	// Git is broken (corrupted gitdir, repo metadata torched, …) — copy
+	// everything except `.git` so the operator can sort it out by hand.
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		return "", 0, err
+	}
+	n, err := copyWorktreeBestEffort(worktreePath, dest)
+	if err != nil {
+		return "", 0, err
+	}
+	if n == 0 {
+		_ = os.Remove(dest)
+		return "", 0, nil
+	}
+	return dest, n, nil
+}
+
+// copyWorktreeBestEffort walks src and copies every regular file (and
+// symlink) under it to dest, skipping `.git` (a stale pointer file that
+// would make the snapshot itself look like a broken worktree). Used as
+// the fallback when `git status` fails because the gitdir is corrupted.
+func copyWorktreeBestEffort(src, dest string) (int, error) {
+	n := 0
+	err := filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		rel, rerr := filepath.Rel(src, path)
+		if rerr != nil {
+			return nil
+		}
+		if rel == "." {
+			return nil
+		}
+		if rel == ".git" {
+			// `.git` can be a directory (main worktree) or a pointer file
+			// (linked worktree). Either way, skip it: in the directory case
+			// SkipDir skips contents; in the file case SkipDir would skip
+			// the rest of the parent — return nil so we just don't copy it.
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		out := filepath.Join(dest, rel)
+		switch {
+		case info.IsDir():
+			return os.MkdirAll(out, 0o755)
+		case info.Mode()&os.ModeSymlink != 0:
+			target, terr := os.Readlink(path)
+			if terr != nil {
+				return nil
+			}
+			if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
+				return err
+			}
+			if err := os.Symlink(target, out); err != nil {
+				return nil
+			}
+			n++
+		default:
+			if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
+				return err
+			}
+			if err := copyFile(path, out, info.Mode().Perm()); err != nil {
+				return nil
+			}
+			n++
+		}
+		return nil
+	})
+	return n, err
 }
 
 // liveAgentRemoveMessage is the user-facing error returned when the

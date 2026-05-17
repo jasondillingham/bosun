@@ -66,6 +66,26 @@ func runRescue(sessionArg string, opts rescueOpts) error {
 	if err != nil {
 		return userErr("%v", err)
 	}
+
+	// Guard against the v0.6.2 crash footprint: an agent that died under
+	// load can leave the worktree's gitdir admin files missing, in which
+	// case every subsequent git op (including the Derive below) fails
+	// with "not a git repository" mid-snapshot. Detect that up front so
+	// the operator sees an actionable recovery hint instead of a confusing
+	// git error from inside Derive.
+	worktreePath := session.WorktreePathForLabel(rc.repoRoot, rc.cfg, label)
+	if _, statErr := os.Stat(worktreePath); statErr == nil {
+		if cerr := git.WorktreeGitdirCorruption(rc.repoRoot, worktreePath); cerr != nil {
+			return userErr(
+				"%s's worktree gitdir is corrupted (%v).\n"+
+					"       The agent likely crashed before writing the gitdir cleanly.\n"+
+					"       Recovery:\n"+
+					"       - bosun remove %s --force  (preserves uncommitted files via rescue snapshot)\n"+
+					"       - then re-init the session from scratch.",
+				label, cerr, label)
+		}
+	}
+
 	sessions, err := session.Derive(rc.ctx, rc.git, rc.cfg, rc.repoRoot, rc.state, rc.claims)
 	if err != nil {
 		return gitErr("derive sessions", err)

@@ -1,9 +1,55 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// TestCopyWorktreeBestEffort_SkipsDotGit pins the fallback used when
+// `git status` can't tell us what's dirty (e.g. the v0.6.2 corrupted-
+// gitdir crash). copyWorktreeBestEffort copies every regular file and
+// symlink under the worktree except `.git` itself — without that skip,
+// the snapshot would carry a stale gitdir pointer that makes the
+// snapshot dir itself look like a broken worktree.
+func TestCopyWorktreeBestEffort_SkipsDotGit(t *testing.T) {
+	wt := t.TempDir()
+	// .git pointer file (linked-worktree shape) — must be skipped.
+	if err := os.WriteFile(filepath.Join(wt, ".git"), []byte("gitdir: /tmp/bogus\n"), 0o644); err != nil {
+		t.Fatalf("write .git: %v", err)
+	}
+	// Regular files at the root and nested.
+	if err := os.WriteFile(filepath.Join(wt, "a.txt"), []byte("alpha\n"), 0o644); err != nil {
+		t.Fatalf("write a.txt: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(wt, "sub"), 0o755); err != nil {
+		t.Fatalf("mkdir sub: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(wt, "sub", "b.txt"), []byte("bravo\n"), 0o644); err != nil {
+		t.Fatalf("write sub/b.txt: %v", err)
+	}
+
+	dest := filepath.Join(t.TempDir(), "salvage")
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	n, err := copyWorktreeBestEffort(wt, dest)
+	if err != nil {
+		t.Fatalf("copyWorktreeBestEffort: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("copied = %d, want 2 (a.txt + sub/b.txt)", n)
+	}
+	if _, err := os.Stat(filepath.Join(dest, ".git")); err == nil {
+		t.Errorf(".git was copied; should have been skipped")
+	}
+	for _, want := range []string{"a.txt", "sub/b.txt"} {
+		if _, err := os.Stat(filepath.Join(dest, want)); err != nil {
+			t.Errorf("salvage missing %s: %v", want, err)
+		}
+	}
+}
 
 // TestLiveAgentRemoveMessage pins the v0.6 liveness-gate refusal message:
 // label, pid, recovery hint, and --ignore-running escape hatch must all

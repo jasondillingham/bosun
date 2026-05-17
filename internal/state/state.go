@@ -9,6 +9,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -16,7 +18,66 @@ import (
 	"github.com/jasondillingham/bosun/internal/session"
 )
 
-const dirRelative = ".bosun/state"
+const (
+	dirRelative = ".bosun/state"
+	// bosunDirRelative is the parent .bosun/ directory; the Spotlight
+	// "do not index" marker lives at its root so the marker applies to
+	// state/, claims/, rescues/, and everything else bosun writes here.
+	bosunDirRelative = ".bosun"
+	// spotlightMarkerName is the Apple-documented filename that tells
+	// Spotlight to skip indexing the containing directory. Dropping it
+	// at .bosun/.metadata_never_index stops macOS from creating the
+	// duplicate state files (`session-1 2.done`, …) the LoadAll filter
+	// has to fall back on.
+	spotlightMarkerName = ".metadata_never_index"
+)
+
+// EnsureSpotlightMarker writes an empty `.bosun/.metadata_never_index`
+// file under repoRoot if one isn't already there. macOS Spotlight,
+// Time Machine, and iCloud Drive honor this marker and stop indexing
+// the directory — eliminating the source of the duplicated `*N.done`
+// files that phantom out as extra sessions otherwise. Existing repos
+// still rely on the LoadAll filter for files Spotlight already created.
+//
+// Best-effort: a write failure is returned to the caller but is safe to
+// log-and-continue; the LoadAll filter is the belt-and-suspenders for
+// any duplicates that slip through.
+func EnsureSpotlightMarker(repoRoot string) error {
+	dir := filepath.Join(repoRoot, bosunDirRelative)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", dir, err)
+	}
+	marker := filepath.Join(dir, spotlightMarkerName)
+	if _, err := os.Stat(marker); err == nil {
+		return nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("stat %s: %w", marker, err)
+	}
+	if err := os.WriteFile(marker, nil, 0o644); err != nil {
+		return fmt.Errorf("write spotlight marker: %w", err)
+	}
+	return nil
+}
+
+// phantomSpotlightPattern matches macOS Spotlight / Time Machine duplicates
+// (e.g. `session-1 2.done`, `session-1 2.json`) — a literal space, one or
+// more digits, then the suffix. Files matching this are ignored when
+// enumerating session markers so duplicated state files don't surface as
+// phantom sessions in `bosun list` / `bosun status`.
+var phantomSpotlightPattern = regexp.MustCompile(`^.* \d+\.(done|stuck|heartbeat|json)$`)
+
+// phantomICloudPattern matches iCloud Drive duplicates (e.g.
+// `session-1 (1).done`). Same purpose as phantomSpotlightPattern;
+// kept as two regexes for grep-ability in incident triage.
+var phantomICloudPattern = regexp.MustCompile(`^.* \(\d+\)\.(done|stuck|heartbeat|json)$`)
+
+// isPhantomStateFile reports whether name looks like a Finder/Spotlight/
+// iCloud duplicate. The state directory is the authoritative location for
+// session markers; any duplicated copy would create a phantom session if
+// callers enumerated the dir blindly.
+func isPhantomStateFile(name string) bool {
+	return phantomSpotlightPattern.MatchString(name) || phantomICloudPattern.MatchString(name)
+}
 
 // Store reads and writes session state markers under repoRoot/.bosun/state/.
 //
@@ -157,6 +218,52 @@ func (s *Store) Heartbeat(repoRoot, sessionName string) (time.Time, bool, error)
 		}
 	}
 	return t, true, nil
+}
+
+// LoadAll enumerates the state directory and returns the sorted list of
+// distinct session names that have at least one valid marker file
+// (.done / .stuck / .heartbeat). Phantom duplicates created by
+// Finder/Spotlight/Time Machine/iCloud (`session-1 2.done`,
+// `session-1 (1).done`, …) are filtered out so callers don't surface
+// them as additional sessions.
+//
+// Missing state dir → empty result, no error: a repo that hasn't run
+// any session shouldn't be a hard error for callers iterating markers.
+func (s *Store) LoadAll() ([]string, error) {
+	entries, err := os.ReadDir(s.dir())
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read state dir: %w", err)
+	}
+	seen := make(map[string]struct{})
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if isPhantomStateFile(name) {
+			continue
+		}
+		ext := filepath.Ext(name)
+		switch ext {
+		case ".done", ".stuck", ".heartbeat", ".json":
+		default:
+			continue
+		}
+		base := strings.TrimSuffix(name, ext)
+		if base == "" {
+			continue
+		}
+		seen[base] = struct{}{}
+	}
+	out := make([]string, 0, len(seen))
+	for k := range seen {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 // Read returns the session's current state plus the marker body.

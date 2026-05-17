@@ -1,6 +1,8 @@
 package state
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -62,6 +64,76 @@ func TestRead_Missing(t *testing.T) {
 	}
 	if body != "" {
 		t.Fatalf("body = %q, want empty", body)
+	}
+}
+
+// TestLoadAll_FiltersFinderDuplicates pins the phantom-file filter from
+// roadmap ask #4: macOS Spotlight / iCloud occasionally clone marker
+// files inside .bosun/state/ (`session-1 2.done`, `session-1 (1).json`,
+// …). LoadAll must strip those so `bosun list` / `bosun status` don't
+// surface ghost sessions.
+func TestLoadAll_FiltersFinderDuplicates(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := filepath.Join(dir, ".bosun", "state")
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{
+		"session-1.done",
+		"session-1 2.done",   // Spotlight duplicate
+		"session-1.json",     // hypothetical .json sibling
+		"session-1 2.json",   // Spotlight duplicate of json
+		"session-1 (1).done", // iCloud duplicate
+	} {
+		if err := os.WriteFile(filepath.Join(stateDir, name), []byte("x"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+
+	s := NewStore(dir)
+	got, err := s.LoadAll()
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	if len(got) != 1 || got[0] != "session-1" {
+		t.Fatalf("LoadAll = %v, want [session-1]", got)
+	}
+}
+
+// TestLoadAll_MissingDir returns an empty result without erroring so
+// callers iterating markers on a fresh repo don't have to special-case
+// "no .bosun/state/ yet".
+func TestLoadAll_MissingDir(t *testing.T) {
+	dir := t.TempDir()
+	s := NewStore(dir)
+	got, err := s.LoadAll()
+	if err != nil {
+		t.Fatalf("LoadAll on missing dir: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("LoadAll = %v, want empty", got)
+	}
+}
+
+// TestEnsureSpotlightMarker_CreatesAndIsIdempotent pins the marker drop
+// from roadmap ask #4 — the macOS-documented filename Spotlight honors
+// to stop indexing the .bosun/ directory tree. Second call is a no-op.
+func TestEnsureSpotlightMarker_CreatesAndIsIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	if err := EnsureSpotlightMarker(dir); err != nil {
+		t.Fatalf("EnsureSpotlightMarker: %v", err)
+	}
+	marker := filepath.Join(dir, ".bosun", ".metadata_never_index")
+	info, err := os.Stat(marker)
+	if err != nil {
+		t.Fatalf("stat marker: %v", err)
+	}
+	if info.Size() != 0 {
+		t.Fatalf("marker size = %d, want 0", info.Size())
+	}
+	// Second call: still nil, file unchanged.
+	if err := EnsureSpotlightMarker(dir); err != nil {
+		t.Fatalf("second EnsureSpotlightMarker: %v", err)
 	}
 }
 

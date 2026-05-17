@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -3349,4 +3350,260 @@ func TestScenario_PredictMissingPlan_ExitsNonZero(t *testing.T) {
 	if err == nil {
 		t.Fatalf("missing plan should exit non-zero, got:\n%s", out)
 	}
+}
+
+// --- v0.6: merge safety (agent-liveness gate, fsck, undo log) ---
+
+// spawnFakeAgent launches the test-only `claude` binary (built in
+// TestMain) with CWD=worktree so proc.Running detects it as a live
+// agent. Returns a cleanup function that kills + reaps the subprocess.
+// Polls `bosun status --json` until the running flag flips on so the
+// subsequent merge invocation definitely sees the process.
+func spawnFakeAgent(t *testing.T, worktree string) func() {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("fake-agent helper uses POSIX process semantics")
+	}
+	if fakeAgentBin == "" {
+		t.Skip("fake-agent binary not built (see TestMain)")
+	}
+	cmd := exec.Command(fakeAgentBin)
+	cmd.Dir = worktree
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start fake claude: %v", err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		c := exec.Command(bosunBin, "status", "--json")
+		c.Dir = worktree
+		out, _ := c.Output()
+		if strings.Contains(string(out), `"running":true`) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+			_, _ = cmd.Process.Wait()
+		}
+	}
+}
+
+func TestScenario_MergeRefusesLiveAgentWithDirtyFiles(t *testing.T) {
+	s := newScenario(t)
+	s.Bosun("init", "1")
+
+	// Real commit so the merge would otherwise proceed.
+	wt1 := s.WorktreePath(1)
+	s.WriteFileIn(wt1, "feature.txt", "x\n")
+	s.CommitIn(wt1, "feature work")
+	s.Bosun("done", "session-1")
+
+	// Plant an untracked file — this is the "in-flight work" the gate
+	// protects against. (Untracked is the riskier case: --squash would
+	// happily ignore it and the operator loses the file silently.)
+	s.WriteFileIn(wt1, "scratch.txt", "in progress\n")
+
+	// Configure status helper to verify scratch.txt is untracked from
+	// git's point of view before we light up the fake agent.
+	out := s.GitIn(wt1, "status", "--porcelain")
+	if !strings.Contains(out, "?? scratch.txt") {
+		t.Fatalf("scratch.txt should be untracked, got:\n%s", out)
+	}
+
+	stop := spawnFakeAgent(t, wt1)
+	defer stop()
+
+	mergeOut, err := s.BosunErr("merge")
+	if err == nil {
+		t.Fatalf("merge should refuse when agent live + dirty, got success:\n%s", mergeOut)
+	}
+	for _, want := range []string{"live agent", "uncommitted changes", "--ignore-running"} {
+		if !strings.Contains(mergeOut, want) {
+			t.Errorf("refusal message missing %q, got:\n%s", want, mergeOut)
+		}
+	}
+
+	// Sanity: the untracked file is still there and main hasn't moved.
+	if _, err := os.Stat(filepath.Join(wt1, "scratch.txt")); err != nil {
+		t.Errorf("scratch.txt should still exist after refusal: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(s.repo, "feature.txt")); err == nil {
+		t.Errorf("feature.txt should NOT be on main yet (merge was refused)")
+	}
+}
+
+func TestScenario_MergeIgnoreRunningBypassesGate(t *testing.T) {
+	s := newScenario(t)
+	s.Bosun("init", "1")
+
+	wt1 := s.WorktreePath(1)
+	s.WriteFileIn(wt1, "feature.txt", "x\n")
+	s.CommitIn(wt1, "feature work")
+	s.Bosun("done", "session-1")
+	s.WriteFileIn(wt1, "scratch.txt", "in progress\n")
+
+	stop := spawnFakeAgent(t, wt1)
+	defer stop()
+
+	mergeOut := s.Bosun("merge", "--ignore-running")
+	s.AssertContains(mergeOut, "session-1: merged")
+	s.AssertFileOnMain("feature.txt")
+}
+
+func TestScenario_MergeRefusesOnFsckFailure(t *testing.T) {
+	s := newScenario(t)
+	s.Bosun("init", "1")
+
+	wt1 := s.WorktreePath(1)
+	s.WriteFileIn(wt1, "feature.txt", "x\n")
+	s.CommitIn(wt1, "feature work")
+	s.Bosun("done", "session-1")
+
+	// Corrupt a loose object in main's shared .git/objects so the
+	// worktree's fsck sees it (linked worktrees share the object store).
+	// We target an older blob, not the tip — corrupting the tip would
+	// break the merge in a different (less-targeted) way.
+	objRoot := filepath.Join(s.repo, ".git", "objects")
+	var victim string
+	_ = filepath.WalkDir(objRoot, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || victim != "" {
+			return nil
+		}
+		parent := filepath.Base(filepath.Dir(p))
+		if len(parent) == 2 {
+			victim = p
+		}
+		return nil
+	})
+	if victim == "" {
+		t.Skip("no loose objects available to corrupt")
+	}
+	// Loose objects are mode 0444; clear u+w before overwriting.
+	if err := os.Chmod(victim, 0o644); err != nil {
+		t.Fatalf("chmod victim: %v", err)
+	}
+	if err := os.WriteFile(victim, []byte("not a real git object"), 0o644); err != nil {
+		t.Fatalf("corrupt loose object: %v", err)
+	}
+
+	mergeOut, err := s.BosunErr("merge")
+	if err == nil {
+		t.Fatalf("merge should refuse on fsck failure, got success:\n%s", mergeOut)
+	}
+	if !strings.Contains(strings.ToLower(mergeOut), "fsck") {
+		t.Errorf("refusal message should mention fsck, got:\n%s", mergeOut)
+	}
+}
+
+func TestScenario_MergeRecordsMergeLogEntry(t *testing.T) {
+	s := newScenario(t)
+	s.Bosun("init", "1")
+
+	wt1 := s.WorktreePath(1)
+	s.WriteFileIn(wt1, "feature.txt", "x\n")
+	s.CommitIn(wt1, "feature work")
+	s.Bosun("done", "session-1")
+	s.Bosun("merge")
+
+	logPath := filepath.Join(s.repo, ".bosun", "merges.log")
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read merges.log: %v", err)
+	}
+	if !strings.Contains(string(data), `"session":"session-1"`) {
+		t.Errorf("merges.log missing session-1 entry:\n%s", data)
+	}
+	for _, want := range []string{`"pre":"`, `"post":"`, `"ts":"`, `"squash_msg":"`} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("merges.log missing key %q:\n%s", want, data)
+		}
+	}
+}
+
+func TestScenario_MergeUndoResetsMain(t *testing.T) {
+	s := newScenario(t)
+	s.Bosun("init", "1")
+
+	// Capture pre-merge HEAD via bosun's view (we'll compare git rev-parse below).
+	preHead := strings.TrimSpace(s.GitIn(s.repo, "rev-parse", "HEAD"))
+
+	wt1 := s.WorktreePath(1)
+	s.WriteFileIn(wt1, "feature.txt", "x\n")
+	s.CommitIn(wt1, "feature work")
+	s.Bosun("done", "session-1")
+	s.Bosun("merge")
+
+	postHead := strings.TrimSpace(s.GitIn(s.repo, "rev-parse", "HEAD"))
+	if postHead == preHead {
+		t.Fatalf("HEAD did not advance after merge")
+	}
+	s.AssertFileOnMain("feature.txt")
+
+	// Undo: by session name. After this, main should be back at preHead
+	// and the merged file should be gone from the main worktree.
+	undoOut := s.Bosun("merge", "--undo", "session-1")
+	s.AssertContains(undoOut, "undid merge of session-1")
+
+	afterUndo := strings.TrimSpace(s.GitIn(s.repo, "rev-parse", "HEAD"))
+	if afterUndo != preHead {
+		t.Errorf("HEAD after undo = %s, want preHead %s", afterUndo, preHead)
+	}
+	if _, err := os.Stat(filepath.Join(s.repo, "feature.txt")); err == nil {
+		t.Errorf("feature.txt should be gone from main after undo")
+	}
+}
+
+func TestScenario_MergeUndoRefusesWhenMainAdvanced(t *testing.T) {
+	s := newScenario(t)
+	s.Bosun("init", "1")
+
+	wt1 := s.WorktreePath(1)
+	s.WriteFileIn(wt1, "feature.txt", "x\n")
+	s.CommitIn(wt1, "feature work")
+	s.Bosun("done", "session-1")
+	s.Bosun("merge")
+
+	// Land an unrelated commit directly on main — now the recorded
+	// post-SHA is no longer HEAD, so undo must refuse.
+	s.WriteFile("after.txt", "later work\n")
+	s.GitIn(s.repo, "add", "after.txt")
+	s.GitIn(s.repo, "commit", "-q", "-m", "post-merge work")
+
+	out, err := s.BosunErr("merge", "--undo", "session-1")
+	if err == nil {
+		t.Fatalf("undo should refuse after main advanced, got success:\n%s", out)
+	}
+	for _, want := range []string{"main has moved past", "git reflog"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("refusal message missing %q, got:\n%s", want, out)
+		}
+	}
+}
+
+func TestScenario_MergeListUndoPrintsHistory(t *testing.T) {
+	s := newScenario(t)
+	s.Bosun("init", "2")
+
+	for _, n := range []int{1, 2} {
+		wt := s.WorktreePath(n)
+		s.WriteFileIn(wt, fmt.Sprintf("f%d.txt", n), "x\n")
+		s.CommitIn(wt, fmt.Sprintf("work %d", n))
+		s.Bosun("done", fmt.Sprintf("session-%d", n))
+	}
+	s.Bosun("merge")
+
+	out := s.Bosun("merge", "--list-undo")
+	for _, want := range []string{"session-1", "session-2"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("--list-undo output missing %q, got:\n%s", want, out)
+		}
+	}
+}
+
+func TestScenario_MergeListUndoEmptyLog(t *testing.T) {
+	s := newScenario(t)
+	out := s.Bosun("merge", "--list-undo")
+	s.AssertContains(out, "no merge history")
 }

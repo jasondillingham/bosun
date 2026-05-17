@@ -19,6 +19,12 @@ import (
 // paying the cost on each scenario.
 var bosunBin string
 
+// fakeAgentBin is the path to a tiny `claude` binary compiled in
+// TestMain. Used by scenario tests that need proc.Running to detect a
+// live agent in a worktree. Empty when the build failed (or on
+// Windows) — those tests t.Skip rather than hard-fail.
+var fakeAgentBin string
+
 func TestMain(m *testing.M) {
 	if runtime.GOOS == "windows" {
 		// Scenarios use POSIX shell habits (forward slashes, no .exe);
@@ -40,6 +46,25 @@ func TestMain(m *testing.M) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		fmt.Fprintf(os.Stderr, "TestMain: build failed: %v\n%s", err, out)
 		os.Exit(1)
+	}
+
+	// Build the fake-agent binary once per test process so individual
+	// scenario tests don't each pay the `go build` cost. macOS code-
+	// signing kills relocated binaries, so we can't just copy /bin/sleep;
+	// a freshly-built Go binary with argv[0]="claude" is the only way
+	// gopsutil's Name() will report "claude" for the subprocess.
+	fakeAgentSrc := filepath.Join(tmp, "fake-agent.go")
+	if err := os.WriteFile(fakeAgentSrc, []byte("package main\nimport \"time\"\nfunc main() { time.Sleep(60 * time.Second) }\n"), 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "TestMain: write fake-agent source: %v\n", err)
+		os.Exit(1)
+	}
+	fakeAgentBin = filepath.Join(tmp, "claude")
+	cmd = exec.Command("go", "build", "-o", fakeAgentBin, fakeAgentSrc)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		// Don't fail TestMain — scenarios that need the fake agent
+		// will call t.Skip() when fakeAgentBin is "".
+		fmt.Fprintf(os.Stderr, "TestMain: fake-agent build failed: %v\n%s", err, out)
+		fakeAgentBin = ""
 	}
 
 	os.Exit(m.Run())

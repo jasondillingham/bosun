@@ -10,11 +10,20 @@
 package proc
 
 import (
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/shirou/gopsutil/v3/process"
 )
+
+// debugEnv toggles per-call diagnostic logging to stderr. Operators
+// who see RUNNING="—" for a session whose Ghostty window clearly has
+// an active agent can `BOSUN_PROC_DEBUG=1 bosun status` to see which
+// candidate processes were skipped and why. Off by default — too
+// chatty for normal use.
+const debugEnv = "BOSUN_PROC_DEBUG"
 
 // ProcInfo is the minimal snapshot of a running process needed for matching.
 type ProcInfo struct {
@@ -38,19 +47,30 @@ type GopsutilLister struct{}
 // entries on Linux's /proc) are swallowed silently — the process is simply
 // omitted. A non-nil error indicates a failure to enumerate processes at
 // all.
+//
+// When BOSUN_PROC_DEBUG=1 is set, skipped processes whose name looks like
+// an agent are logged to stderr so operators can diagnose false-negative
+// RUNNING detections (the v0.7 round-1 kickoff hit this on every session).
 func (GopsutilLister) List() ([]ProcInfo, error) {
 	ps, err := process.Processes()
 	if err != nil {
 		return nil, err
 	}
+	debug := os.Getenv(debugEnv) == "1"
 	out := make([]ProcInfo, 0, len(ps))
 	for _, p := range ps {
 		name, err := p.Name()
 		if err != nil {
+			if debug {
+				fmt.Fprintf(os.Stderr, "proc: pid %d: name unavailable: %v\n", p.Pid, err)
+			}
 			continue
 		}
 		cwd, err := p.Cwd()
 		if err != nil {
+			if debug && IsAgent(name) {
+				fmt.Fprintf(os.Stderr, "proc: pid %d (%s): cwd unavailable: %v — agent candidate skipped\n", p.Pid, name, err)
+			}
 			continue
 		}
 		out = append(out, ProcInfo{PID: int(p.Pid), Name: name, CWD: cwd})
@@ -75,18 +95,29 @@ func Running(worktreePath string) (pid int, ok bool, err error) {
 // Lister and a name predicate. The path-matching logic (absolute-path
 // normalization, symlink resolution, first-hit return) is shared with
 // Running.
+//
+// With BOSUN_PROC_DEBUG=1, name-matched candidates whose CWD does NOT
+// match are emitted to stderr. The diagnostic surfaces the most common
+// false-negative cause (a CWD that canonicalizes differently — e.g.
+// /tmp vs /private/tmp on macOS, or a path the process inherited from
+// a parent shell that has since cd'd elsewhere).
 func RunningWith(l Lister, isAgent func(name string) bool, worktreePath string) (pid int, ok bool, err error) {
 	target := canonicalize(worktreePath)
 	procs, err := l.List()
 	if err != nil {
 		return 0, false, err
 	}
+	debug := os.Getenv(debugEnv) == "1"
 	for _, p := range procs {
 		if !isAgent(p.Name) {
 			continue
 		}
-		if canonicalize(p.CWD) == target {
+		got := canonicalize(p.CWD)
+		if got == target {
 			return p.PID, true, nil
+		}
+		if debug {
+			fmt.Fprintf(os.Stderr, "proc: pid %d (%s) cwd=%s does not match target=%s\n", p.PID, p.Name, got, target)
 		}
 	}
 	return 0, false, nil

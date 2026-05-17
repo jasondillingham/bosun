@@ -2,10 +2,12 @@ package suggest
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand"
 	"os"
@@ -15,11 +17,18 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 )
 
 // intelByteBudget caps the JSON-serialized RepoIntel so the prompt
 // budget stays predictable. ~6KB matches the v0.5 spec.
 const intelByteBudget = 6144
+
+// inspectGitTimeout caps every git invocation in this file so a hung
+// git (under fsync pressure, slow disk, locked index) can't wedge
+// `bosun suggest` forever. 30s mirrors the default git_op_timeout
+// used elsewhere; suggest is meant to be a few-second pre-flight.
+const inspectGitTimeout = 30 * time.Second
 
 // fileSampleCap is the maximum file-sample size before deterministic
 // down-sampling kicks in.
@@ -75,14 +84,19 @@ func Inspect(repoRoot string) (RepoIntel, error) {
 
 // listTrackedFiles runs `git ls-files` in dir and returns the tracked
 // paths (forward-slash, relative to repo root). An empty repo returns
-// an empty slice, not an error.
+// an empty slice, not an error. Bounded by inspectGitTimeout.
 func listTrackedFiles(dir string) ([]string, error) {
-	cmd := exec.Command("git", "ls-files")
+	ctx, cancel := context.WithTimeout(context.Background(), inspectGitTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "ls-files")
 	cmd.Dir = dir
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return nil, fmt.Errorf("git ls-files: timed out after %s", inspectGitTimeout)
+		}
 		return nil, fmt.Errorf("git ls-files: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	out := strings.TrimRight(stdout.String(), "\n")
@@ -233,9 +247,13 @@ func seedFromSHA(sha string, fallback int) int64 {
 }
 
 // headRef returns the resolved HEAD SHA as a hex string, or "" if HEAD
-// can't be resolved (e.g. empty repo, no commits yet).
+// can't be resolved (e.g. empty repo, no commits yet). Bounded by
+// inspectGitTimeout; a timeout collapses to "" so suggest can proceed
+// with the fallback sampling path.
 func headRef(dir string) string {
-	cmd := exec.Command("git", "rev-parse", "HEAD")
+	ctx, cancel := context.WithTimeout(context.Background(), inspectGitTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
 	cmd.Dir = dir
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
@@ -247,10 +265,12 @@ func headRef(dir string) string {
 }
 
 // recentCommits returns up to the last 30 commit subjects. Errors
-// (e.g. empty repo) are swallowed — recent activity is a hint, not a
-// hard requirement.
+// (e.g. empty repo, hung git) are swallowed — recent activity is a
+// hint, not a hard requirement. Bounded by inspectGitTimeout.
 func recentCommits(dir string) []string {
-	cmd := exec.Command("git", "log", "-30", "--pretty=format:%s")
+	ctx, cancel := context.WithTimeout(context.Background(), inspectGitTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "log", "-30", "--pretty=format:%s")
 	cmd.Dir = dir
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout

@@ -64,6 +64,23 @@ Bosun runs alongside your normal git workflow, on the same checkout you already 
 - Modifies your global git config or your `user.{name,email}`.
 - Modifies repo-level git config beyond what `git worktree add` already does.
 
+## Why bosun, and not just Claude Code's worktree-isolated Agent?
+
+Claude Code's `Agent(isolation: "worktree")` is for **delegating one task** to a sub-agent inside a single conversation. The sub-agent gets its own worktree, does the work, and returns when the sub-task completes — the worktree dies with it. Visibility is parent-to-child only; nothing outside that pair can see what the sub-agent is doing.
+
+Bosun is for **coordinating N persistent sessions** across operator and agent restarts. Sessions live as long as the operator wants them to, survive Ghostty restarts and laptop reboots, and `bosun status` shows them all in one place — not one parent-child pair at a time.
+
+Specific things bosun does that an isolated Agent can't:
+
+- **Cross-session predict-before-merge** (`bosun predict`) — heuristic conflict detection across a plan's lanes before any work starts.
+- **Merge orchestration with reflog undo** (`bosun merge --undo`) — squash-merge multiple sessions back to base and reset cleanly if it went wrong.
+- **Safety contract** validated through SIGBUS, CRASHED state, and corrupted-gitdir trials (`docs/v0.8-trial-findings.md`).
+- **`bosun rescue`** for the failure modes the agent can't recover from itself (CRASHED sessions, salvageable dirty trees).
+- **`bosun doctor`** for environmental preflight before any session starts.
+- **Agent-spawned sub-coordination** (v0.9 `bosun_spawn`, off by default) — sessions can spawn their own child sessions when a lane needs to fan out.
+
+**When NOT to use bosun:** one-shot tasks that fit in a single agent's context. The wider CLI surface is only worth it once you're coordinating parallel work across sessions; for a single task, the Agent tool's worktree isolation is the lighter answer.
+
 ## Install
 
 ```
@@ -147,7 +164,11 @@ Runs on macOS, Linux, and Windows (x86_64 + arm64 binaries available).
 
 ## Status
 
-**v0.7 landed locally; v0.8 in progress** (public-launch readiness sprint — see `docs/v0.8-roadmap.md`). The repo is private until the v0.8 gates are cleared. See `RELEASES.md` for full version history, `SPEC.md` for the v0.1 implementation spec, and `CLAUDE.md` if you're a Claude Code session contributing to this codebase.
+**Validated.** The safety contract held through SIGBUS, CRASHED state, corrupted-gitdir recovery, and `merge --undo` reflog reset during the v0.8 trial #2 against `homelab-status-mcp` — see [`docs/v0.8-trial-findings.md`](./docs/v0.8-trial-findings.md). 22 packages currently green under `make check`; `make fuzz` and `make stress` clean.
+
+**Not yet validated.** Zero external users — bosun has not been used by anyone other than the maintainer on their own repo. v0.9's agent-spawn flow (`bosun_spawn`) has not been exercised externally; trial #3 is queued (see issue #7) and the public release of v0.9 is gated on it. v1.0 will be gated on accumulated external usage signal, not on shipping more features.
+
+See `RELEASES.md` for full version history, `SPEC.md` for the v0.1 implementation spec, and `CLAUDE.md` if you're a Claude Code session contributing to this codebase.
 
 ## Roadmap
 

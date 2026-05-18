@@ -67,9 +67,13 @@ The gate between v0.8 and the public flip per `CLAUDE.md`.
 
 ---
 
-## Phase 4 — The actual flip
+## Phase 4a — The actual flip (v0.7 + v0.8 visible; v0.9 held back)
 
 The one-line command that's the actual launch. **Don't run this until everything above is checked.**
+
+This phase makes the repo public with `v0.7.0` and `v0.8.0` as the visible release story. **v0.9.0 stays tagged-but-not-publicly-acknowledged** at this point: don't push v0.9.0 to GitHub Releases yet, don't link to it from the README's roadmap as "shipped." It lives in the git history but is not part of the public launch narrative until Phase 4b.
+
+**Rationale for the split:** v0.9's `bosun_spawn` is the differentiator AND the riskiest piece — an agent inside a session spawning more sessions has a much larger blast radius than any pre-v0.9 operation. Bundling it with the safer v0.7/v0.8 launch story would mean the first community user who tries `bosun_spawn` is also bosun's external load test for that feature. The two-phase split sequences the risk: the launch lands on validated ground, and v0.9 ships publicly only after trial #3 has actually exercised the agent-spawn path.
 
 - [ ] **Flip visibility.**
   ```sh
@@ -77,16 +81,20 @@ The one-line command that's the actual launch. **Don't run this until everything
   ```
   Output: `✓ Edited repository jasondillingham/bosun`. The repo is now public — all history is exposed.
 
-- [ ] **Push tags (in case the private push earlier got rolled back).**
+- [ ] **Push the v0.7 and v0.8 tags (in case the private push earlier got rolled back).**
   ```sh
   git push origin v0.7.0 v0.8.0
   ```
+  Do **not** push v0.9.0 here, even if it's tagged locally. It will be pushed in Phase 4b.
 
-- [ ] **Create GitHub Releases for both tags.** Pulls release notes from `RELEASES.md`. Optional but adds discoverability.
+- [ ] **Create GitHub Releases for v0.7.0 and v0.8.0 only.** Pulls release notes from `RELEASES.md`. Optional but adds discoverability.
   ```sh
   gh release create v0.7.0 --notes-from-tag --title "v0.7 — polish + bug-hunt + test suite"
   gh release create v0.8.0 --notes-from-tag --title "v0.8 — public launch"
   ```
+  Hold off on `gh release create v0.9.0` — that's Phase 4b.
+
+- [ ] **Confirm README roadmap is honest about v0.9's status.** The roadmap line for v0.9 (if present) should not claim it's "shipped" — at this point it's "tagged, awaiting external validation." This matches the Status section's not-yet-validated callout.
 
 - [ ] **Sanity-check from a fresh clone.** In a new terminal:
   ```sh
@@ -96,7 +104,33 @@ The one-line command that's the actual launch. **Don't run this until everything
 
 ---
 
+## Phase 4b — Release v0.9.0 publicly
+
+Gated on **trial #3 (issue #7) completing successfully** — the external-repo exercise of v0.9's `bosun_spawn` agent-spawn flow. Until that trial closes cleanly, v0.9 stays in the held-back state from Phase 4a.
+
+- [ ] **Trial #3 has run and passed.** Same shape as trial #2: external repo, `bosun doctor` PASS, init → multi-session → resilience-gate phases. The new piece is exercising `bosun_spawn` from inside a session (an agent spawning child sessions) and verifying the parent's view stays consistent. If the trial surfaces a safety-contract violation in the spawn flow, **stop and fix in a v0.9.x point release** before continuing.
+
+- [ ] **Write `docs/v0.9-trial-findings.md`.** Mirror the structure of `docs/v0.8-trial-findings.md`: what was tried, what happened, what recovery paths exercised. Even an uneventful trial gets a one-paragraph "nothing surprising" doc.
+
+- [ ] **Push the v0.9.0 tag.**
+  ```sh
+  git push origin v0.9.0
+  ```
+
+- [ ] **Create the v0.9.0 GitHub Release.**
+  ```sh
+  gh release create v0.9.0 --notes-from-tag --title "v0.9 — agent-spawn (bosun_spawn)"
+  ```
+
+- [ ] **Update the README roadmap to reflect v0.9 as shipped + externally validated.** Link to `docs/v0.9-trial-findings.md` from the Status section's "Not yet validated" → "Validated" move. Commit + push.
+
+- [ ] **Sanity-check from a fresh clone again.** Same one-liner as Phase 4a, now with v0.9 in the picture.
+
+---
+
 ## Phase 5 — Announce (optional, low priority)
+
+Slides to after **Phase 4b** — the announce moment is the public v0.9 release, not the bare repo-flip. Announcing at Phase 4a would put `bosun_spawn` in front of HN before trial #3 has validated it, which is the exact load-test-by-strangers outcome the 4a/4b split exists to avoid.
 
 The launch itself is the milestone. Anything below is amplification.
 
@@ -107,6 +141,8 @@ The launch itself is the milestone. Anything below is amplification.
 ---
 
 ## Phase 6 — Hold
+
+Also slides to after **Phase 4b**. The hold-for-a-week clock starts when the full launch story (v0.9 included) is in the public's hands, not when the repo first flipped public.
 
 After the flip and any announcements: **stop building for a week.** Per `docs/v0.8-roadmap.md`'s "After v0.8" section:
 

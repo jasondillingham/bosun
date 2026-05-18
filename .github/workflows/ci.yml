@@ -7,11 +7,17 @@ on:
 
 jobs:
   test:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    # Ubuntu-only by default. Public-repo Linux runners are free with
+    # no minute counting; macOS (10× multiplier) and Windows (2×) burn
+    # quota fast on a busy day. Cross-OS regressions are validated by
+    # operator-side local runs (bosun is macOS-primary, Linux-tested,
+    # Windows officially not-yet-supported in v0.10/v0.11).
+    #
+    # If/when this changes — external contributors arrive, Windows
+    # support lands, etc. — re-add the matrix:
+    #   os: [ubuntu-latest, macos-latest, windows-latest]
+    #   runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
 
@@ -20,12 +26,11 @@ jobs:
           go-version: '1.25'
           cache: true
 
-      - name: Configure git identity (Windows runner needs this)
+      - name: Configure git identity
         run: |
           git config --global user.email "ci@example.com"
           git config --global user.name "CI"
           git config --global init.defaultBranch main
-        shell: bash
 
       - name: go vet
         run: go vet ./...
@@ -37,7 +42,6 @@ jobs:
         run: |
           VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo dev)
           go build -ldflags="-X main.version=$VERSION" -o bosun ./cmd/bosun
-        shell: bash
 
       - name: go test -race
         run: go test -race ./... -count=1

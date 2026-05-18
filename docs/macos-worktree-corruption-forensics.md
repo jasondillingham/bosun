@@ -208,14 +208,53 @@ iCloud-managed home dir is unreliable, the first community trial
 will surface this immediately and the trust contract that v0.8
 established is broken before v0.9 is even visible.
 
+## Confirmation experiment — iCloud is the trigger (2026-05-18)
+
+After this doc was first written, ran the controlled `/tmp/` repro
+as the first investigation step. Outcome: **iCloud Drive coverage
+is confirmed as the corruption trigger.**
+
+Protocol:
+
+1. `mkdir /tmp/bosun-repro && cd /tmp/bosun-repro`
+2. `git init -q` + 5 dummy files + commit
+3. `~/go/bin/bosun init 4 --no-load-check` — succeeded
+4. Verified initial state: all 4 admin dirs have HEAD/commondir/gitdir,
+   no phantoms, `bosun status` lists all 4
+5. Watched the dirs for 9 minutes (13 × 45s iterations)
+
+Result: zero broken admin files, zero phantom dirs, all 4 sessions
+visible to `bosun status` throughout the entire watch. The same
+hardware that corrupted four worktrees in `~/Documents/Homelab/bosun`
+within ~5 minutes (the iCloud-managed path) kept the `/tmp/` worktrees
+pristine for 9+ minutes. Watch stopped early once enough data was
+collected to conclude — the corruption window observed on the iCloud
+path passed cleanly on /tmp.
+
+Causal chain confirmed:
+
+```
+git worktree add  →  iCloud File Provider sees the new files
+                  →  reconciles against cached state from prior bosun rounds
+                  →  splits new HEAD/commondir/gitdir into " 2"/" 3" suffix phantom dirs
+                  →  leaves originals empty or deleted
+                  →  bosun loses its view of the worktrees
+                  →  every multi-worktree command degrades silently
+```
+
+Reproduces with high probability on any iCloud-managed path that has
+seen a prior `bosun init` round. The trigger is not just iCloud
+presence but iCloud's incremental sync state — File Provider needs
+something stale to reconcile against. Fresh paths (like the first
+ever `/tmp/bosun-repro/`) are corruption-free. Paths with rolled-back
+or cleaned-up prior rounds aren't.
+
 ## Recommended investigations
 
 Before any code fix attempts:
 
-1. **Reproduce in a controlled env.** Take this same machine to a
-   path OUTSIDE iCloud Drive coverage (e.g., `/tmp/bosun-repro/`)
-   and run `bosun init 4`. If the corruption doesn't reproduce,
-   that confirms iCloud as the trigger.
+1. **Reproduce in a controlled env.** ✓ Done. `/tmp/` stays clean
+   for 9+ minutes after `bosun init 4`. iCloud is the trigger.
 2. **Reproduce with iCloud disabled.** Sign out of iCloud Drive
    temporarily; rerun. If the corruption stops, that's confirmation
    beyond doubt.

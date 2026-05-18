@@ -13,15 +13,16 @@ package mcp
 // single source of truth callers (web UI, docs gen, operator dashboards)
 // should reference if they need to talk about tools by name in Go code.
 const (
-	ToolAnnounce   = "bosun_announce"
-	ToolCheck      = "bosun_check"
-	ToolCheckTree  = "bosun_check_tree"
-	ToolClaim      = "bosun_claim"
-	ToolDone       = "bosun_done"
-	ToolHeartbeat  = "bosun_heartbeat"
-	ToolPredict    = "bosun_predict"
-	ToolRelease    = "bosun_release"
-	ToolSpawn      = "bosun_spawn"
-	ToolStuck      = "bosun_stuck"
-	ToolSubtask    = "bosun_subtask"
+	ToolAnnounce      = "bosun_announce"
+	ToolCheck         = "bosun_check"
+	ToolCheckTree     = "bosun_check_tree"
+	ToolClaim         = "bosun_claim"
+	ToolDone          = "bosun_done"
+	ToolHeartbeat     = "bosun_heartbeat"
+	ToolPredict       = "bosun_predict"
+	ToolRelease       = "bosun_release"
+	ToolSpawn         = "bosun_spawn"
+	ToolStuck         = "bosun_stuck"
+	ToolSubtask       = "bosun_subtask"
+	ToolSubtaskCancel = "bosun_subtask_cancel"
 )

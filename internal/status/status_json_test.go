@@ -34,6 +34,7 @@ var statusJSON_PerSessionKeys_Full = []string{
 	"last_sha", "last_subject", "last_relative", "last_unix",
 	"state_message",
 	"parent", "children", "depth",
+	"subtasks",
 }
 
 // Per-session keys for a session with no commits, no claims, no agent
@@ -53,6 +54,7 @@ func TestSchema_StatusJSON_LockedKeys_AllFieldsPopulated(t *testing.T) {
 		Parent:   "session-0",
 		Children: []string{"session-1.auth"},
 		Depth:    1,
+		Subtasks: 3,
 	}}
 	overlaps := []claims.Overlap{
 		{Path: "internal/auth.go", Sessions: []string{"session-1", "session-3"}},

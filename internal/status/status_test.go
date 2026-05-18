@@ -443,3 +443,60 @@ func TestRenderText_NoTreeForcesFlatOrder(t *testing.T) {
 		t.Errorf("--no-tree should not produce tree glyphs:\n%s", out)
 	}
 }
+
+// TestRenderText_SubtaskCounter pins the 0/1/N rendering for the
+// LAST_COMMIT-suffix counter. Zero is no-op (no "+0" leaks into the
+// cell); 1 and N use the same `+<count> subs` shape so the column
+// math stays stable regardless of count.
+func TestRenderText_SubtaskCounter(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		count     int
+		wantHave  []string
+		wantMiss  []string
+	}{
+		{
+			name:     "zero — no suffix",
+			count:    0,
+			wantMiss: []string{"subs", "+0"},
+		},
+		{
+			name:     "one",
+			count:    1,
+			wantHave: []string{"+1 subs"},
+		},
+		{
+			name:     "N",
+			count:    7,
+			wantHave: []string{"+7 subs"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sessions := []session.Session{
+				{
+					Number: 1, Name: "session-1", Label: "session-1",
+					Branch: "bosun/session-1",
+					Path: "/code/wt-1", State: session.StateWorking,
+					Ahead: 1,
+					Last: &git.LogEntry{ShortSHA: "abcd", Relative: "5m ago", Subject: "fan out audit"},
+					Subtasks: tc.count,
+				},
+			}
+			var buf bytes.Buffer
+			if err := RenderText(&buf, RenderOptions{Sessions: sessions, NoColor: true}); err != nil {
+				t.Fatal(err)
+			}
+			out := buf.String()
+			for _, want := range tc.wantHave {
+				if !strings.Contains(out, want) {
+					t.Errorf("missing %q in output:\n%s", want, out)
+				}
+			}
+			for _, miss := range tc.wantMiss {
+				if strings.Contains(out, miss) {
+					t.Errorf("unexpected %q in output:\n%s", miss, out)
+				}
+			}
+		})
+	}
+}

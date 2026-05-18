@@ -266,14 +266,26 @@ func formatRunning(s session.Session) string {
 }
 
 func formatLastCommit(s session.Session) string {
+	var base string
 	if s.Last == nil {
-		return "—       — (no commits)"
+		base = "—       — (no commits)"
+	} else {
+		subj := s.Last.Subject
+		if len(subj) > 60 {
+			subj = subj[:60]
+		}
+		base = fmt.Sprintf("%s — %s", s.Last.Relative, subj)
 	}
-	subj := s.Last.Subject
-	if len(subj) > 60 {
-		subj = subj[:60]
+	// Sub-task counter rides as a suffix on the LAST_COMMIT cell so
+	// the existing column layout in `bosun status` doesn't have to
+	// grow a new column. Zero is rendered as no suffix; 1/N share the
+	// same compact `+N subs` shape (deliberately omitting the
+	// singular/plural switch — `+1 sub` would break the column width
+	// math at scale and the operator can read the digit).
+	if s.Subtasks > 0 {
+		base = fmt.Sprintf("%s · +%d subs", base, s.Subtasks)
 	}
-	return fmt.Sprintf("%s — %s", s.Last.Relative, subj)
+	return base
 }
 
 func writeOverlaps(w io.Writer, overlaps []claims.Overlap) {

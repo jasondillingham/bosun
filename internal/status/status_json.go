@@ -35,6 +35,7 @@ package status
 //	parent          string  label of the session that spawned this one; omitted for top-level
 //	children        []string labels of sub-sessions spawned by this one; omitted when empty
 //	depth           int     0 for top-level, parent.Depth+1 for sub-sessions; omitted when 0
+//	subtasks        int     active sub-task count (un-cancelled records in .bosun/subtasks/<name>/); omitted when 0
 //
 // overlap object:
 //
@@ -95,6 +96,10 @@ type sessionJSON struct {
 	Parent   string   `json:"parent,omitempty"`
 	Children []string `json:"children,omitempty"`
 	Depth    int      `json:"depth,omitempty"`
+	// Subtasks is the count of currently-active (un-cancelled) sub-
+	// tasks for this session. omitempty so sessions that have never
+	// run a sub-task (the common case) keep the v0.10 payload shape.
+	Subtasks int `json:"subtasks,omitempty"`
 }
 
 type overlapJSON struct {
@@ -130,6 +135,7 @@ func RenderJSON(w io.Writer, sessions []session.Session, overlaps []claims.Overl
 			Parent:          s.Parent,
 			Children:        s.Children,
 			Depth:           s.Depth,
+			Subtasks:        s.Subtasks,
 		}
 		if !s.HeartbeatAt.IsZero() {
 			row.HeartbeatUnix = s.HeartbeatAt.Unix()

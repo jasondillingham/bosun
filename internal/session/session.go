@@ -84,6 +84,12 @@ type Session struct {
 	// sessions. Populated from internal/spawntree when the caller
 	// passes a non-nil SpawnTreeReader to Derive.
 	Depth int
+	// Subtasks is the count of currently-active (un-cancelled) sub-
+	// tasks for this session, computed from .bosun/subtasks/<label>/.
+	// Populated by an enrichment pass at the call site (mirrors the
+	// spawn-tree pattern — Derive stays independent of the subtasks
+	// package). Zero for sessions that have never run a sub-task.
+	Subtasks int
 }
 
 // GetLabel + SetTreeInfo satisfy spawntree.SessionLike so a
@@ -437,8 +443,8 @@ func LegacyWorktreePathForLabel(repoRoot, label string) string {
 // `WorktreePathForLabel` starts returning new-shape paths, every existing
 // caller that stats the canonical path falls back to the legacy shape
 // instead of silently mis-resolving to a non-existent dir.
-func ResolveWorktreePath(repoRoot string, cfg config.Config, label string) string {
-	canonical := WorktreePathForLabel(repoRoot, cfg, label)
+func ResolveWorktreePath(repoRoot string, cfg config.Config, label, roundTimestamp string) string {
+	canonical := WorktreePathForLabel(repoRoot, cfg, label, roundTimestamp)
 	if _, err := os.Stat(canonical); err == nil {
 		return canonical
 	}

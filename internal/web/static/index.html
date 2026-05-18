@@ -43,6 +43,16 @@
      from /api/status; top-level sessions render flush as before. */
   tr.session-row td.session-cell { padding-left: calc(0.7rem + var(--depth, 0) * 1.2em); }
   tr.session-row td.session-cell .tree-prefix { color: var(--muted); margin-right: 0.25rem; }
+  td.last .subs {
+    display: inline-block;
+    margin-left: 0.5rem;
+    padding: 0 0.4rem;
+    border-radius: 999px;
+    background: #eef2ff;
+    color: var(--accent);
+    font-size: 0.75rem;
+    font-variant-numeric: tabular-nums;
+  }
   td.num { text-align: right; font-variant-numeric: tabular-nums; }
   td.last { color: var(--muted); }
   .state { font-weight: 600; }
@@ -199,9 +209,16 @@
       const depth = Number(s.depth) || 0;
       if (depth > 0) tr.style.setProperty("--depth", depth);
       const treePrefix = depth > 0 ? '<span class="tree-prefix">└─</span>' : "";
-      const last = s.last_subject
+      let last = s.last_subject
         ? `${escapeHTML(s.last_sha || "")} ${escapeHTML(s.last_subject)} <span class="muted">(${escapeHTML(s.last_relative || "")})</span>`
         : "";
+      // Sub-task counter rides inline in the LAST cell as a small
+      // pill. Hidden when zero — the common case for sessions that
+      // never run a sub-task — so the row shape matches v0.10.
+      const subs = Number(s.subtasks) || 0;
+      if (subs > 0) {
+        last += ` <span class="subs" title="active sub-tasks">+${subs} subs</span>`;
+      }
       tr.innerHTML =
         `<td class="session-cell">${treePrefix}${escapeHTML(s.name)}</td>` +
         `<td class="state state-${escapeHTML(s.state)}">${escapeHTML(s.state)}</td>` +

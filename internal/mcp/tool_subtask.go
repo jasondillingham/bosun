@@ -106,7 +106,10 @@ func (s *Server) toolSubtask(_ context.Context, _ *mcp.CallToolRequest, args Sub
 	// Auth gate #2: parent identity. Same s.runningFn indirection
 	// bosun_spawn uses — tests substitute a deterministic fake so
 	// the gate is exercisable without spawning a real claude.
-	worktreePath := session.WorktreePathForLabel(repoRoot, *s.cfg, parent)
+	// Sub-tasks share the parent's worktree; ResolveWorktreePath's
+	// legacy-fallback handles either naming scheme since liveness
+	// only cares about the path matching a live agent's CWD.
+	worktreePath := session.ResolveWorktreePath(repoRoot, *s.cfg, parent, "")
 	if _, running := s.runningFn(worktreePath); !running {
 		return refuse(subtaskGateParentLiveness, fmt.Errorf("no live agent detected in %s's worktree; bosun_subtask requires the caller to be running inside the named parent", parent))
 	}

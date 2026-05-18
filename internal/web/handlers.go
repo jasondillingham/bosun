@@ -15,6 +15,7 @@ import (
 	"github.com/jasondillingham/bosun/internal/session"
 	"github.com/jasondillingham/bosun/internal/spawntree"
 	"github.com/jasondillingham/bosun/internal/status"
+	"github.com/jasondillingham/bosun/internal/subtask"
 )
 
 //go:embed static/index.html
@@ -211,6 +212,24 @@ func enrichWithSpawnTree(repoRoot string, sessions []session.Session) {
 	_ = tree.EnrichSessions(likes)
 }
 
+// enrichWithSubtasks counts active sub-tasks under
+// .bosun/subtasks/<label>/ for each session. Best-effort — a torn
+// or missing registry leaves Subtasks at 0 instead of breaking the
+// dashboard render.
+func enrichWithSubtasks(repoRoot string, sessions []session.Session) {
+	labels := make([]string, len(sessions))
+	for i := range sessions {
+		labels[i] = sessions[i].Label
+	}
+	counts, err := subtask.CountsForSessions(repoRoot, labels)
+	if err != nil {
+		return
+	}
+	for i := range sessions {
+		sessions[i].Subtasks = counts[sessions[i].Label]
+	}
+}
+
 // snapshot returns the cached session list when it's fresh, otherwise
 // recomputes from git/claims/state. Cache TTL is s.cfg.Interval — set
 // to 0 to disable caching (tests rely on this).
@@ -232,6 +251,7 @@ func (s *Server) snapshot(ctx context.Context, cache *statusCache) ([]session.Se
 	// effort: a missing or torn spawn-tree.json leaves the fields blank
 	// rather than breaking the dashboard.
 	enrichWithSpawnTree(s.cfg.RepoRoot, sessions)
+	enrichWithSubtasks(s.cfg.RepoRoot, sessions)
 
 	overlaps, err := s.cfg.Claims.Overlaps()
 	if err != nil {

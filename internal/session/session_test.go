@@ -213,8 +213,8 @@ func TestResolveWorktreePath(t *testing.T) {
 
 	// With nothing on disk, the resolver returns the canonical path so
 	// init can create at it.
-	got := ResolveWorktreePath(repo, cfg, "session-1")
-	if want := WorktreePathForLabel(repo, cfg, "session-1"); got != want {
+	got := ResolveWorktreePath(repo, cfg, "session-1", "")
+	if want := WorktreePathForLabel(repo, cfg, "session-1", ""); got != want {
 		t.Fatalf("nothing on disk: got %q, want canonical %q", got, want)
 	}
 
@@ -223,12 +223,12 @@ func TestResolveWorktreePath(t *testing.T) {
 	// from the canonical (today it doesn't differ, so this exercises the
 	// legacy-fallback branch by making the canonical absent).
 	legacy := LegacyWorktreePathForLabel(repo, "session-1")
-	canonical := WorktreePathForLabel(repo, cfg, "session-1")
+	canonical := WorktreePathForLabel(repo, cfg, "session-1", "")
 	if legacy != canonical {
 		if err := os.MkdirAll(legacy, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		got = ResolveWorktreePath(repo, cfg, "session-1")
+		got = ResolveWorktreePath(repo, cfg, "session-1", "")
 		if got != legacy {
 			t.Fatalf("legacy on disk: got %q, want legacy %q", got, legacy)
 		}
@@ -238,7 +238,7 @@ func TestResolveWorktreePath(t *testing.T) {
 	if err := os.MkdirAll(canonical, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	got = ResolveWorktreePath(repo, cfg, "session-1")
+	got = ResolveWorktreePath(repo, cfg, "session-1", "")
 	if got != canonical {
 		t.Fatalf("canonical on disk: got %q, want canonical %q", got, canonical)
 	}

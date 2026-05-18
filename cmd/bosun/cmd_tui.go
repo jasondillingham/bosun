@@ -66,6 +66,10 @@ func buildTuiServices(rc *runCtx) control.Services {
 			if err != nil {
 				return nil, nil, fmt.Errorf("derive sessions: %w", err)
 			}
+			// Mirror cmd_status's enrichment so the TUI shows the
+			// same tree shape + sub-task counter the CLI does.
+			enrichWithSpawnTree(rc.repoRoot, sessions)
+			enrichWithSubtasks(rc.repoRoot, sessions)
 			return sessions, recentEvents(rc.repoRoot), nil
 		},
 		MergeOne: func(s session.Session) (string, string, error) {

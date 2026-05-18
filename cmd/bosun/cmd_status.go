@@ -13,6 +13,7 @@ import (
 	"github.com/jasondillingham/bosun/internal/session"
 	"github.com/jasondillingham/bosun/internal/spawntree"
 	"github.com/jasondillingham/bosun/internal/status"
+	"github.com/jasondillingham/bosun/internal/subtask"
 	"github.com/jasondillingham/bosun/internal/tui"
 	"github.com/spf13/cobra"
 )
@@ -102,6 +103,7 @@ func renderStatusOnce(w io.Writer, rc *runCtx, opts statusOpts) error {
 	// shouldn't break status; we just fall through to the flat
 	// rendering when there's no parent/child data.
 	enrichWithSpawnTree(rc.repoRoot, sessions)
+	enrichWithSubtasks(rc.repoRoot, sessions)
 
 	var overlaps []claims.Overlap
 	if opts.withOverlaps {
@@ -142,6 +144,25 @@ func enrichWithSpawnTree(repoRoot string, sessions []session.Session) {
 		likes[i] = &sessions[i]
 	}
 	_ = tree.EnrichSessions(likes)
+}
+
+// enrichWithSubtasks fills sessions[i].Subtasks from the on-disk
+// sub-task registry under .bosun/subtasks/<label>/. Best-effort —
+// counting failures leave the field at zero rather than breaking
+// status rendering. The registry is owned by `bosun_subtask` and
+// `bosun_subtask_cancel`; this is a read-only consumer.
+func enrichWithSubtasks(repoRoot string, sessions []session.Session) {
+	labels := make([]string, len(sessions))
+	for i := range sessions {
+		labels[i] = sessions[i].Label
+	}
+	counts, err := subtask.CountsForSessions(repoRoot, labels)
+	if err != nil {
+		return
+	}
+	for i := range sessions {
+		sessions[i].Subtasks = counts[sessions[i].Label]
+	}
 }
 
 // recentEvents pulls the last few bosun_announce entries from

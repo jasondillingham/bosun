@@ -101,6 +101,12 @@ func (m *Model) renderTable() string {
 			}
 			last = fmt.Sprintf("%s · %s", s.Last.Relative, subj)
 		}
+		// Sub-task counter rides inline in the LAST cell — no new
+		// column. Terminal width pressure is already real with seven
+		// columns; the suffix matches the CLI status table's shape.
+		if s.Subtasks > 0 {
+			last = fmt.Sprintf("%s · +%d subs", last, s.Subtasks)
+		}
 		// Mirror the CLI's tree-prefix from status.RenderText: indent by
 		// Depth and prefix sub-sessions with └─ so the tree shape reads
 		// the same in `bosun tui` and `bosun status`.

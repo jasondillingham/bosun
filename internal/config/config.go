@@ -47,6 +47,12 @@ const (
 	// regardless of what an operator configures. A misconfigured 100
 	// gets clamped here so a runaway agent can't fork-bomb.
 	MaxAgentSpawnDepthCeiling = 4
+
+	// Defaults for the liveness gate. See LivenessGate on Config for
+	// the trade-off between the two modes.
+	LivenessGateAuto     = "auto"
+	LivenessGateExternal = "external"
+	DefaultLivenessGate  = LivenessGateAuto
 )
 
 // Config is the resolved bosun config for a repo.
@@ -74,6 +80,21 @@ type Config struct {
 	// AgentSpawn gates the v0.9 bosun_spawn MCP tool. Off by default;
 	// see docs/v0.9-spawn-spec.md for the auth + quota model.
 	AgentSpawn AgentSpawnConfig `json:"agent_spawn"`
+	// LivenessGate selects how `bosun status` decides whether a WORKING
+	// session has CRASHED:
+	//
+	//   "auto"     — default; check the attached-pid file first (if
+	//                present), otherwise scan the process table for
+	//                claude / claude-code / code-cli in the worktree.
+	//                Today's behavior plus the explicit-attach refinement.
+	//   "external" — skip all CRASHED transitions. RUNNING reports
+	//                "external" and the state stays whatever the
+	//                operator (or bosun_done) sets. Right for repos
+	//                where the workers are exclusively driven by
+	//                external orchestrators (Claude Code Task agents,
+	//                CI agents, hand-launched terminals) and the
+	//                proc-scan would always false-CRASH.
+	LivenessGate string `json:"liveness_gate"`
 }
 
 // AgentSpawnConfig governs whether (and how much) agent-driven session
@@ -133,6 +154,7 @@ func Defaults() Config {
 			MaxConcurrentSubSessions: DefaultAgentSpawnMaxConcurrent,
 			MaxDepth:                 DefaultAgentSpawnMaxDepth,
 		},
+		LivenessGate: DefaultLivenessGate,
 	}
 }
 
@@ -211,6 +233,13 @@ func Load(repoRoot string) (Config, error) {
 	}
 	cfg.AgentSpawn.AllowedForSessions = overlay.AgentSpawn.AllowedForSessions
 
+	// LivenessGate: only override when the operator explicitly set a
+	// non-empty value, so a partial config file keeps the documented
+	// default ("auto").
+	if overlay.LivenessGate != "" {
+		cfg.LivenessGate = overlay.LivenessGate
+	}
+
 	if err := cfg.Validate(); err != nil {
 		return cfg, err
 	}
@@ -245,6 +274,12 @@ func (c Config) Validate() error {
 	case "auto", "tmux", "terminal", "print":
 	default:
 		return fmt.Errorf("launcher must be one of auto|tmux|terminal|print, got %q", c.Launcher)
+	}
+	switch c.LivenessGate {
+	case "", LivenessGateAuto, LivenessGateExternal:
+	default:
+		return fmt.Errorf("liveness_gate must be one of %s|%s, got %q",
+			LivenessGateAuto, LivenessGateExternal, c.LivenessGate)
 	}
 	if c.Suggest.MaxTokens < 0 {
 		return fmt.Errorf("suggest.max_tokens must be ≥ 0, got %d", c.Suggest.MaxTokens)

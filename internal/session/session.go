@@ -56,6 +56,13 @@ type Session struct {
 	Last       *git.LogEntry // last commit ahead of base (nil if none)
 	Running    bool          // true when an agent process (claude/claude-code/code-cli) is live in Path
 	RunningPID int           // pid of that agent process; 0 when Running is false
+	// RunningExternal is set when the liveness gate skipped its own
+	// detection because the operator opted into external-driven workers
+	// (config.LivenessGate == "external"). Renderers show "external" in
+	// the RUNNING column in that case; CRASHED auto-transitions are
+	// suppressed. The flag is independent of Running — a session can be
+	// "external" with no observed PID and still not flicker CRASHED.
+	RunningExternal bool
 	// Stale is a derived flag — set when a WORKING (not CRASHED) session has
 	// a recorded heartbeat older than HeartbeatStaleAfter. Kept off the
 	// State enum so the wire-stable state values stay compact; UI surfaces
@@ -105,6 +112,14 @@ type StateReader interface {
 	// with a stale one — agents that never call bosun_heartbeat shouldn't
 	// be flagged STALE.
 	Heartbeat(repoRoot, sessionName string) (at time.Time, exists bool, err error)
+	// Attached returns the pid recorded via `bosun attach` (or the MCP
+	// equivalent) for sessionName. `ok` is false when no attached-pid
+	// file has been written; in that case `pid` is 0. The liveness gate
+	// consults this BEFORE scanning the process table so external
+	// workers (Claude Code Task sub-agents, CI agents, hand-launched
+	// terminals whose basename isn't `claude`) can register themselves
+	// without proc-scan false-CRASHED churn.
+	Attached(repoRoot, sessionName string) (pid int, ok bool, err error)
 }
 
 type ClaimsReader interface {
@@ -177,24 +192,61 @@ func Derive(ctx context.Context, c *git.Client, cfg config.Config, repoRoot stri
 			return nil, fmt.Errorf("read claims %s: %w", name, err)
 		}
 
-		// proc.Running is best-effort: a permission error or transient
-		// failure shouldn't keep `bosun status` from rendering. The
-		// worst case is a false negative on the RUNNING column.
-		runPID, running, _ := proc.Running(wt.Path)
-
-		// Heartbeat is best-effort too: a missing or unreadable file is
+		// Heartbeat is best-effort: a missing or unreadable file is
 		// treated as "no heartbeat recorded", not an error. Surfacing
 		// a status render failure because an agent never called
 		// bosun_heartbeat would be worse than rendering without the
 		// stale flag.
 		hbAt, hbExists, _ := sr.Heartbeat(repoRoot, name)
 
+		// Liveness gate: in "external" mode the operator has declared
+		// they're driving workers from outside the proc-scan's view
+		// (Claude Code Task sub-agents, CI agents, …). Skip the entire
+		// detection path — Running stays false, RunningExternal flags
+		// the column, and CRASHED auto-transitions are suppressed.
+		// Otherwise fall through the attach-then-proc-scan ladder.
+		var (
+			running         bool
+			runPID          int
+			runningExternal bool
+			attachedDead    bool
+		)
+		if cfg.LivenessGate == config.LivenessGateExternal {
+			runningExternal = true
+		} else {
+			// Attached PID check runs FIRST: an explicit registration
+			// beats the proc table. If the file is present but the PID
+			// is dead, the explicit "I was here" makes the
+			// disappearance meaningful, so we flip CRASHED (with
+			// dirty=0 still excluded — see below).
+			if pid, ok, _ := sr.Attached(repoRoot, name); ok {
+				if proc.IsAlive(pid) {
+					running = true
+					runPID = pid
+				} else {
+					attachedDead = true
+				}
+			} else {
+				// proc.Running is best-effort: a permission error or
+				// transient failure shouldn't keep `bosun status` from
+				// rendering. Worst case: a false negative on RUNNING.
+				runPID, running, _ = proc.Running(wt.Path)
+			}
+		}
+
 		// CRASHED is a derived display state: a WORKING session whose
-		// agent process is gone but whose worktree has uncommitted dirty
-		// files. DONE/STUCK sessions are never crashed — they declared
-		// their own terminal state. We only flip WORKING here.
-		if state == StateWorking && !running && dirty > 0 {
-			state = StateCrashed
+		// agent is gone but whose worktree has uncommitted dirty files.
+		// DONE/STUCK sessions are never crashed — they declared their
+		// own terminal state. External mode suppresses CRASHED entirely.
+		// The attached-but-dead case is the v0.11 "recoverable crash":
+		// the registration says "I was here" and the disappearance is
+		// meaningful, so we flip CRASHED regardless of dirty-count.
+		if cfg.LivenessGate != config.LivenessGateExternal && state == StateWorking {
+			if attachedDead {
+				state = StateCrashed
+			} else if !running && dirty > 0 {
+				state = StateCrashed
+			}
 		}
 
 		// STALE is a derived flag, not a State value: a WORKING (not
@@ -209,21 +261,22 @@ func Derive(ctx context.Context, c *git.Client, cfg config.Config, repoRoot stri
 		}
 
 		result = append(result, Session{
-			Number:      number,
-			Name:        name,
-			Label:       label,
-			Branch:      branch,
-			Path:        wt.Path,
-			Ahead:       ahead,
-			Dirty:       dirty,
-			Claimed:     claimed,
-			State:       state,
-			StateMsg:    msg,
-			Last:        last,
-			Running:     running,
-			RunningPID:  runPID,
-			Stale:       stale,
-			HeartbeatAt: hbAt,
+			Number:          number,
+			Name:            name,
+			Label:           label,
+			Branch:          branch,
+			Path:            wt.Path,
+			Ahead:           ahead,
+			Dirty:           dirty,
+			Claimed:         claimed,
+			State:           state,
+			StateMsg:        msg,
+			Last:            last,
+			Running:         running,
+			RunningPID:      runPID,
+			RunningExternal: runningExternal,
+			Stale:           stale,
+			HeartbeatAt:     hbAt,
 		})
 	}
 

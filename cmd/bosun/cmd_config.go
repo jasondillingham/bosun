@@ -32,6 +32,7 @@ var configSetKeys = []string{
 	"session_prefix",
 	"worktree_suffix_pattern",
 	"isolate_cache_default",
+	"liveness_gate",
 	"agent_spawn.enabled",
 	"agent_spawn.max_concurrent_sub_sessions",
 	"agent_spawn.max_depth",
@@ -58,6 +59,7 @@ var configRecognizedKeys = []string{
 	"launcher",
 	"verify_cmd",
 	"git_op_timeout_seconds",
+	"liveness_gate",
 	"hooks",
 	"suggest",
 	"agent_spawn",
@@ -574,6 +576,8 @@ func formatConfigValue(cfg config.Config, key string) string {
 		return cfg.WorktreeSuffixPattern
 	case "isolate_cache_default":
 		return strconv.FormatBool(cfg.IsolateCacheDefault)
+	case "liveness_gate":
+		return cfg.LivenessGate
 	case "hooks":
 		return fmt.Sprintf("%d hook(s)", len(cfg.Hooks))
 	case "agent_spawn.enabled":
@@ -591,7 +595,7 @@ func formatConfigValue(cfg config.Config, key string) string {
 // user errors rather than silently coercing.
 func encodeConfigValue(key, value string) (json.RawMessage, error) {
 	switch key {
-	case "base_branch", "launcher", "verify_cmd", "session_prefix", "worktree_suffix_pattern":
+	case "base_branch", "launcher", "verify_cmd", "session_prefix", "worktree_suffix_pattern", "liveness_gate":
 		return json.Marshal(value)
 	case "default_session_count":
 		n, err := strconv.Atoi(value)
@@ -667,6 +671,9 @@ func configFromRaw(raw map[string]json.RawMessage) (config.Config, error) {
 	}
 	if overlay.VerifyCmd != "" {
 		cfg.VerifyCmd = overlay.VerifyCmd
+	}
+	if overlay.LivenessGate != "" {
+		cfg.LivenessGate = overlay.LivenessGate
 	}
 	cfg.IsolateCacheDefault = overlay.IsolateCacheDefault
 	cfg.Hooks = overlay.Hooks

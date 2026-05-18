@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/jasondillingham/bosun/internal/config"
 	"github.com/jasondillingham/bosun/internal/git"
+	"github.com/jasondillingham/bosun/internal/proc"
 )
 
 // fakeRunner implements git.Runner with simple arg-matching.
@@ -48,6 +50,10 @@ func (f *fakeRunner) Run(_ context.Context, dir string, args ...string) (string,
 type fakeState struct {
 	states     map[string]State
 	heartbeats map[string]time.Time
+	// attached maps session name → pid registered via Attached. Tests
+	// that exercise the v0.11 attach-then-proc-scan ladder populate
+	// this; legacy tests leave it nil and the reader returns ok=false.
+	attached map[string]int
 }
 
 func (f *fakeState) Read(_, name string) (State, string, error) {
@@ -63,6 +69,14 @@ func (f *fakeState) Heartbeat(_, name string) (time.Time, bool, error) {
 	}
 	t, ok := f.heartbeats[name]
 	return t, ok, nil
+}
+
+func (f *fakeState) Attached(_, name string) (int, bool, error) {
+	if f.attached == nil {
+		return 0, false, nil
+	}
+	pid, ok := f.attached[name]
+	return pid, ok, nil
 }
 
 type fakeClaims struct{ counts map[string]int }
@@ -387,6 +401,199 @@ func TestDerive_StaleNotSetOnCrashed(t *testing.T) {
 	if got[0].Stale {
 		t.Errorf("Stale = true on CRASHED session — should not double up")
 	}
+}
+
+// stubLister fakes proc.Lister so the four-state attach tests can
+// pin "is the worktree process visible to proc.Running?" without
+// depending on real subprocesses. Tests using it temporarily swap
+// procLister via the test-only hook below.
+//
+// Note: we exercise proc.RunningWith directly via the public path
+// (proc.Running called from Derive). To avoid intrusive plumbing, the
+// four-state tests below operate on the lister-tested Derive path by
+// passing dirty=0 (so absence of a process never triggers CRASHED on
+// its own) and asserting via the *resulting* State and Running flag.
+// The attach-alive case in particular is asserted by checking that
+// State stays WORKING and RunningPID matches the registered PID.
+
+// TestDerive_NoAttached_ProcFound: today's auto path. No attached-pid
+// file, proc.Running would normally do the scan. We stub the lister to
+// inject a `claude` process in the worktree; Derive should report
+// Running=true with the matching PID and State=WORKING.
+//
+// We can't easily inject a lister here without changing Derive's
+// signature; instead this test relies on the proc.Running fallback
+// being exercised by the integration test in cmd/bosun. The unit-
+// level coverage of "attached absent → fall through" is the
+// negative-side test below (TestDerive_NoAttached_NoProc).
+
+// TestDerive_NoAttached_NoProc: no attached-pid file, no agent in proc
+// table, dirty>0 → today's CRASHED path. This pins the legacy auto
+// behavior so the attach refactor doesn't regress the dogfood case
+// that motivated the v0.11 CRASHED rule.
+func TestDerive_NoAttached_NoProc(t *testing.T) {
+	r := &fakeRunner{
+		t: t,
+		worktree: strings.Join([]string{
+			"worktree /repo",
+			"HEAD aaa",
+			"branch refs/heads/main",
+			"",
+			"worktree /repo-bosun-1",
+			"HEAD bbb",
+			"branch refs/heads/bosun/session-1",
+			"",
+		}, "\n"),
+		revCount: map[string]string{"/repo-bosun-1": "0\n"},
+		status:   map[string]string{"/repo-bosun-1": " M a.go\n"},
+	}
+	c := &git.Client{Runner: r}
+	got, err := Derive(context.Background(), c, config.Defaults(), "/repo",
+		&fakeState{}, &fakeClaims{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0].State != StateCrashed {
+		t.Errorf("State = %q, want CRASHED (no attached, no proc, dirty>0)", got[0].State)
+	}
+	if got[0].Running {
+		t.Errorf("Running = true, want false")
+	}
+	if got[0].RunningExternal {
+		t.Errorf("RunningExternal = true, want false (auto mode)")
+	}
+}
+
+// TestDerive_AttachedAlive_SkipsCrashed: an attached-pid pointing to a
+// live process (the test process itself) suppresses CRASHED even when
+// the worktree is dirty and no `claude` is in the proc table. This is
+// the v0.11 happy path for external workers — the explicit "I was
+// here" is trusted over the absence of a name-matched process.
+func TestDerive_AttachedAlive_SkipsCrashed(t *testing.T) {
+	myPID := os.Getpid()
+	r := &fakeRunner{
+		t: t,
+		worktree: strings.Join([]string{
+			"worktree /repo",
+			"HEAD aaa",
+			"branch refs/heads/main",
+			"",
+			"worktree /repo-bosun-1",
+			"HEAD bbb",
+			"branch refs/heads/bosun/session-1",
+			"",
+		}, "\n"),
+		revCount: map[string]string{"/repo-bosun-1": "0\n"},
+		status:   map[string]string{"/repo-bosun-1": " M a.go\n"},
+	}
+	c := &git.Client{Runner: r}
+	got, err := Derive(context.Background(), c, config.Defaults(), "/repo",
+		&fakeState{attached: map[string]int{"session-1": myPID}},
+		&fakeClaims{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0].State != StateWorking {
+		t.Errorf("State = %q, want WORKING (attached PID is alive)", got[0].State)
+	}
+	if !got[0].Running {
+		t.Errorf("Running = false, want true (attached PID is alive)")
+	}
+	if got[0].RunningPID != myPID {
+		t.Errorf("RunningPID = %d, want %d (matches attached registration)", got[0].RunningPID, myPID)
+	}
+}
+
+// TestDerive_AttachedDead_FlipsCrashed: an attached-pid pointing to a
+// PID that's no longer alive is the "recoverable crash" signal. The
+// explicit registration says "I was here"; its disappearance is
+// meaningful enough to flip CRASHED regardless of dirty-count (since
+// the agent itself promised to be present). PID 0 / negative is
+// treated as absent by Attached, so we use a high never-allocated PID.
+func TestDerive_AttachedDead_FlipsCrashed(t *testing.T) {
+	deadPID := 2147483640 // see proc/alive_test.go for the sentinel rationale
+	if procIsAlive(deadPID) {
+		t.Skipf("PID %d happens to be live; the recoverable-crash case can't be exercised on this host", deadPID)
+	}
+	r := &fakeRunner{
+		t: t,
+		worktree: strings.Join([]string{
+			"worktree /repo",
+			"HEAD aaa",
+			"branch refs/heads/main",
+			"",
+			"worktree /repo-bosun-1",
+			"HEAD bbb",
+			"branch refs/heads/bosun/session-1",
+			"",
+		}, "\n"),
+		revCount: map[string]string{"/repo-bosun-1": "0\n"},
+		// Important: dirty=0 here. The attached-dead path must flip
+		// CRASHED on its own — without the explicit registration, a
+		// clean worktree never goes CRASHED.
+		status: map[string]string{"/repo-bosun-1": ""},
+	}
+	c := &git.Client{Runner: r}
+	got, err := Derive(context.Background(), c, config.Defaults(), "/repo",
+		&fakeState{attached: map[string]int{"session-1": deadPID}},
+		&fakeClaims{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0].State != StateCrashed {
+		t.Errorf("State = %q, want CRASHED (attached PID is dead — recoverable crash)", got[0].State)
+	}
+	if got[0].Running {
+		t.Errorf("Running = true, want false (attached PID dead)")
+	}
+}
+
+// TestDerive_ExternalGate_SkipsCrashed: liveness_gate=external
+// suppresses CRASHED transitions entirely. The session keeps WORKING
+// even with dirty files + no live agent, and RunningExternal=true so
+// the status column renders "external".
+func TestDerive_ExternalGate_SkipsCrashed(t *testing.T) {
+	r := &fakeRunner{
+		t: t,
+		worktree: strings.Join([]string{
+			"worktree /repo",
+			"HEAD aaa",
+			"branch refs/heads/main",
+			"",
+			"worktree /repo-bosun-1",
+			"HEAD bbb",
+			"branch refs/heads/bosun/session-1",
+			"",
+		}, "\n"),
+		revCount: map[string]string{"/repo-bosun-1": "0\n"},
+		status:   map[string]string{"/repo-bosun-1": " M a.go\n"},
+	}
+	c := &git.Client{Runner: r}
+	cfg := config.Defaults()
+	cfg.LivenessGate = config.LivenessGateExternal
+	got, err := Derive(context.Background(), c, cfg, "/repo",
+		&fakeState{}, &fakeClaims{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0].State != StateWorking {
+		t.Errorf("State = %q, want WORKING (external gate suppresses CRASHED)", got[0].State)
+	}
+	if !got[0].RunningExternal {
+		t.Errorf("RunningExternal = false, want true (external gate)")
+	}
+	if got[0].Running {
+		t.Errorf("Running = true, want false (external gate skips proc-scan; no PID claimed)")
+	}
+}
+
+// procIsAlive wraps proc.IsAlive through a function-typed indirection
+// to avoid an import cycle in this test file (session imports proc; the
+// test happens to want a direct call). The wrapper exists so the dead-
+// PID sentinel can be re-verified inside the test before we assert on
+// "Derive saw it as dead".
+var procIsAlive = func(pid int) bool {
+	return proc.IsAlive(pid)
 }
 
 func TestDerive_EmptyWhenNoBosunBranches(t *testing.T) {

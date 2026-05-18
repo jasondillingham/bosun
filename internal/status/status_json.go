@@ -24,6 +24,7 @@ package status
 //	claimed         int     count of distinct claimed paths
 //	running         bool    true when an agent process lives in the worktree
 //	running_pid     int     pid; omitted when running=false (omitempty)
+//	running_external bool   true when liveness_gate=external (operator-driven); omitted when false (omitempty)
 //	stale           bool    true when WORKING+heartbeat older than 5min; omitted when false (omitempty)
 //	heartbeat_unix  int64   unix timestamp of last heartbeat; omitted when no heartbeat recorded
 //	last_sha        string  short SHA of the last commit; omitted when ahead=0
@@ -77,9 +78,10 @@ type sessionJSON struct {
 	Ahead         int    `json:"ahead"`
 	Dirty         int    `json:"dirty"`
 	Claimed       int    `json:"claimed"`
-	Running       bool   `json:"running"`
-	RunningPID    int    `json:"running_pid,omitempty"`
-	Stale         bool   `json:"stale,omitempty"`
+	Running         bool `json:"running"`
+	RunningPID      int  `json:"running_pid,omitempty"`
+	RunningExternal bool `json:"running_external,omitempty"`
+	Stale           bool `json:"stale,omitempty"`
 	HeartbeatUnix int64  `json:"heartbeat_unix,omitempty"`
 	LastSHA       string `json:"last_sha,omitempty"`
 	LastSubject   string `json:"last_subject,omitempty"`
@@ -112,21 +114,22 @@ func RenderJSON(w io.Writer, sessions []session.Session, overlaps []claims.Overl
 	}
 	for _, s := range sessions {
 		row := sessionJSON{
-			Name:       s.Name,
-			Number:     s.Number,
-			Branch:     s.Branch,
-			Path:       s.Path,
-			State:      string(s.State),
-			Ahead:      s.Ahead,
-			Dirty:      s.Dirty,
-			Claimed:    s.Claimed,
-			Running:    s.Running,
-			RunningPID: s.RunningPID,
-			Stale:      s.Stale,
-			StateMsg:   s.StateMsg,
-			Parent:     s.Parent,
-			Children:   s.Children,
-			Depth:      s.Depth,
+			Name:            s.Name,
+			Number:          s.Number,
+			Branch:          s.Branch,
+			Path:            s.Path,
+			State:           string(s.State),
+			Ahead:           s.Ahead,
+			Dirty:           s.Dirty,
+			Claimed:         s.Claimed,
+			Running:         s.Running,
+			RunningPID:      s.RunningPID,
+			RunningExternal: s.RunningExternal,
+			Stale:           s.Stale,
+			StateMsg:        s.StateMsg,
+			Parent:          s.Parent,
+			Children:        s.Children,
+			Depth:           s.Depth,
 		}
 		if !s.HeartbeatAt.IsZero() {
 			row.HeartbeatUnix = s.HeartbeatAt.Unix()

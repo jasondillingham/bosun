@@ -137,6 +137,63 @@ func TestEnsureSpotlightMarker_CreatesAndIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestAttachedPID_WriteReadClear pins the basic round-trip on the
+// attached-pid registration. Write → Attached reports the pid; Clear
+// → Attached reports ok=false; Clear on a missing file is a no-op.
+func TestAttachedPID_WriteReadClear(t *testing.T) {
+	dir := t.TempDir()
+	s := NewStore(dir)
+
+	if pid, ok, err := s.Attached(dir, "session-1"); err != nil || ok || pid != 0 {
+		t.Fatalf("Attached(empty) = (%d, %v, %v), want (0, false, nil)", pid, ok, err)
+	}
+	if err := s.WriteAttachedPID("session-1", 12345); err != nil {
+		t.Fatal(err)
+	}
+	pid, ok, err := s.Attached(dir, "session-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || pid != 12345 {
+		t.Fatalf("Attached after write = (%d, %v), want (12345, true)", pid, ok)
+	}
+	if err := s.ClearAttachedPID("session-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := s.Attached(dir, "session-1"); ok {
+		t.Fatal("Attached after clear should report ok=false")
+	}
+	// Second clear is a no-op.
+	if err := s.ClearAttachedPID("session-1"); err != nil {
+		t.Fatalf("second ClearAttachedPID (missing) = %v, want nil", err)
+	}
+}
+
+// TestAttachedPID_MalformedBodyTreatedAsAbsent: a hand-edited or
+// truncated file shouldn't poison the liveness gate. The reader
+// returns ok=false so callers fall back to the proc-scan path rather
+// than surfacing a parse error to the operator.
+func TestAttachedPID_MalformedBodyTreatedAsAbsent(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := filepath.Join(dir, ".bosun", "state")
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, body := range []string{"", "  \n", "not-a-pid", "-1\n", "0\n"} {
+		if err := os.WriteFile(filepath.Join(stateDir, "session-1.attached-pid"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		s := NewStore(dir)
+		pid, ok, err := s.Attached(dir, "session-1")
+		if err != nil {
+			t.Errorf("Attached(body=%q) err = %v, want nil", body, err)
+		}
+		if ok || pid != 0 {
+			t.Errorf("Attached(body=%q) = (%d, %v), want (0, false)", body, pid, ok)
+		}
+	}
+}
+
 func TestClear(t *testing.T) {
 	dir := t.TempDir()
 	s := NewStore(dir)

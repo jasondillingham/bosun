@@ -245,10 +245,20 @@ func renderStateCell(s session.Session, color bool) string {
 }
 
 // formatRunning renders the RUNNING column: the pid of the live agent when
-// one was detected, or an em-dash placeholder otherwise. The pid is more
-// useful than a bare "yes" since it lets the operator attach or kill the
-// session without rederiving it.
+// one was detected, "external" when the liveness gate is in external
+// mode (operator-driven, no proc-scan), or an em-dash placeholder
+// otherwise. The pid is more useful than a bare "yes" since it lets
+// the operator attach or kill the session without rederiving it.
 func formatRunning(s session.Session) string {
+	if s.RunningExternal {
+		// In external mode the operator declared they're driving
+		// liveness themselves; surface that instead of a false-negative
+		// em-dash that looks like a CRASHED-imminent state.
+		if s.Running && s.RunningPID > 0 {
+			return fmt.Sprintf("external:%d", s.RunningPID)
+		}
+		return "external"
+	}
 	if !s.Running {
 		return "—"
 	}

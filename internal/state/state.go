@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -64,7 +65,7 @@ func EnsureSpotlightMarker(repoRoot string) error {
 // when filtering enumeration of the state directory. Constrains the
 // match so a hypothetical operator-supplied file named "Section 2.txt"
 // dropped under .bosun/state/ wouldn't be silently ignored.
-var stateMarkerExts = []string{"done", "stuck", "heartbeat", "json"}
+var stateMarkerExts = []string{"done", "stuck", "heartbeat", "json", "attached-pid"}
 
 // isPhantomStateFile reports whether name looks like a Finder/Spotlight/
 // iCloud duplicate of a state marker. Thin wrapper over
@@ -138,6 +139,79 @@ func (s *Store) MarkStuck(sessionName, message string) error {
 		_ = os.Remove(s.path(sessionName, "done"))
 		return nil
 	})
+}
+
+// WriteAttachedPID records an explicit liveness registration for
+// sessionName at .bosun/state/<sessionName>.attached-pid. The body is
+// the decimal pid followed by a newline. Used by `bosun attach` (and
+// the MCP equivalent) so the liveness gate can recognize external
+// workers — Claude Code sub-agents via Task, CI runners, manually
+// launched terminals — that wouldn't appear in proc.Running's
+// process-scan because their basename isn't `claude` / `claude-code`
+// / `code-cli`.
+//
+// Serialized via the same flock as DONE/STUCK/heartbeat so a concurrent
+// MarkDone or ClearAttachedPID can't tear the write.
+func (s *Store) WriteAttachedPID(sessionName string, pid int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := os.MkdirAll(s.dir(), 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", s.dir(), err)
+	}
+	return lockfile.WithLock(filepath.Join(s.dir(), ".lock"), func() error {
+		body := strconv.Itoa(pid) + "\n"
+		if err := os.WriteFile(s.path(sessionName, "attached-pid"), []byte(body), 0o644); err != nil {
+			return fmt.Errorf("write attached-pid: %w", err)
+		}
+		return nil
+	})
+}
+
+// ClearAttachedPID removes the attached-pid file for sessionName. A
+// missing file is not an error — `bosun attach --clear` is idempotent
+// so the operator can run it as a "make sure I'm detached" reset
+// without checking state first.
+func (s *Store) ClearAttachedPID(sessionName string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return lockfile.WithLock(filepath.Join(s.dir(), ".lock"), func() error {
+		err := os.Remove(s.path(sessionName, "attached-pid"))
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("remove %s: %w", s.path(sessionName, "attached-pid"), err)
+		}
+		return nil
+	})
+}
+
+// Attached returns the pid recorded in the attached-pid file for
+// sessionName. ok=false (pid=0) means no attached-pid file is present —
+// the liveness gate should fall back to the proc-scan. A malformed
+// body is treated as "no registration" rather than an error so the
+// gate degrades gracefully; the worst case is that a hand-edited file
+// stops being honored until the next `bosun attach`.
+//
+// Implements the AttachedReader contract used by session.Derive.
+func (s *Store) Attached(repoRoot, sessionName string) (int, bool, error) {
+	store := s
+	if repoRoot != s.repoRoot {
+		store = NewStore(repoRoot)
+	}
+	body, ok, err := readIfExists(store.path(sessionName, "attached-pid"))
+	if err != nil {
+		return 0, false, err
+	}
+	if !ok {
+		return 0, false, nil
+	}
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return 0, false, nil
+	}
+	pid, err := strconv.Atoi(body)
+	if err != nil || pid <= 0 {
+		return 0, false, nil
+	}
+	return pid, true, nil
 }
 
 // Clear removes both done and stuck markers for sessionName. Missing is OK.
@@ -242,7 +316,7 @@ func (s *Store) LoadAll() ([]string, error) {
 		}
 		ext := filepath.Ext(name)
 		switch ext {
-		case ".done", ".stuck", ".heartbeat", ".json":
+		case ".done", ".stuck", ".heartbeat", ".json", ".attached-pid":
 		default:
 			continue
 		}

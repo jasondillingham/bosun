@@ -106,6 +106,18 @@ func TestIsParentAllowedToSpawn_EmptyListMeansAny(t *testing.T) {
 	}
 }
 
+// TestSpawn_DescriptionPinsContextIsolationFraming pins the v0.9.x
+// reframing: the tool description must lead with context isolation as
+// the value prop, not raw parallelism. Trial #3b showed the old
+// "parallelize" pitch lost against the agent's solo-tractable heuristic
+// on small work; the new framing teaches the LLM to reach for
+// bosun_spawn only when the parent's window is the constraint.
+func TestSpawn_DescriptionPinsContextIsolationFraming(t *testing.T) {
+	if !strings.Contains(spawnToolDescription, "context isolation") {
+		t.Errorf("bosun_spawn description must contain the phrase \"context isolation\" (regression guard for the v0.9.x reframing); got: %q", spawnToolDescription)
+	}
+}
+
 // --- test helpers ---
 
 func isErrToolResult(r *mcpsdk.CallToolResult) bool {

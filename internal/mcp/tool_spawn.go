@@ -12,16 +12,38 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+// spawnToolDescription is the bosun_spawn MCP tool description. The
+// LLM reads this at decision time, so the leading sentences carry the
+// most weight: lead with context isolation as the value prop, not raw
+// parallelism. Trial #3b showed the old "parallelize" pitch lost
+// against the agent's solo-tractable heuristic on small work — agents
+// correctly self-handled the work and skipped the spawn tool. The
+// reframing teaches the LLM to reach for bosun_spawn only when the
+// parent's context window is the real constraint.
+//
+// Kept as a package-level var (not inlined into the init() literal)
+// so tests can pin the wording without round-tripping through the
+// SDK's tool list.
+var spawnToolDescription = "Spawn sub-sessions for context isolation when the " +
+	"parent's full plan would exceed a comfortable context window. " +
+	"Each sub starts cold — zero context cost from the parent's " +
+	"conversation — so spawning is cheaper than scrolling the " +
+	"parent's history past N independent edits. Use only when " +
+	"(a) the lanes are genuinely disjoint package-shaped work AND " +
+	"(b) the parent's window is at risk. Don't spawn for tractable " +
+	"solo work — false-spawning is anti-signal; the value prop is " +
+	"context isolation, not raw parallelism. Operator authorizes " +
+	"once via .bosun/config.json (agent_spawn.enabled=true); " +
+	"per-parent and per-tree quotas apply. Each `## suffix` heading " +
+	"in the brief becomes a sub-session named `<parent>.<suffix>` " +
+	"branched from the parent's HEAD. Returns the labels created " +
+	"and any per-sub failures."
+
 func init() {
 	registerTool(func(s *Server) {
 		mcp.AddTool(s.mcp, &mcp.Tool{
-			Name: "bosun_spawn",
-			Description: "Spawn N sub-sessions to fan out work the calling agent " +
-				"has decided to parallelize. The operator authorizes this capability " +
-				"once via .bosun/config.json (agent_spawn.enabled=true); per-parent " +
-				"and per-tree quotas apply. Each `## suffix` heading in the brief " +
-				"becomes a sub-session named `<parent>.<suffix>` branched from the " +
-				"parent's HEAD. Returns the labels created and any per-sub failures.",
+			Name:        "bosun_spawn",
+			Description: spawnToolDescription,
 		}, s.toolSpawn)
 	})
 }

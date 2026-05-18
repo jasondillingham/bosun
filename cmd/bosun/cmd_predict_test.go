@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -78,7 +79,7 @@ func TestRunPredict_NoOverlaps_ExitsZeroAndPrintsReport(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := runPredict(&out, planPath, false, predictDeps{predictor: stub})
+	err := runPredict(&out, planPath, false, false, predictDeps{predictor: stub})
 	if err != nil {
 		t.Fatalf("runPredict: %v", err)
 	}
@@ -122,7 +123,7 @@ func TestRunPredict_OverlapExitsNonZero_AndReportNamesLanes(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := runPredict(&out, planPath, false, predictDeps{predictor: stub})
+	err := runPredict(&out, planPath, false, false, predictDeps{predictor: stub})
 	if err == nil {
 		t.Fatal("expected error when overlaps are predicted")
 	}
@@ -163,7 +164,7 @@ func TestRunPredict_JSONFlag_EmitsStructuredReport(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := runPredict(&out, planPath, true, predictDeps{predictor: stub})
+	err := runPredict(&out, planPath, true, false, predictDeps{predictor: stub})
 	if err == nil {
 		t.Fatal("expected non-zero exit when overlaps reported, got nil")
 	}
@@ -187,7 +188,7 @@ func TestRunPredict_JSON_EmptySlicesAreNotNull(t *testing.T) {
 	stub := &stubPredictor{}
 
 	var out bytes.Buffer
-	if err := runPredict(&out, planPath, true, predictDeps{predictor: stub}); err != nil {
+	if err := runPredict(&out, planPath, true, false, predictDeps{predictor: stub}); err != nil {
 		t.Fatalf("runPredict: %v", err)
 	}
 
@@ -211,7 +212,7 @@ func TestRunPredict_EmptyPlan_FailsCleanly(t *testing.T) {
 	planPath := writePlan(t, "# Plan with no sessions\n\nJust narrative text.\n")
 
 	var out bytes.Buffer
-	err := runPredict(&out, planPath, false, predictDeps{predictor: &stubPredictor{}})
+	err := runPredict(&out, planPath, false, false, predictDeps{predictor: &stubPredictor{}})
 	if err == nil {
 		t.Fatal("expected error for plan with no session headings")
 	}
@@ -222,7 +223,7 @@ func TestRunPredict_EmptyPlan_FailsCleanly(t *testing.T) {
 
 func TestRunPredict_MissingFile_FailsCleanly(t *testing.T) {
 	var out bytes.Buffer
-	err := runPredict(&out, "/nonexistent/does-not-exist.md", false,
+	err := runPredict(&out, "/nonexistent/does-not-exist.md", false, false,
 		predictDeps{predictor: &stubPredictor{}})
 	if err == nil {
 		t.Fatal("expected error for missing plan file")
@@ -235,11 +236,190 @@ func TestRunPredict_MissingFile_FailsCleanly(t *testing.T) {
 func TestRunPredict_NilPredictor_IsInternalError(t *testing.T) {
 	planPath := writePlan(t, twoLanePlan)
 	var out bytes.Buffer
-	err := runPredict(&out, planPath, false, predictDeps{predictor: nil})
+	err := runPredict(&out, planPath, false, false, predictDeps{predictor: nil})
 	if err == nil {
 		t.Fatal("expected error for nil predictor")
 	}
 	if code := exitCodeFor(err); code != exitInternal {
 		t.Errorf("exit code = %d, want %d (internal)", code, exitInternal)
+	}
+}
+
+// stubCoverageDeps fills predictDeps with a coverage scanner that
+// returns the given findings, and a repoRoot fn that returns a fixed
+// path. Saves boilerplate in the --coverage tests.
+func stubCoverageDeps(p predict.Predictor, findings []predict.CoverageFinding) predictDeps {
+	return predictDeps{
+		predictor: p,
+		coverageScanner: func(_ string, claimed []string) ([]predict.CoverageFinding, error) {
+			return findings, nil
+		},
+		repoRootFn: func() (string, error) { return "/repo", nil },
+	}
+}
+
+func TestRunPredict_Coverage_NoGapsExitsZeroAndConfirms(t *testing.T) {
+	planPath := writePlan(t, twoLanePlan)
+	stub := &stubPredictor{
+		predictions: []predict.Prediction{
+			{Session: "session-1", Paths: []predict.PredictedPath{{Path: "internal/auth/handlers.go"}}},
+		},
+	}
+	var out bytes.Buffer
+	deps := stubCoverageDeps(stub, nil)
+	if err := runPredict(&out, planPath, false, true, deps); err != nil {
+		t.Fatalf("runPredict: %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "Coverage gaps: none") {
+		t.Errorf("expected 'Coverage gaps: none' confirmation, got:\n%s", got)
+	}
+}
+
+func TestRunPredict_Coverage_GapsExitNonZeroAndRender(t *testing.T) {
+	planPath := writePlan(t, twoLanePlan)
+	stub := &stubPredictor{
+		predictions: []predict.Prediction{
+			{Session: "session-1", Paths: []predict.PredictedPath{{Path: "internal/auth/"}}},
+		},
+	}
+	findings := []predict.CoverageFinding{
+		{File: "internal/screenshot/screenshot.go", Line: 13, Category: predict.FlagInternalHost, Match: "vault"},
+		{File: "internal/mcp/blueprint_tool.go", Line: 22, Category: predict.FlagPersonalPath, Match: "/Users/jason/"},
+		{File: "internal/architect/presets_test.go", Line: 75, Category: predict.FlagTodo, Match: "TODO"},
+	}
+	var out bytes.Buffer
+	deps := stubCoverageDeps(stub, findings)
+	err := runPredict(&out, planPath, false, true, deps)
+	if err == nil {
+		t.Fatal("expected non-zero exit when coverage gaps reported")
+	}
+	if code := exitCodeFor(err); code != exitUserErr {
+		t.Errorf("exit code = %d, want %d", code, exitUserErr)
+	}
+	got := out.String()
+	// The example output in the brief — every salient line should appear.
+	for _, want := range []string{
+		"Coverage gaps (3 files have flagged content but no lane claims them)",
+		"internal/screenshot/screenshot.go:13",
+		"internal-host: 'vault'",
+		"internal/mcp/blueprint_tool.go:22",
+		"personal-path: '/Users/jason/'",
+		"internal/architect/presets_test.go:75",
+		"(todo)",
+		"Suggestion: add these to a lane's scope",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("coverage report missing %q\nfull report:\n%s", want, got)
+		}
+	}
+}
+
+func TestRunPredict_Coverage_JSON_IncludesFindings(t *testing.T) {
+	planPath := writePlan(t, twoLanePlan)
+	stub := &stubPredictor{
+		predictions: []predict.Prediction{
+			{Session: "session-1", Paths: []predict.PredictedPath{{Path: "a.go"}}},
+		},
+	}
+	findings := []predict.CoverageFinding{
+		{File: "x.go", Line: 1, Category: predict.FlagTodo},
+	}
+	var out bytes.Buffer
+	deps := stubCoverageDeps(stub, findings)
+	err := runPredict(&out, planPath, true, true, deps)
+	if err == nil {
+		t.Fatal("expected non-zero exit when gaps in JSON mode")
+	}
+	var report predictReport
+	if jsonErr := json.Unmarshal(out.Bytes(), &report); jsonErr != nil {
+		t.Fatalf("JSON: %v\n%s", jsonErr, out.String())
+	}
+	if len(report.Coverage) != 1 || report.Coverage[0].File != "x.go" {
+		t.Errorf("coverage = %+v", report.Coverage)
+	}
+}
+
+func TestRunPredict_Coverage_ScannerSeesClaimedPaths(t *testing.T) {
+	// Confirms the scanner is fed the union of every lane's predicted
+	// paths — not just one session's. This is the property the
+	// architect-mcp regression depends on: a file claimed by lane-3 must
+	// not appear as a gap just because the test is looking at lane-1.
+	planPath := writePlan(t, twoLanePlan)
+	stub := &stubPredictor{
+		predictions: []predict.Prediction{
+			{Session: "session-1", Paths: []predict.PredictedPath{{Path: "cmd/bosun/"}}},
+			{Session: "session-2", Paths: []predict.PredictedPath{{Path: "internal/storage/"}}},
+		},
+	}
+	var sawClaimed []string
+	deps := predictDeps{
+		predictor: stub,
+		coverageScanner: func(_ string, claimed []string) ([]predict.CoverageFinding, error) {
+			sawClaimed = append(sawClaimed, claimed...)
+			return nil, nil
+		},
+		repoRootFn: func() (string, error) { return "/repo", nil },
+	}
+	var out bytes.Buffer
+	if err := runPredict(&out, planPath, false, true, deps); err != nil {
+		t.Fatalf("runPredict: %v", err)
+	}
+	if len(sawClaimed) != 2 {
+		t.Fatalf("scanner saw %d claims, want 2 (got %+v)", len(sawClaimed), sawClaimed)
+	}
+}
+
+func TestRunPredict_Coverage_OverlapsAndGapsCombine(t *testing.T) {
+	planPath := writePlan(t, twoLanePlan)
+	stub := &stubPredictor{
+		predictions: []predict.Prediction{
+			{Session: "session-1", Paths: []predict.PredictedPath{{Path: "a.go"}}},
+			{Session: "session-2", Paths: []predict.PredictedPath{{Path: "a.go"}}},
+		},
+		overlaps: []predict.Overlap{
+			{Path: "a.go", Sessions: []string{"session-1", "session-2"}, Severity: "high"},
+		},
+	}
+	findings := []predict.CoverageFinding{
+		{File: "x.go", Line: 1, Category: predict.FlagTodo},
+	}
+	var out bytes.Buffer
+	deps := stubCoverageDeps(stub, findings)
+	err := runPredict(&out, planPath, false, true, deps)
+	if err == nil {
+		t.Fatal("expected error when both overlaps and gaps")
+	}
+	if code := exitCodeFor(err); code != exitUserErr {
+		t.Errorf("exit code = %d", code)
+	}
+	if !strings.Contains(err.Error(), "overlap") || !strings.Contains(err.Error(), "coverage gap") {
+		t.Errorf("error should mention both overlap and coverage gap: %v", err)
+	}
+}
+
+func TestRunPredict_Coverage_RepoRootError_IsUserError(t *testing.T) {
+	planPath := writePlan(t, twoLanePlan)
+	stub := &stubPredictor{
+		predictions: []predict.Prediction{
+			{Session: "session-1", Paths: []predict.PredictedPath{{Path: "a.go"}}},
+		},
+	}
+	deps := predictDeps{
+		predictor: stub,
+		coverageScanner: func(_ string, _ []string) ([]predict.CoverageFinding, error) {
+			return nil, nil
+		},
+		repoRootFn: func() (string, error) {
+			return "", fmt.Errorf("not in a repo")
+		},
+	}
+	var out bytes.Buffer
+	err := runPredict(&out, planPath, false, true, deps)
+	if err == nil {
+		t.Fatal("expected error when repoRootFn fails")
+	}
+	if code := exitCodeFor(err); code != exitUserErr {
+		t.Errorf("exit code = %d, want %d", code, exitUserErr)
 	}
 }

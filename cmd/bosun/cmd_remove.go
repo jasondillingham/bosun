@@ -9,9 +9,10 @@ import (
 	"time"
 
 	"github.com/jasondillingham/bosun/internal/git"
+	"github.com/jasondillingham/bosun/internal/history"
 	"github.com/jasondillingham/bosun/internal/hooks"
-	"github.com/jasondillingham/bosun/internal/spawntree"
 	"github.com/jasondillingham/bosun/internal/session"
+	"github.com/jasondillingham/bosun/internal/spawntree"
 	"github.com/spf13/cobra"
 )
 
@@ -169,6 +170,30 @@ func runRemove(cmd *cobra.Command, sessionArg string, force, ignoreRunning bool)
 	}
 	if err := hooks.Run(rc.ctx, rc.cfg.Hooks, "pre-remove", hookEnv); err != nil {
 		return userErr("%v", err)
+	}
+
+	// Archive the session before the destructive ops wipe it. Best-effort:
+	// a failure here logs to stderr but never blocks remove, since history
+	// is observability rather than load-bearing state.
+	detail := ""
+	if force {
+		detail = "--force"
+	}
+	if ignoreRunning {
+		if detail != "" {
+			detail += ", "
+		}
+		detail += "--ignore-running"
+	}
+	if _, err := history.Archive(rc.ctx, history.ArchiveInput{
+		RepoRoot:     rc.repoRoot,
+		Label:        label,
+		Branch:       s.Branch,
+		WorktreePath: s.Path,
+		EndReason:    history.ReasonRemoved,
+		Detail:       detail,
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "bosun: warning: archive history for %s: %v\n", label, err)
 	}
 
 	// Salvage uncommitted content before destruction whenever the operator

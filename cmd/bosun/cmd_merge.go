@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jasondillingham/bosun/internal/brief"
+	"github.com/jasondillingham/bosun/internal/history"
 	"github.com/jasondillingham/bosun/internal/hooks"
 	"github.com/jasondillingham/bosun/internal/preflight"
 	"github.com/jasondillingham/bosun/internal/proc"
@@ -413,6 +414,22 @@ func mergeOne(rc *runCtx, s *session.Session, opts mergeOpts) (status, reason st
 
 	if err := hooks.Run(rc.ctx, rc.cfg.Hooks, "post-merge", postEnv); err != nil {
 		printf("bosun: warning: post-merge hook: %v\n", err)
+	}
+
+	// Archive the merged session before clearSessionMetadata wipes the
+	// claims+state files. Best-effort: history is observability, so a
+	// write failure here must not unwind a clean merge. The branch+worktree
+	// still exist at this point (cleanup is a separate command); the
+	// archive captures both alongside the merge SHA.
+	if _, err := history.Archive(rc.ctx, history.ArchiveInput{
+		RepoRoot:     rc.repoRoot,
+		Label:        s.Name,
+		Branch:       s.Branch,
+		WorktreePath: s.Path,
+		EndReason:    history.ReasonMerged,
+		MergeSHA:     postSHA,
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "bosun: warning: archive history for %s: %v\n", s.Name, err)
 	}
 
 	clearSessionMetadata(rc, s.Name)

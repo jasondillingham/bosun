@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/jasondillingham/bosun/internal/git"
+	"github.com/jasondillingham/bosun/internal/history"
 	"github.com/jasondillingham/bosun/internal/hooks"
 	"github.com/jasondillingham/bosun/internal/session"
 	"github.com/jasondillingham/bosun/internal/spawntree"
@@ -290,6 +291,24 @@ func executeCleanupOne(rc *runCtx, p cleanupPlan) error {
 			"       reap them first via `bosun cleanup --tree %s` (cascades),\n"+
 			"       or individually before retrying this command",
 			p.s.Name, len(children), strings.Join(children, ", "), p.s.Name)
+	}
+
+	// Archive the session's metadata before the destructive ops wipe it.
+	// Best-effort: a failure here logs to stderr but never blocks cleanup,
+	// since history is observability rather than load-bearing state.
+	archiveReason := history.ReasonCleanup
+	if p.reason == "DONE, squash-merged" || p.reason == "squash-merged" {
+		archiveReason = history.ReasonMerged
+	}
+	if _, err := history.Archive(rc.ctx, history.ArchiveInput{
+		RepoRoot:     rc.repoRoot,
+		Label:        p.s.Name,
+		Branch:       p.s.Branch,
+		WorktreePath: p.s.Path,
+		EndReason:    archiveReason,
+		Detail:       p.reason,
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "bosun: warning: archive history for %s: %v\n", p.s.Name, err)
 	}
 
 	forceWT := true

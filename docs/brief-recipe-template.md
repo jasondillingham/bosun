@@ -73,7 +73,16 @@ form. This is non-negotiable; subs don't get to redesign it.}}
    This walks the spawn tree post-order — each sub squash-merges into
    your branch first, then your branch is ready for the operator's
    final merge to main.
-6. **Mark yourself DONE** with `bosun done session-1 -m "..."`. Your
+6. **Verify the spawn-tree state before declaring done.** Call the
+   `bosun_check_tree` MCP tool with `parent: "session-1"` and confirm
+   every direct child reports `state: "done"`. This step is required —
+   not advisory — because a child that vanished mid-flight (issue #15
+   worktree corruption) or whose launcher silently failed will surface
+   as `no-launch` or `dead` here, and quietly absorbing that work into
+   your own branch is the failure mode this tool exists to prevent.
+   If any child is not `done`, stop and surface the state to the
+   operator rather than continuing to step 7.
+7. **Mark yourself DONE** with `bosun done session-1 -m "..."`. Your
    message should name the three lanes that landed and the
    integration file that ties them together.
 
@@ -193,7 +202,12 @@ type HealthResult struct {
 6. **When all three subs are DONE**, run `bosun merge --tree session-1`.
    The three sub-branches squash-merge into yours; your branch then
    has the per-package `Health()` methods alongside the MCP tool.
-7. **Mark yourself DONE** with a message naming the three endpoints
+7. **Verify with `bosun_check_tree`.** Call the MCP tool with
+   `parent: "session-1"` and confirm each child returns
+   `state: "done"`. A `no-launch` or `dead` reading means a sub
+   vanished or crashed and your branch is missing its work — stop and
+   surface to the operator before continuing.
+8. **Mark yourself DONE** with a message naming the three endpoints
    the subs chose and the file paths of the integration.
 
 ### Constraints

@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/jasondillingham/bosun/internal/config"
-	"github.com/jasondillingham/bosun/internal/proc"
 	"github.com/jasondillingham/bosun/internal/session"
 	"github.com/jasondillingham/bosun/internal/spawn"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -83,7 +82,7 @@ func (s *Server) toolSpawn(_ context.Context, _ *mcp.CallToolRequest, args Spawn
 	// we can't confirm the caller is who they say they are.
 	repoRoot := s.state.RepoRoot()
 	worktreePath := session.WorktreePathForLabel(repoRoot, *s.cfg, parent)
-	if _, running, _ := proc.Running(worktreePath); !running {
+	if _, running := s.runningFn(worktreePath); !running {
 		return errResult(fmt.Errorf("no live agent detected in %s's worktree; bosun_spawn requires the caller to be running inside the named parent", parent)), SpawnResult{}, nil
 	}
 

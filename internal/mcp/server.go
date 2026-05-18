@@ -27,6 +27,7 @@ import (
 	"github.com/jasondillingham/bosun/internal/claims"
 	"github.com/jasondillingham/bosun/internal/config"
 	"github.com/jasondillingham/bosun/internal/git"
+	"github.com/jasondillingham/bosun/internal/proc"
 	"github.com/jasondillingham/bosun/internal/spawntree"
 	"github.com/jasondillingham/bosun/internal/state"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -89,6 +90,13 @@ type Server struct {
 	cfg       *config.Config
 	spawnTree *spawntree.Store
 
+	// runningFn detects whether an agent process is live in a given
+	// worktree path. Production wires proc.Running here; tests
+	// substitute a deterministic fake so the auth gates and per-child
+	// "alive vs dead" checks in bosun_spawn / bosun_check_tree don't
+	// require spawning real claude processes.
+	runningFn func(worktreePath string) (pid int, ok bool)
+
 	mu       sync.Mutex
 	connWG   sync.WaitGroup
 	stopping bool
@@ -133,6 +141,7 @@ func NewServer(claimsStore *claims.Store, stateStore *state.Store, gitClient *gi
 		claims:    claimsStore,
 		state:     stateStore,
 		gitClient: gitClient,
+		runningFn: defaultRunningFn,
 	}
 	s.mcp = mcp.NewServer(&mcp.Implementation{
 		Name:    ServerName,
@@ -142,6 +151,16 @@ func NewServer(claimsStore *claims.Store, stateStore *state.Store, gitClient *gi
 		register(s)
 	}
 	return s
+}
+
+// defaultRunningFn is the production binding for Server.runningFn. It
+// drops the err return from proc.Running because the v0.9+ auth gates
+// only need the boolean "is the agent live in this worktree" signal —
+// a permission error reading /proc is indistinguishable from "no agent
+// running" for the purposes of refusing a spawn/check call.
+func defaultRunningFn(worktreePath string) (int, bool) {
+	pid, ok, _ := proc.Running(worktreePath)
+	return pid, ok
 }
 
 // Listen binds the server to a Unix socket at socketPath. Any pre-existing

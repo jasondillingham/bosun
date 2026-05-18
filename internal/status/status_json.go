@@ -31,6 +31,9 @@ package status
 //	last_relative   string  human relative time, e.g. "3 minutes ago"; omitted when ahead=0
 //	last_unix       int64   unix timestamp of the last commit; omitted when ahead=0
 //	state_message   string  body of the .done/.stuck marker file; omitted when blank
+//	parent          string  label of the session that spawned this one; omitted for top-level
+//	children        []string labels of sub-sessions spawned by this one; omitted when empty
+//	depth           int     0 for top-level, parent.Depth+1 for sub-sessions; omitted when 0
 //
 // overlap object:
 //
@@ -83,6 +86,13 @@ type sessionJSON struct {
 	LastRel       string `json:"last_relative,omitempty"`
 	LastUnix      int64  `json:"last_unix,omitempty"`
 	StateMsg      string `json:"state_message,omitempty"`
+	// Parent/Children/Depth surface the spawn-tree shape to consumers
+	// that want to render it (web dashboard, TUI). All three are
+	// omitempty: top-level sessions with no children produce the same
+	// minimal payload as v0.8.
+	Parent   string   `json:"parent,omitempty"`
+	Children []string `json:"children,omitempty"`
+	Depth    int      `json:"depth,omitempty"`
 }
 
 type overlapJSON struct {
@@ -114,6 +124,9 @@ func RenderJSON(w io.Writer, sessions []session.Session, overlaps []claims.Overl
 			RunningPID: s.RunningPID,
 			Stale:      s.Stale,
 			StateMsg:   s.StateMsg,
+			Parent:     s.Parent,
+			Children:   s.Children,
+			Depth:      s.Depth,
 		}
 		if !s.HeartbeatAt.IsZero() {
 			row.HeartbeatUnix = s.HeartbeatAt.Unix()

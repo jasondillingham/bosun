@@ -57,7 +57,10 @@ directly).
       "last_subject": "implement auth",
       "last_relative": "3m ago",
       "last_unix": 1700000000,
-      "state_message": "blocked on review"
+      "state_message": "blocked on review",
+      "parent": "session-0",
+      "children": ["session-1.auth"],
+      "depth": 1
     }
   ],
   "overlaps": [
@@ -69,9 +72,11 @@ directly).
 - `sessions` is always present and is an array (never null), possibly empty.
 - `overlaps` is `omitempty` from the CLI (only emitted when `--with-overlaps`)
   but always present on `/api/status` (the dashboard always wants them).
-- `running_pid`, `last_*`, `state_message` are `omitempty`. A typed-struct
-  consumer gets the zero value when absent; a raw-map consumer must
-  handle absence.
+- `running_pid`, `last_*`, `state_message`, `parent`, `children`, `depth`
+  are `omitempty`. A typed-struct consumer gets the zero value when
+  absent; a raw-map consumer must handle absence.
+- `parent`/`children`/`depth` describe the spawn-tree (v0.9). Top-level
+  sessions with no children render the same minimal payload as v0.8.
 - `number` is `0` for named sessions (e.g. `bosun init auth`). It is *not*
   `omitempty` — a value of 0 is emitted as `"number": 0`.
 

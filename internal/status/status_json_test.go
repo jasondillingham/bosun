@@ -23,15 +23,17 @@ var statusJSON_TopLevelKeys_WithOverlaps = []string{"sessions", "overlaps"}
 var statusJSON_TopLevelKeys_WithoutOverlaps = []string{"sessions"}
 
 // Per-session keys when every optional field is populated. The
-// omitempty fields (`running_pid`, `last_*`, `state_message`) appear
-// only when non-zero — the omitempty-collapses test below proves the
-// other half of the contract.
+// omitempty fields (`running_pid`, `last_*`, `state_message`,
+// `parent`, `children`, `depth`) appear only when non-zero — the
+// omitempty-collapses test below proves the other half of the
+// contract.
 var statusJSON_PerSessionKeys_Full = []string{
 	"name", "number", "branch", "path", "state",
 	"ahead", "dirty", "claimed", "running",
 	"running_pid",
 	"last_sha", "last_subject", "last_relative", "last_unix",
 	"state_message",
+	"parent", "children", "depth",
 }
 
 // Per-session keys for a session with no commits, no claims, no agent
@@ -47,7 +49,10 @@ func TestSchema_StatusJSON_LockedKeys_AllFieldsPopulated(t *testing.T) {
 		Path: "/abs/myproj-bosun-1", State: session.StateDone, StateMsg: "shipped",
 		Ahead: 2, Dirty: 0, Claimed: 3,
 		Running: true, RunningPID: 12345,
-		Last: &git.LogEntry{ShortSHA: "abc1234", Subject: "implement auth", Relative: "3m ago", Unix: 1700000000},
+		Last:     &git.LogEntry{ShortSHA: "abc1234", Subject: "implement auth", Relative: "3m ago", Unix: 1700000000},
+		Parent:   "session-0",
+		Children: []string{"session-1.auth"},
+		Depth:    1,
 	}}
 	overlaps := []claims.Overlap{
 		{Path: "internal/auth.go", Sessions: []string{"session-1", "session-3"}},

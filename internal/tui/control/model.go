@@ -425,7 +425,11 @@ func (m *Model) applyRefresh(msg refreshMsg) {
 		m.statusLine = fmt.Sprintf("refresh: %v", msg.err)
 		return
 	}
-	m.sessions = msg.sessions
+	// Reorder via status.TreeOrdered so each parent is immediately
+	// followed by its children. Keeps j/k navigation walking the tree
+	// in the same order the operator sees rendered. Flat session lists
+	// (no Parent set) round-trip unchanged — preserving v0.8 behavior.
+	m.sessions = status.TreeOrdered(msg.sessions)
 	m.events = msg.events
 	// Keep the selection on the same session if possible, otherwise clamp
 	// to the new bounds.

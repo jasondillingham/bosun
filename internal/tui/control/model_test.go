@@ -454,6 +454,73 @@ func TestModel_View_BriefPreviewIncludesHeading(t *testing.T) {
 	}
 }
 
+// TestModel_View_TreeOrderAndIndent pins the v0.9 tree rendering in the
+// TUI: sub-sessions reorder under their parent and render with the
+// indented └─ prefix, mirroring the CLI's `bosun status` output. Also
+// proves j/k navigation walks the tree in rendered order.
+func TestModel_View_TreeOrderAndIndent(t *testing.T) {
+	tree := []session.Session{
+		{Number: 1, Name: "session-1", Label: "session-1", Branch: "bosun/session-1",
+			Path: "/wt/1", State: session.StateWorking},
+		// Inputs deliberately out of tree order — TreeOrdered should
+		// pull the subs up under session-1 even though session-2
+		// appears between them in the input slice.
+		{Number: 0, Name: "session-1.auth", Label: "session-1.auth", Branch: "bosun/session-1.auth",
+			Path: "/wt/1-auth", State: session.StateDone,
+			Parent: "session-1", Depth: 1},
+		{Number: 2, Name: "session-2", Label: "session-2", Branch: "bosun/session-2",
+			Path: "/wt/2", State: session.StateWorking},
+		{Number: 0, Name: "session-1.http", Label: "session-1.http", Branch: "bosun/session-1.http",
+			Path: "/wt/1-http", State: session.StateWorking,
+			Parent: "session-1", Depth: 1},
+	}
+	svc := Services{
+		Refresh: func() ([]session.Session, []status.Event, error) { return tree, nil, nil },
+	}
+	m := New(svc, true)
+	m.tickInterval = 0
+	m.ApplyRefresh(tree, nil, nil)
+
+	// Sessions slice should be tree-ordered after applyRefresh, so j/k
+	// navigation walks the visual order: 1 → 1.auth → 1.http → 2.
+	got := make([]string, 0, len(m.Sessions()))
+	for _, s := range m.Sessions() {
+		got = append(got, s.Name)
+	}
+	want := []string{"session-1", "session-1.auth", "session-1.http", "session-2"}
+	for i, w := range want {
+		if i >= len(got) || got[i] != w {
+			t.Fatalf("tree order: got %v, want %v", got, want)
+		}
+	}
+
+	// k from a sub-session lands on the previous sub-session, not the
+	// next top-level. Drive: start at 0, j to index 2 (session-1.http),
+	// k should land on session-1.auth (index 1).
+	m.Update(keyRune('j'))
+	m.Update(keyRune('j'))
+	if got := m.Sessions()[m.Selected()].Name; got != "session-1.http" {
+		t.Fatalf("after jj, selected = %q, want session-1.http", got)
+	}
+	m.Update(keyRune('k'))
+	if got := m.Sessions()[m.Selected()].Name; got != "session-1.auth" {
+		t.Fatalf("after k, selected = %q, want session-1.auth (tree-order walk)", got)
+	}
+
+	// View() output indents sub-sessions with the └─ glyph and leaves
+	// top-level rows un-prefixed.
+	out := m.View()
+	for _, needle := range []string{"└─ session-1.auth", "└─ session-1.http"} {
+		if !strings.Contains(out, needle) {
+			t.Errorf("View() missing tree-prefix %q:\n%s", needle, out)
+		}
+	}
+	// session-1 / session-2 must not pick up the glyph.
+	if strings.Contains(out, "└─ session-1\n") || strings.Contains(out, "└─ session-2\n") {
+		t.Errorf("top-level session got a tree-prefix glyph:\n%s", out)
+	}
+}
+
 func TestSummarizeResults(t *testing.T) {
 	tests := []struct {
 		name string

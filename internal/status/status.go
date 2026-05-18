@@ -67,7 +67,7 @@ func RenderText(w io.Writer, opts RenderOptions) error {
 	fmt.Fprintln(tw, "SESSION\tBRANCH\tSTATE\tAHEAD\tDIRTY\tCLAIMED\tRUNNING\tLAST_COMMIT")
 	rows := opts.Sessions
 	if !opts.NoTree {
-		rows = treeOrdered(opts.Sessions)
+		rows = TreeOrdered(opts.Sessions)
 	}
 	for _, s := range rows {
 		name := s.Name
@@ -76,7 +76,7 @@ func RenderText(w io.Writer, opts RenderOptions) error {
 			// the leaf. Children of the same parent show └─ uniformly;
 			// renderers more clever about │ / ├─ aren't worth the code
 			// when --no-tree exists for scripts that care.
-			name = indent(s.Depth) + "└─ " + s.Name
+			name = Indent(s.Depth) + "└─ " + s.Name
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%d\t%d\t%s\t%s\n",
 			name,
@@ -280,14 +280,17 @@ func writeOverlaps(w io.Writer, overlaps []claims.Overlap) {
 	_ = tw.Flush()
 }
 
-// treeOrdered reorders sessions so each parent is immediately followed
+// TreeOrdered reorders sessions so each parent is immediately followed
 // by its children (in the order spawntree.Store reports them). Sessions
 // with no Parent entry are emitted at the top of their group in their
 // original sort order (which session.Derive already sorts by number).
 // A session that references a Parent not present in the slice falls
 // through to the orphan-pass at the bottom — defensive against
 // spawn-tree drift after a parent has been reaped.
-func treeOrdered(sessions []session.Session) []session.Session {
+//
+// Exported so the TUI and web dashboard render in the same tree order
+// the status table uses.
+func TreeOrdered(sessions []session.Session) []session.Session {
 	if len(sessions) == 0 {
 		return sessions
 	}
@@ -337,9 +340,11 @@ func treeOrdered(sessions []session.Session) []session.Session {
 	return out
 }
 
-// indent returns the leading whitespace for a tree-level. Two spaces
+// Indent returns the leading whitespace for a tree-level. Two spaces
 // per depth step makes parent/child visually distinct without
 // consuming horizontal space in the terminal table.
-func indent(depth int) string {
+//
+// Exported so TUI and web renderers can match the CLI's indentation.
+func Indent(depth int) string {
 	return strings.Repeat("  ", depth)
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/jasondillingham/bosun/internal/config"
 	"github.com/jasondillingham/bosun/internal/git"
 	bosunmcp "github.com/jasondillingham/bosun/internal/mcp"
+	"github.com/jasondillingham/bosun/internal/spawntree"
 	"github.com/jasondillingham/bosun/internal/state"
 )
 
@@ -335,6 +336,78 @@ func addBosunSession(t *testing.T, repo, label string) {
 	cmd.Dir = repo
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git worktree add: %v\n%s", err, out)
+	}
+}
+
+// TestServer_Status_IncludesSpawnTreeFields proves the /api/status
+// payload surfaces Parent / Children / Depth for sessions that have
+// been recorded in .bosun/spawn-tree.json. Top-level sessions with no
+// children keep the minimal v0.8 shape (the three new keys are
+// omitempty), and sub-sessions emit parent + depth. The dashboard
+// indents rows based on these fields, so the JSON shape is the
+// contract we lock here.
+func TestServer_Status_IncludesSpawnTreeFields(t *testing.T) {
+	repo := newTestRepo(t)
+	// Both worktrees use the un-dotted form so session.Derive's branch
+	// regex matches them. The spawn-tree linkage below is what flips
+	// session-2 into a child of session-1 — Derive's job is to surface
+	// the rows; spawntree.EnrichSessions paints the tree shape on top.
+	addBosunSession(t, repo, "session-1")
+	addBosunSession(t, repo, "session-2")
+
+	tree := spawntree.NewStore(repo)
+	if err := tree.AddTopLevel("session-1"); err != nil {
+		t.Fatalf("AddTopLevel: %v", err)
+	}
+	if err := tree.AddChild("session-1", "session-2"); err != nil {
+		t.Fatalf("AddChild: %v", err)
+	}
+
+	srv := startTestServer(t, repo)
+	body := getOK(t, "http://"+srv.Addr()+"/api/status")
+
+	var payload struct {
+		Sessions []map[string]any `json:"sessions"`
+	}
+	if err := json.Unmarshal([]byte(body), &payload); err != nil {
+		t.Fatalf("decode /api/status: %v\nbody=%s", err, body)
+	}
+
+	byName := map[string]map[string]any{}
+	for _, s := range payload.Sessions {
+		if name, ok := s["name"].(string); ok {
+			byName[name] = s
+		}
+	}
+
+	parent, ok := byName["session-1"]
+	if !ok {
+		t.Fatalf("session-1 missing from /api/status: %s", body)
+	}
+	child, ok := byName["session-2"]
+	if !ok {
+		t.Fatalf("session-2 missing from /api/status: %s", body)
+	}
+
+	// Parent row: depth omitempty (=0 → absent), parent omitempty (=""
+	// → absent), children populated as the JSON array of child labels.
+	if _, hasParent := parent["parent"]; hasParent {
+		t.Errorf("session-1 should not emit 'parent' key (top-level): %v", parent)
+	}
+	if _, hasDepth := parent["depth"]; hasDepth {
+		t.Errorf("session-1 should omit 'depth' (=0 omitempty): %v", parent)
+	}
+	kids, ok := parent["children"].([]any)
+	if !ok || len(kids) != 1 || kids[0] != "session-2" {
+		t.Errorf("session-1 children = %v, want [session-2]", parent["children"])
+	}
+
+	// Child row: parent set, depth=1.
+	if got := child["parent"]; got != "session-1" {
+		t.Errorf("session-2 parent = %v, want session-1", got)
+	}
+	if got, ok := child["depth"].(float64); !ok || int(got) != 1 {
+		t.Errorf("session-2 depth = %v (%T), want 1", child["depth"], child["depth"])
 	}
 }
 

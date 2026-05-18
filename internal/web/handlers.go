@@ -13,6 +13,7 @@ import (
 	"github.com/jasondillingham/bosun/internal/brief"
 	"github.com/jasondillingham/bosun/internal/claims"
 	"github.com/jasondillingham/bosun/internal/session"
+	"github.com/jasondillingham/bosun/internal/spawntree"
 	"github.com/jasondillingham/bosun/internal/status"
 )
 
@@ -196,6 +197,20 @@ func (s *Server) handleShow(w http.ResponseWriter, r *http.Request) {
 	_ = enc.Encode(row)
 }
 
+// enrichWithSpawnTree populates Parent / Children / Depth on each
+// session by looking up its label in .bosun/spawn-tree.json. Mirrors
+// cmd/bosun/cmd_status.go's helper — both surfaces want the tree shape
+// alongside the per-session row. Errors are swallowed because the tree
+// is advisory; the dashboard renders flat when no tree exists.
+func enrichWithSpawnTree(repoRoot string, sessions []session.Session) {
+	tree := spawntree.NewStore(repoRoot)
+	likes := make([]spawntree.SessionLike, len(sessions))
+	for i := range sessions {
+		likes[i] = &sessions[i]
+	}
+	_ = tree.EnrichSessions(likes)
+}
+
 // snapshot returns the cached session list when it's fresh, otherwise
 // recomputes from git/claims/state. Cache TTL is s.cfg.Interval — set
 // to 0 to disable caching (tests rely on this).
@@ -212,6 +227,12 @@ func (s *Server) snapshot(ctx context.Context, cache *statusCache) ([]session.Se
 	if err != nil {
 		return nil, nil, err
 	}
+	// Enrich with spawn-tree info so /api/status surfaces Parent /
+	// Children / Depth alongside the rest of the session row. Best-
+	// effort: a missing or torn spawn-tree.json leaves the fields blank
+	// rather than breaking the dashboard.
+	enrichWithSpawnTree(s.cfg.RepoRoot, sessions)
+
 	overlaps, err := s.cfg.Claims.Overlaps()
 	if err != nil {
 		return nil, nil, err

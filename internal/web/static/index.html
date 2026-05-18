@@ -39,6 +39,10 @@
   tr.session-row { cursor: pointer; }
   tr.session-row:hover td { background: #f9fafb; }
   tr.session-row.selected td { background: #eef2ff; }
+  /* Indent the SESSION column for sub-sessions. data-depth is the depth
+     from /api/status; top-level sessions render flush as before. */
+  tr.session-row td.session-cell { padding-left: calc(0.7rem + var(--depth, 0) * 1.2em); }
+  tr.session-row td.session-cell .tree-prefix { color: var(--muted); margin-right: 0.25rem; }
   td.num { text-align: right; font-variant-numeric: tabular-nums; }
   td.last { color: var(--muted); }
   .state { font-weight: 600; }
@@ -131,6 +135,37 @@
   // and state stay live without the operator clicking again.
   let selectedSession = null;
 
+  // treeOrdered mirrors internal/status.TreeOrdered: emit each parent
+  // followed immediately by its children. Sessions whose Parent isn't in
+  // the input fall through to the orphan-pass at the bottom.
+  function treeOrdered(sessions) {
+    if (!sessions || sessions.length === 0) return sessions || [];
+    const byName = new Map();
+    const childrenOf = new Map();
+    for (const s of sessions) {
+      byName.set(s.name, s);
+      if (s.parent) {
+        if (!childrenOf.has(s.parent)) childrenOf.set(s.parent, []);
+        childrenOf.get(s.parent).push(s.name);
+      }
+    }
+    const emitted = new Set();
+    const out = [];
+    function emit(name) {
+      if (emitted.has(name)) return;
+      const s = byName.get(name);
+      if (!s) return;
+      emitted.add(name);
+      out.push(s);
+      for (const child of (childrenOf.get(name) || [])) emit(child);
+    }
+    for (const s of sessions) {
+      if (!s.parent) emit(s.name);
+    }
+    for (const s of sessions) emit(s.name);
+    return out;
+  }
+
   async function refresh() {
     try {
       const r = await fetch("/api/status", { cache: "no-store" });
@@ -149,7 +184,7 @@
   function render(p) {
     const tbody = document.getElementById("rows");
     tbody.innerHTML = "";
-    const sessions = (p && p.sessions) || [];
+    const sessions = treeOrdered((p && p.sessions) || []);
     if (sessions.length === 0) {
       const tr = document.createElement("tr");
       tr.innerHTML = '<td colspan="7" class="empty">no sessions</td>';
@@ -161,11 +196,14 @@
       tr.className = "session-row";
       if (s.name === selectedSession) tr.classList.add("selected");
       tr.dataset.session = s.name;
+      const depth = Number(s.depth) || 0;
+      if (depth > 0) tr.style.setProperty("--depth", depth);
+      const treePrefix = depth > 0 ? '<span class="tree-prefix">└─</span>' : "";
       const last = s.last_subject
         ? `${escapeHTML(s.last_sha || "")} ${escapeHTML(s.last_subject)} <span class="muted">(${escapeHTML(s.last_relative || "")})</span>`
         : "";
       tr.innerHTML =
-        `<td>${escapeHTML(s.name)}</td>` +
+        `<td class="session-cell">${treePrefix}${escapeHTML(s.name)}</td>` +
         `<td class="state state-${escapeHTML(s.state)}">${escapeHTML(s.state)}</td>` +
         `<td>${escapeHTML(s.branch)}</td>` +
         `<td class="num">${Number(s.ahead) || 0}</td>` +

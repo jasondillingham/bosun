@@ -6,6 +6,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/jasondillingham/bosun/internal/session"
+	"github.com/jasondillingham/bosun/internal/status"
 )
 
 // render builds the View string for the current Model state. Layout:
@@ -100,8 +101,15 @@ func (m *Model) renderTable() string {
 			}
 			last = fmt.Sprintf("%s · %s", s.Last.Relative, subj)
 		}
+		// Mirror the CLI's tree-prefix from status.RenderText: indent by
+		// Depth and prefix sub-sessions with └─ so the tree shape reads
+		// the same in `bosun tui` and `bosun status`.
+		name := s.Name
+		if s.Depth > 0 {
+			name = status.Indent(s.Depth) + "└─ " + s.Name
+		}
 		rows = append(rows, []string{
-			marker + s.Name,
+			marker + name,
 			s.Branch,
 			m.colorState(s.State),
 			fmt.Sprintf("%d", s.Ahead),

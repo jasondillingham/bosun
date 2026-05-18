@@ -1,0 +1,67 @@
+name: Release
+
+# Fires on `v*` tag pushes. GoReleaser cross-compiles the six platform
+# binaries, archives them, computes checksums, and attaches everything to a
+# GitHub Release. Release notes are sliced out of RELEASES.md (the section
+# whose heading matches the tag), so tagging a version that doesn't have a
+# RELEASES.md entry yet will publish a release with empty notes — add the
+# entry before tagging.
+on:
+  push:
+    tags:
+      - 'v*'
+
+# GoReleaser needs `contents: write` to create the Release and upload
+# assets. No other permissions are required for this lane — the Homebrew
+# tap update lives in a separate repo (see TODO below).
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          # GoReleaser inspects git tags to derive {{ .Version }}; a shallow
+          # clone strips tag history and yields a bogus version.
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Extract release notes from RELEASES.md
+        # Slice the section for the current tag out of RELEASES.md so
+        # GoReleaser can attach it as the GitHub Release body. The awk
+        # program prints lines between the matching `## vX.Y.Z` heading and
+        # the next `## ` heading. Tag name (`v0.11.0`) is matched as a
+        # whole word so `v0.1.0` doesn't also match `v0.10.0`.
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          awk -v tag="$TAG" '
+            /^## / {
+              if (in_section) exit
+              if ($2 == tag) { in_section = 1; next }
+            }
+            in_section { print }
+          ' RELEASES.md > /tmp/release-notes.md
+          echo "Release notes for $TAG:"
+          cat /tmp/release-notes.md
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: '~> v2'
+          args: release --clean --release-notes /tmp/release-notes.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # TODO(homebrew): once a tap repo exists (e.g. jasondillingham/homebrew-bosun),
+      # wire a `brews:` block into .goreleaser.yaml and pass HOMEBREW_TAP_TOKEN here so
+      # tagged releases also bump the formula. Keeping it out of this lane because the
+      # tap is a separate repo and needs its own setup.

@@ -75,6 +75,17 @@ Other useful targets:
 
 `make check` must pass before you push. Race-clean is non-negotiable.
 
+## Release dry-run
+
+Releases are produced by GoReleaser via [`.github/workflows/release.yml`](./.github/workflows/release.yml) on `v*` tag pushes. To exercise the same config locally without publishing anything:
+
+```sh
+goreleaser release --snapshot --clean --skip=publish
+```
+
+That builds all six platform archives (darwin / linux / windows × amd64 / arm64) plus a `checksums.txt` into `./dist/`. `dist/` is gitignored, so the repo stays clean. Install GoReleaser via `go install github.com/goreleaser/goreleaser/v2@latest` if you don't have it.
+
+
 ## Pre-commit hooks
 
 **Do not skip hooks.** `--no-verify` is forbidden on this repo.

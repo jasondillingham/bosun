@@ -101,11 +101,27 @@ Specific things bosun does that an isolated Agent can't:
 
 ## Install
 
+**Download a prebuilt binary.** Tagged releases publish darwin/linux/windows × amd64/arm64 archives on the [Releases page](https://github.com/jasondillingham/bosun/releases/latest). One-liner that grabs the right archive for the current host, extracts the `bosun` binary, and drops it on `PATH`:
+
+```sh
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/jasondillingham/bosun/main/scripts/install.sh | sh
+```
+
+```powershell
+# Windows (PowerShell)
+iwr -useb https://raw.githubusercontent.com/jasondillingham/bosun/main/scripts/install.ps1 | iex
+```
+
+Prefer not to pipe a script straight into a shell? Both installers are short and self-contained — [`scripts/install.sh`](./scripts/install.sh) and [`scripts/install.ps1`](./scripts/install.ps1) — read them first, then run locally. Or grab the archive for your OS/arch directly from the [Releases page](https://github.com/jasondillingham/bosun/releases/latest) and extract by hand.
+
+**From source (Go 1.25+):**
+
 ```
 go install github.com/jasondillingham/bosun/cmd/bosun@latest
 ```
 
-Or build from source — see `Makefile`.
+Or build from source — see `Makefile`. Full install options (prebuilt binary, `go install`, build from source, Homebrew when available) live in [`docs/installing.md`](./docs/installing.md).
 
 ## Quick start
 

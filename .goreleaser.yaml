@@ -1,0 +1,72 @@
+# GoReleaser config for bosun.
+#
+# Drives `bosun release` on tag pushes (see .github/workflows/release.yml):
+# six platform binaries (darwin/linux/windows × amd64/arm64), archived as
+# tar.gz on unix and zip on Windows, with a checksums.txt sibling. Release
+# notes are supplied by the workflow via --release-notes (it slices the
+# matching section out of RELEASES.md), so this file doesn't try to
+# generate them.
+#
+# Local dry-run (no upload, no tag required):
+#   goreleaser release --snapshot --clean --skip=publish
+# Output lands in ./dist/ — gitignored, so the repo stays clean.
+version: 2
+
+project_name: bosun
+
+builds:
+  - id: bosun
+    main: ./cmd/bosun
+    binary: bosun
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      # Mirrors the Makefile's `-X main.version=$(VERSION)` injection so
+      # `bosun --version` prints the tag instead of "dev" on release builds.
+      - -s -w
+      - -X main.version={{ .Version }}
+
+archives:
+  - id: bosun
+    ids:
+      - bosun
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    files:
+      - LICENSE
+      - README.md
+      - RELEASES.md
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-snapshot"
+
+changelog:
+  # Release notes come from RELEASES.md via --release-notes in the
+  # workflow; disable goreleaser's own commit-derived changelog so it
+  # doesn't double-print.
+  disable: true
+
+release:
+  draft: false
+  prerelease: auto
+  mode: replace
+  name_template: "v{{ .Version }}"

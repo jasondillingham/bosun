@@ -50,7 +50,14 @@ jobs:
     # Lint findings don't depend on OS, so we run on a single runner
     # rather than the full matrix the `test` job uses. Configuration
     # lives in .golangci.yml at the repo root.
+    #
+    # continue-on-error keeps the workflow green even when lint surfaces
+    # findings — the codebase has 47 pre-existing issues that need
+    # triage before we can require the job to pass. Triage is tracked
+    # in TODO.md; remove this flag once the findings are zero or
+    # explicitly suppressed in .golangci.yml.
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v6
 

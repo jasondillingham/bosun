@@ -29,6 +29,30 @@ Higher-fidelity playback options:
 - Interactive player at [asciinema.org/a/aPMDJsNbseBdi307](https://asciinema.org/a/aPMDJsNbseBdi307) (lets you pause / scrub / copy text out)
 - Local: `asciinema play docs/assets/bosun-tour.cast`
 
+### `bosun tui` — interactive control center
+
+`bosun tui` is the Bubbletea control center: one screen for every session, with keybinds to merge, cleanup, remove, launch, and preview briefs without leaving the table.
+
+<!-- TODO: capture a real PNG at docs/assets/tui-screenshot.png when a TTY is handy. -->
+
+```
+Bosun control · 4 sessions · 2 DONE · 2 WORKING · 8 ahead
+
+   SESSION    BRANCH           STATE    AHEAD  DIRTY  CLAIMED  LAST
+   session-1  bosun/session-1  DONE     3      0      2        1m ago  · implement auth handler
+ ▸ session-2  bosun/session-2  WORKING  1      4      1        14s ago · add data layer
+   session-3  bosun/session-3  DONE     4      0      3        2m ago  · write integration tests
+   session-4  bosun/session-4  WORKING  0      0      0        —       — (no commits)
+
+Recent activity
+  session-3  [done]   ready to merge — 4 commits squashed
+  session-2  [claim]  internal/data/, cmd/bosun/cmd_status.go
+  session-1  [merge]  merged — 3 commit(s) squashed
+
+status: merge session-1: merged — 3 commit(s) squashed
+j/k move · m merge · M merge-all · c cleanup · r remove · l launch · s brief · R refresh · q quit
+```
+
 ## What it does
 
 ```
@@ -88,23 +112,6 @@ Bosun runs alongside your normal git workflow, on the same checkout you already 
 - Pushes to any remote, fetches from one, or talks to a forge (GitHub, GitLab, …).
 - Modifies your global git config or your `user.{name,email}`.
 - Modifies repo-level git config beyond what `git worktree add` already does.
-
-## Why bosun, and not just Claude Code's worktree-isolated Agent?
-
-Claude Code's `Agent(isolation: "worktree")` is for **delegating one task** to a sub-agent inside a single conversation. The sub-agent gets its own worktree, does the work, and returns when the sub-task completes — the worktree dies with it. Visibility is parent-to-child only; nothing outside that pair can see what the sub-agent is doing.
-
-Bosun is for **coordinating N persistent sessions** across operator and agent restarts. Sessions live as long as the operator wants them to, survive Ghostty restarts and laptop reboots, and `bosun status` shows them all in one place — not one parent-child pair at a time.
-
-Specific things bosun does that an isolated Agent can't:
-
-- **Cross-session predict-before-merge** (`bosun predict`) — heuristic conflict detection across a plan's lanes before any work starts.
-- **Merge orchestration with reflog undo** (`bosun merge --undo`) — squash-merge multiple sessions back to base and reset cleanly if it went wrong.
-- **Safety contract** validated through SIGBUS, CRASHED state, and corrupted-gitdir trials (`docs/v0.8-trial-findings.md`).
-- **`bosun rescue`** for the failure modes the agent can't recover from itself (CRASHED sessions, salvageable dirty trees).
-- **`bosun doctor`** for environmental preflight before any session starts.
-- **Agent-spawned sub-coordination** (v0.9 `bosun_spawn`, off by default) — sessions can spawn their own child sessions when a lane needs to fan out.
-
-**When NOT to use bosun:** one-shot tasks that fit in a single agent's context. The wider CLI surface is only worth it once you're coordinating parallel work across sessions; for a single task, the Agent tool's worktree isolation is the lighter answer.
 
 ## Install
 
@@ -210,6 +217,39 @@ bosun serve [--port N]      HTTP dashboard with SSE event stream
 
 **macOS users:** keep the bosun project **out of** `~/Documents/`, `~/Desktop/`, and `~/Library/Mobile Documents/` — all are iCloud-synced by default, and iCloud File Provider strips git's worktree admin metadata under load. `bosun init` refuses these paths by default (override with `--force-icloud` if you've disabled iCloud sync for the dir). `bosun doctor` catches and recovers the corruption shape if you hit it. See [`docs/macos-setup.md`](./docs/macos-setup.md) for the full guide and the recipe to relocate an existing repo out of iCloud.
 
+## Comparison
+
+Bosun overlaps with a few neighbors. Honest tradeoffs below — if any one of these is already what you want, stay there.
+
+**vs. raw `git worktree`.** `git worktree add` plus your own tmux/terminal discipline handles two branches fine. Bosun is heavier — a binary, a `.bosun/` directory, a coordination model — and only earns its weight once you're juggling 3+ lanes and want one table to see them all, plus a merge orchestrator and a documented safety contract. If you're managing two branches, raw worktrees are the right answer.
+
+**vs. Claude Code's `Agent(isolation: "worktree")`.** That tool delegates *one task* to a sub-agent inside one conversation; the worktree dies when the sub-agent returns. Visibility is parent-to-child only; nothing outside that pair can see the work. Bosun is for *N persistent* sessions that survive Ghostty restarts and laptop reboots, with `bosun status` / `bosun tui` showing them all in one place, predict-before-merge (`bosun predict`), reflog-based undo (`bosun merge --undo`), and `bosun rescue` for CRASHED state. **When the isolated Agent wins:** one-shot tasks that fit in a single conversation — the Agent tool is the lighter answer there.
+
+**vs. hosted / cloud AI-coordinators (Devin, Cursor background agents, etc.).** Most of those are aimed at a single agent doing more work autonomously, often in a managed sandbox. Bosun is a local CLI for the operator-in-the-loop case: you launch the agents, they coordinate via local files + MCP, and nothing leaves your machine. **When they win:** if you want hosted/cloud execution, async work-while-you-sleep, or a polished web UI, bosun isn't competing.
+
+## FAQ
+
+**How is this different from running `git worktree` myself?**
+You can build this yourself with `git worktree add`, a few tmux panes, and discipline. Bosun is the packaged version — one table for status, declarative claims so sessions know what each other is editing, a squash-merge orchestrator with reflog undo, and a documented [safety contract](#safety-contract--what-bosun-does-to-your-repo). If you already have a workflow you like, keep it.
+
+**What if I'm not using Claude Code?**
+Bosun is agent-agnostic. The CLI surface (`init`, `status`, `merge`, …) works for any agent or human you put in a worktree — Cursor, Aider, your own shell, a teammate, a script. The MCP tools are the only Claude-Code-shaped piece, and they're optional.
+
+**Does bosun talk to GitHub (or any forge)?**
+No. The safety contract is explicit: bosun never pushes, fetches, or talks to a forge. Worktrees, branches, and squash-merges are all local. You push when *you* push.
+
+**Can I use bosun on Windows?**
+Not in v0.10. Builds compile, but the terminal launcher only knows Ghostty / Terminal.app / gnome-terminal — Windows Terminal / cmd.exe / WSL integration is post-v0.10 work. See the [Supported platforms](#supported-platforms) table.
+
+**Is bosun safe for production codebases?**
+The safety contract holds — bosun never touches `main` except via `bosun merge`, never pushes, never modifies global git config. It's been trialed end-to-end through SIGBUS, CRASHED state, corrupted-gitdir recovery, and `merge --undo` reflog reset ([`docs/v0.8-trial-findings.md`](./docs/v0.8-trial-findings.md), [`docs/v0.9-trial-3c-findings.md`](./docs/v0.9-trial-3c-findings.md)). Honest caveat: zero external users so far — try it on a side project first.
+
+**How do I undo a `bosun merge`?**
+`bosun merge --undo <sha>` resets your base branch to a prior SHA via the reflog, but only when `main` hasn't advanced past it. If you've already pushed or rebased past the merge, recovery is on you — the reflog is the source of truth.
+
+**What happens if a session crashes mid-work?**
+The session goes to CRASHED state. `bosun rescue <session>` snapshots its dirty files to `.bosun/rescues/` so nothing is lost, and can relaunch the window. `bosun doctor` is the first thing to run if anything looks off.
+
 ## Status
 
 **Validated end-to-end.** Safety contract held across SIGBUS, CRASHED state, corrupted-gitdir recovery, and `merge --undo` reflog reset in trial #2 (`docs/v0.8-trial-findings.md`). The v0.9 spawn-tree machinery — hierarchical labels, `merge --tree` post-order cascade, dotted-label worktree naming — held in trial #3c (`docs/v0.9-trial-3c-findings.md`). Issue #15 (macOS iCloud worktree-admin corruption) has a foundational fix: `bosun init` refuses iCloud-managed paths by default, `bosun doctor` detects the corruption shape, and `bosun doctor --fix` recovers it. The fix's empirical validation gate is "a real user hits this and the doctor catches it" — see issue #15. All 23 packages green under `make check`; `make fuzz` and `make stress` clean; cross-OS validated on macOS + Ubuntu 25.04.
@@ -217,6 +257,17 @@ bosun serve [--port N]      HTTP dashboard with SSE event stream
 **Not yet validated.** Zero external users. Three v0.9 trials (#3, #3a, #3b, #3c) ran on a maintainer-owned repo on a maintainer's machine. The "stranger picked it up and shipped real work" signal flips this from "compelling prototype" to "this graduates." Until then: treat the safety contract as load-bearing trust and the rest as well-tested-but-unprovenfor your specific workflow.
 
 See `RELEASES.md` for full version history, `SPEC.md` for the v0.1 implementation spec, and `CLAUDE.md` if you're a Claude Code session contributing to this codebase.
+
+## Used by
+
+**Pre-launch — this slot is reserved for community usage.**
+
+So far, bosun is in real use on:
+
+- The maintainer's day-to-day workflow (the bosun repo itself dogfoods bosun for its own parallel-session development — every release has shipped under bosun coordination).
+- Release-prep work for [`architect-mcp`](https://github.com/jasondillingham/architect-mcp).
+
+If you've shipped real work with bosun, open a PR adding your project here — an honest one-liner about how you used it is plenty. No logos required; no "trusted by 500+ teams" marketing inflation.
 
 ## Roadmap
 

@@ -780,6 +780,19 @@ func runMergeTree(cmd *cobra.Command, parentLabel string, opts mergeOpts) error 
 		return err
 	}
 	tree := spawntree.NewStore(rc.repoRoot)
+
+	// Reconcile spawn-tree against git BEFORE walking so the cascade
+	// doesn't try to merge non-existent branches (trial #3c's ghost-
+	// children shape under macOS / iCloud File Provider). Failure is
+	// non-fatal; the walk still works, just with the confusing git
+	// error if a ghost survives.
+	if pruned, err := tree.SyncWithGit(rc.ctx, rc.git, rc.repoRoot); err != nil {
+		fmt.Fprintf(os.Stderr, "bosun: warning: spawn-tree sync: %v\n", err)
+	} else if len(pruned) > 0 {
+		fmt.Fprintf(os.Stderr, "bosun: pruned %d ghost spawn-tree entr%s before cascade: %s\n",
+			len(pruned), pluralEntries(len(pruned)), strings.Join(pruned, ", "))
+	}
+
 	order, err := postOrderSubtree(tree, parsed)
 	if err != nil {
 		return internalErr("walk spawn tree", err)

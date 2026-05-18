@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/jasondillingham/bosun/internal/claims"
@@ -32,6 +34,7 @@ func newStatusCmd() *cobra.Command {
 		interval     int
 		summaryOnly  bool
 		noTree       bool
+		noSync       bool
 	)
 
 	cmd := &cobra.Command{
@@ -48,6 +51,7 @@ func newStatusCmd() *cobra.Command {
 				noColor:      noColor,
 				summaryOnly:  summaryOnly,
 				noTree:       noTree,
+				noSync:       noSync,
 			}
 			if watch {
 				if jsonOut {
@@ -69,6 +73,7 @@ func newStatusCmd() *cobra.Command {
 	cmd.Flags().IntVar(&interval, "interval", 2, "seconds between refreshes when --watch is set")
 	cmd.Flags().BoolVar(&summaryOnly, "summary-only", false, "print just the one-line summary (no table, events, or overlaps)")
 	cmd.Flags().BoolVar(&noTree, "no-tree", false, "force the flat table even when spawn trees exist (for scripts that parse the output)")
+	cmd.Flags().BoolVar(&noSync, "no-sync", false, "skip spawn-tree ↔ git reconciliation (for inspecting divergence before bosun rewrites it)")
 
 	cmd.GroupID = "during"
 	return cmd
@@ -80,6 +85,13 @@ type statusOpts struct {
 	noColor      bool
 	summaryOnly  bool
 	noTree       bool
+	// noSync skips the spawntree.SyncWithGit pass that runs before
+	// rendering. The sync prunes ghost entries (worktree + branch
+	// both gone) so the rendered table doesn't include orphans the
+	// operator can't act on. --no-sync exists so an operator
+	// debugging an unexpected divergence can see the on-disk
+	// spawn-tree.json before bosun rewrites it.
+	noSync bool
 }
 
 func runStatus(cmd *cobra.Command, opts statusOpts) error {
@@ -93,6 +105,25 @@ func runStatus(cmd *cobra.Command, opts statusOpts) error {
 // renderStatusOnce derives session state and writes one rendering (text or
 // JSON) to w. Factored out of runStatus so the --watch loop can reuse it.
 func renderStatusOnce(w io.Writer, rc *runCtx, opts statusOpts) error {
+	// Reconcile spawn-tree against git BEFORE deriving sessions so
+	// ghost entries (worktree + branch both gone, the trial #3c shape
+	// macOS / iCloud File Provider produces) don't surface as
+	// confusing rows. --no-sync skips this for operators inspecting
+	// divergence directly.
+	if !opts.noSync {
+		pruned, err := spawntree.NewStore(rc.repoRoot).SyncWithGit(rc.ctx, rc.git, rc.repoRoot)
+		if err != nil {
+			// Sync is advisory — a missing/torn tree or a git probe
+			// hiccup shouldn't break status rendering. Surface the
+			// failure to stderr so an operator who cares can see it,
+			// then fall through.
+			fmt.Fprintf(os.Stderr, "bosun: warning: spawn-tree sync: %v\n", err)
+		} else if len(pruned) > 0 {
+			fmt.Fprintf(os.Stderr, "bosun: pruned %d ghost spawn-tree entr%s (worktree + branch missing): %s\n",
+				len(pruned), pluralEntries(len(pruned)), strings.Join(pruned, ", "))
+		}
+	}
+
 	sessions, err := session.Derive(rc.ctx, rc.git, rc.cfg, rc.repoRoot, rc.state, rc.claims)
 	if err != nil {
 		return gitErr("derive sessions", err)
@@ -129,6 +160,15 @@ func renderStatusOnce(w io.Writer, rc *runCtx, opts statusOpts) error {
 		SummaryOnly:  opts.summaryOnly,
 		NoTree:       opts.noTree,
 	})
+}
+
+// pluralEntries returns "y" or "ies" so the prune line reads
+// "1 entry" / "3 entries" without a separate format string per case.
+func pluralEntries(n int) string {
+	if n == 1 {
+		return "y"
+	}
+	return "ies"
 }
 
 // enrichWithSpawnTree populates Parent / Children / Depth on each

@@ -607,6 +607,19 @@ func runCleanupTree(cmd *cobra.Command, parentLabel string, opts cleanupOpts) er
 	}
 	tree := spawntree.NewStore(rc.repoRoot)
 
+	// Reconcile the spawn tree against git BEFORE planning the
+	// cascade so the walk doesn't try to reap entries whose worktree
+	// and branch are already gone (trial #3c's ghost-children shape).
+	// Failure is non-fatal — falling through to the cascade still
+	// works, the operator just sees the confusing "no such worktree"
+	// error from the underlying git call.
+	if pruned, err := tree.SyncWithGit(rc.ctx, rc.git, rc.repoRoot); err != nil {
+		fmt.Fprintf(os.Stderr, "bosun: warning: spawn-tree sync: %v\n", err)
+	} else if len(pruned) > 0 {
+		fmt.Fprintf(os.Stderr, "bosun: pruned %d ghost spawn-tree entr%s before cascade: %s\n",
+			len(pruned), pluralEntries(len(pruned)), strings.Join(pruned, ", "))
+	}
+
 	// Build the post-order walk: for each subtree, emit descendants
 	// before the root. Iterative + visited-set in case the tree on
 	// disk has a self-reference cycle (shouldn't happen, but cheap

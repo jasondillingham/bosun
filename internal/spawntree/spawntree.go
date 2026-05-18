@@ -18,6 +18,7 @@
 package spawntree
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,6 +28,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/jasondillingham/bosun/internal/git"
 	"github.com/jasondillingham/bosun/internal/lockfile"
 )
 
@@ -313,6 +315,110 @@ func (s *Store) EnrichSessions(sessions []SessionLike) error {
 type SessionLike interface {
 	GetLabel() string
 	SetTreeInfo(parent string, children []string, depth int)
+}
+
+// GitProbe is the narrow surface SyncWithGit needs from a git client.
+// *git.Client satisfies it via its existing methods; tests stub it
+// with a fake so the worktree/branch presence matrix can be driven
+// without shelling out to the real binary.
+type GitProbe interface {
+	ListWorktrees(ctx context.Context, dir string) ([]git.Worktree, error)
+	BranchExists(ctx context.Context, dir, branch string) (bool, error)
+}
+
+// PrunedLabel names a spawn-tree entry that SyncWithGit removed.
+// Aliased to string so callers can range-and-print without
+// destructuring; kept as a named type so future iterations can
+// carry per-entry rationale (e.g. "both missing" vs operator-only
+// asymmetries) without a signature break.
+type PrunedLabel = string
+
+// SyncWithGit prunes spawn-tree entries whose worktree AND branch
+// are both missing from git — the "ghost" shape trial #3c found on
+// macOS / iCloud File Provider where external file-system providers
+// silently reap worktree directories and branches. When only ONE of
+// the two is missing the entry is left alone: the operator may be
+// mid-rename or have just deleted one side intentionally, and
+// silently rewriting the tree under their feet would surprise more
+// than help.
+//
+// The branch each entry is checked against is `bosun/<label>` — the
+// canonical name bosun assigns when creating a session. Worktree
+// presence is detected by matching `refs/heads/bosun/<label>` against
+// the branch fields of `git worktree list` so we don't depend on the
+// worktree path naming scheme (suffix patterns vary by config).
+//
+// Returns the pruned labels (sorted) so callers can surface them once
+// in the next render. Idempotent: a second call after the first
+// returns the same state with no further prune.
+//
+// repoRoot is the dir from which git is invoked. Passed explicitly
+// rather than reusing s.repoRoot so callers that already hold a
+// canonical main-worktree path (cmd_status, cmd_cleanup, cmd_merge)
+// don't have to re-resolve it.
+func (s *Store) SyncWithGit(ctx context.Context, gc GitProbe, repoRoot string) ([]PrunedLabel, error) {
+	var pruned []PrunedLabel
+	err := lockfile.WithLock(s.lock(), func() error {
+		t, err := s.Load()
+		if err != nil {
+			return err
+		}
+		if len(t.Sessions) == 0 {
+			return nil
+		}
+		worktrees, err := gc.ListWorktrees(ctx, repoRoot)
+		if err != nil {
+			return fmt.Errorf("list worktrees: %w", err)
+		}
+		mounted := make(map[string]bool, len(worktrees))
+		for _, w := range worktrees {
+			if w.Branch != "" {
+				mounted[w.Branch] = true
+			}
+		}
+		// Sort label lookup so prune order — and the returned slice —
+		// is deterministic. Keeps test assertions and operator-facing
+		// stderr output stable across runs.
+		labels := make([]string, 0, len(t.Sessions))
+		for label := range t.Sessions {
+			labels = append(labels, label)
+		}
+		sort.Strings(labels)
+
+		changed := false
+		for _, label := range labels {
+			branch := "bosun/" + label
+			ref := "refs/heads/" + branch
+			if mounted[ref] {
+				continue
+			}
+			exists, berr := gc.BranchExists(ctx, repoRoot, branch)
+			if berr != nil {
+				return fmt.Errorf("check branch %s: %w", branch, berr)
+			}
+			if exists {
+				continue
+			}
+			node := t.Sessions[label]
+			if node.Parent != "" {
+				if p, ok := t.Sessions[node.Parent]; ok {
+					p.Children = removeString(p.Children, label)
+					t.Sessions[node.Parent] = p
+				}
+			}
+			delete(t.Sessions, label)
+			pruned = append(pruned, label)
+			changed = true
+		}
+		if !changed {
+			return nil
+		}
+		return s.writeLocked(t)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return pruned, nil
 }
 
 // writeLocked persists the tree to disk. Caller must hold the flock

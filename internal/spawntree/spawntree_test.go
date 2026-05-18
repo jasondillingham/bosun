@@ -1,12 +1,15 @@
 package spawntree
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
 	"sync"
 	"testing"
+
+	"github.com/jasondillingham/bosun/internal/git"
 )
 
 func TestLoad_MissingFileReturnsEmptyTree(t *testing.T) {
@@ -201,6 +204,196 @@ func TestVersionMismatch_RefusesLoad(t *testing.T) {
 	s := NewStore(dir)
 	if _, err := s.Load(); err == nil {
 		t.Fatal("expected error on version mismatch")
+	}
+}
+
+// fakeGitProbe stubs the GitProbe interface for SyncWithGit tests.
+// `branches` is the set of branches (without the refs/heads/ prefix)
+// reported as live by BranchExists. `worktreeBranches` is the set of
+// branches reported as mounted in `git worktree list` (full ref name,
+// e.g. "refs/heads/bosun/session-1"). Either set being missing means
+// the corresponding probe returns "not present."
+type fakeGitProbe struct {
+	worktreeBranches map[string]bool
+	branches         map[string]bool
+}
+
+func (f *fakeGitProbe) ListWorktrees(_ context.Context, _ string) ([]git.Worktree, error) {
+	out := make([]git.Worktree, 0, len(f.worktreeBranches))
+	// Sort so the slice is deterministic — saves a flaky-test debug
+	// session later if any consumer ever cares about order.
+	branches := make([]string, 0, len(f.worktreeBranches))
+	for b := range f.worktreeBranches {
+		branches = append(branches, b)
+	}
+	sort.Strings(branches)
+	for _, b := range branches {
+		out = append(out, git.Worktree{Branch: b, Path: "/fake/" + b})
+	}
+	return out, nil
+}
+
+func (f *fakeGitProbe) BranchExists(_ context.Context, _, branch string) (bool, error) {
+	return f.branches[branch], nil
+}
+
+// TestSyncWithGit covers the matrix described in trial #3c Bug A: an
+// entry is "ghost" — and only then pruned — when its worktree is gone
+// from `git worktree list` AND its branch is gone from `git branch
+// --list bosun/<label>`. Asymmetric divergence (one side missing,
+// the other present) is left untouched so bosun doesn't second-guess
+// an operator mid-move.
+func TestSyncWithGit(t *testing.T) {
+	type seed struct {
+		topLevels []string
+		children  [][2]string // {parent, child}
+	}
+	tests := []struct {
+		name             string
+		seed             seed
+		worktreeBranches map[string]bool // full refs/heads/... names
+		branches         map[string]bool // bare branch names (no refs/heads/)
+		wantPruned       []PrunedLabel
+		wantRemaining    []string
+	}{
+		{
+			name: "intact tree — no prune",
+			seed: seed{
+				topLevels: []string{"session-1"},
+			},
+			worktreeBranches: map[string]bool{"refs/heads/bosun/session-1": true},
+			branches:         map[string]bool{"bosun/session-1": true},
+			wantPruned:       nil,
+			wantRemaining:    []string{"session-1"},
+		},
+		{
+			name: "worktree missing, branch present — leave alone",
+			seed: seed{
+				topLevels: []string{"session-1"},
+			},
+			// No worktree, but branch still exists. Operator may have
+			// just removed the worktree intentionally — don't rewrite.
+			worktreeBranches: map[string]bool{},
+			branches:         map[string]bool{"bosun/session-1": true},
+			wantPruned:       nil,
+			wantRemaining:    []string{"session-1"},
+		},
+		{
+			name: "branch missing, worktree present — leave alone",
+			seed: seed{
+				topLevels: []string{"session-1"},
+			},
+			// Worktree mounted but branch deleted. Operator may be
+			// mid-rename — don't rewrite.
+			worktreeBranches: map[string]bool{"refs/heads/bosun/session-1": true},
+			branches:         map[string]bool{},
+			wantPruned:       nil,
+			wantRemaining:    []string{"session-1"},
+		},
+		{
+			name: "both missing — prune",
+			seed: seed{
+				topLevels: []string{"session-1"},
+			},
+			worktreeBranches: map[string]bool{},
+			branches:         map[string]bool{},
+			wantPruned:       []PrunedLabel{"session-1"},
+			wantRemaining:    nil,
+		},
+		{
+			name: "nested tree — prune ghost child, keep live parent",
+			seed: seed{
+				topLevels: []string{"session-1"},
+				children:  [][2]string{{"session-1", "session-1.auth"}},
+			},
+			// Parent's branch + worktree intact; child both gone.
+			worktreeBranches: map[string]bool{"refs/heads/bosun/session-1": true},
+			branches:         map[string]bool{"bosun/session-1": true},
+			wantPruned:       []PrunedLabel{"session-1.auth"},
+			wantRemaining:    []string{"session-1"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			s := NewStore(dir)
+			for _, tl := range tc.seed.topLevels {
+				if err := s.AddTopLevel(tl); err != nil {
+					t.Fatalf("seed AddTopLevel %s: %v", tl, err)
+				}
+			}
+			for _, c := range tc.seed.children {
+				if err := s.AddChild(c[0], c[1]); err != nil {
+					t.Fatalf("seed AddChild %s->%s: %v", c[0], c[1], err)
+				}
+			}
+
+			gc := &fakeGitProbe{
+				worktreeBranches: tc.worktreeBranches,
+				branches:         tc.branches,
+			}
+
+			pruned, err := s.SyncWithGit(context.Background(), gc, dir)
+			if err != nil {
+				t.Fatalf("SyncWithGit: %v", err)
+			}
+			if !reflect.DeepEqual(pruned, tc.wantPruned) {
+				t.Errorf("pruned = %v, want %v", pruned, tc.wantPruned)
+			}
+
+			tree, err := s.Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var gotLabels []string
+			for l := range tree.Sessions {
+				gotLabels = append(gotLabels, l)
+			}
+			sort.Strings(gotLabels)
+			want := append([]string(nil), tc.wantRemaining...)
+			sort.Strings(want)
+			if !reflect.DeepEqual(gotLabels, want) {
+				t.Errorf("remaining = %v, want %v", gotLabels, want)
+			}
+
+			// Nested case: confirm the parent's Children list dropped
+			// the ghost. Otherwise a stale child name lingers in the
+			// JSON and breaks postOrderSubtree walks.
+			if tc.name == "nested tree — prune ghost child, keep live parent" {
+				kids, _ := s.ChildrenOf("session-1")
+				if len(kids) != 0 {
+					t.Errorf("parent still lists ghost child: %v", kids)
+				}
+			}
+		})
+	}
+}
+
+// TestSyncWithGit_Idempotent guarantees a second call after a prune
+// produces no further mutations and no further reports — the brief
+// requires the operator stderr line to fire only the first time.
+func TestSyncWithGit_Idempotent(t *testing.T) {
+	dir := t.TempDir()
+	s := NewStore(dir)
+	if err := s.AddTopLevel("session-1"); err != nil {
+		t.Fatal(err)
+	}
+	gc := &fakeGitProbe{worktreeBranches: map[string]bool{}, branches: map[string]bool{}}
+
+	first, err := s.SyncWithGit(context.Background(), gc, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 1 {
+		t.Fatalf("first sync = %v, want one prune", first)
+	}
+	second, err := s.SyncWithGit(context.Background(), gc, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second) != 0 {
+		t.Errorf("second sync = %v, want no further prunes", second)
 	}
 }
 

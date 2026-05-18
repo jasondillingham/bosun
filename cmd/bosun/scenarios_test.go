@@ -4558,3 +4558,100 @@ exec %q "$@"
 		s.AssertBranchExists("bosun/session-" + itoa(i))
 	}
 }
+
+// TestScenario_StatusPrunesGhostSpawnTreeEntries reproduces trial #3c
+// Bug A: .bosun/spawn-tree.json contains 4 entries; 3 of them describe
+// sub-sessions whose worktrees and branches were reaped externally
+// (macOS / iCloud File Provider). `bosun status` must invoke
+// SyncWithGit on entry, prune the 3 ghosts, and leave only the live
+// entry. The stderr notice must name the pruned labels exactly once
+// so the operator sees the reconciliation happen.
+func TestScenario_StatusPrunesGhostSpawnTreeEntries(t *testing.T) {
+	s := newScenario(t)
+
+	// Create one real session — gives us a session-1 with a live
+	// worktree + branch that the sync should leave untouched.
+	s.Bosun("init", "1")
+	s.AssertWorktreeExists(1)
+	s.AssertBranchExists("bosun/session-1")
+
+	// Inject the trial #3c shape directly into .bosun/spawn-tree.json:
+	// session-1 (real) plus three ghost children. Writing the JSON by
+	// hand rather than going through AddTopLevel/AddChild keeps the
+	// test honest about the disk shape; ghosts are exactly entries
+	// with no worktree and no branch on disk.
+	tree := `{
+  "version": "v1",
+  "sessions": {
+    "session-1": {
+      "depth": 0,
+      "children": ["session-1.auth", "session-1.http", "session-1.parser"],
+      "spawned_at": "2026-05-18T00:00:00Z"
+    },
+    "session-1.auth": {
+      "depth": 1,
+      "parent": "session-1",
+      "spawned_at": "2026-05-18T00:01:00Z"
+    },
+    "session-1.http": {
+      "depth": 1,
+      "parent": "session-1",
+      "spawned_at": "2026-05-18T00:02:00Z"
+    },
+    "session-1.parser": {
+      "depth": 1,
+      "parent": "session-1",
+      "spawned_at": "2026-05-18T00:03:00Z"
+    }
+  }
+}
+`
+	s.WriteFile(filepath.Join(".bosun", "spawn-tree.json"), tree)
+
+	out := s.Bosun("status")
+
+	// The prune notice fires once and names every ghost so the
+	// operator can correlate against whatever ate the worktrees.
+	for _, ghost := range []string{"session-1.auth", "session-1.http", "session-1.parser"} {
+		if !strings.Contains(out, ghost) {
+			t.Errorf("expected status output to mention pruned ghost %q:\n%s", ghost, out)
+		}
+	}
+	if !strings.Contains(out, "pruned 3 ghost") {
+		t.Errorf("expected status output to announce 3 prunes:\n%s", out)
+	}
+
+	// After sync, the spawn-tree file should hold only the live entry.
+	// Children list under session-1 must be empty so subsequent
+	// merge/cleanup --tree walks don't trip over stale references.
+	data, err := os.ReadFile(filepath.Join(s.repo, ".bosun", "spawn-tree.json"))
+	if err != nil {
+		t.Fatalf("read spawn-tree.json: %v", err)
+	}
+	var parsed struct {
+		Sessions map[string]struct {
+			Children []string `json:"children"`
+		} `json:"sessions"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("parse spawn-tree.json: %v\n%s", err, data)
+	}
+	if len(parsed.Sessions) != 1 {
+		t.Errorf("spawn-tree.Sessions = %v, want only session-1", parsed.Sessions)
+	}
+	if _, ok := parsed.Sessions["session-1"]; !ok {
+		t.Errorf("session-1 missing from post-sync tree: %v", parsed.Sessions)
+	}
+	if kids := parsed.Sessions["session-1"].Children; len(kids) != 0 {
+		t.Errorf("session-1.children = %v, want empty after prune", kids)
+	}
+
+	// And --no-sync must skip the reconciliation entirely, leaving
+	// whatever the operator just put on disk. Seed the ghost shape a
+	// second time (the prior status call wrote it out cleanly).
+	s.WriteFile(filepath.Join(".bosun", "spawn-tree.json"), tree)
+	out2 := s.Bosun("status", "--no-sync")
+	if strings.Contains(out2, "pruned") {
+		t.Errorf("--no-sync should suppress the prune notice:\n%s", out2)
+	}
+}

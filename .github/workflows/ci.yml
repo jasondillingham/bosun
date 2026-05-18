@@ -31,7 +31,13 @@ jobs:
         run: go vet ./...
 
       - name: go build
-        run: go build -o bosun ./cmd/bosun
+        # Inject the git-derived version so `bosun --version` reports something
+        # meaningful even on CI-built binaries. Mirrors `make build`. Falls
+        # back to "dev" if git describe fails (shallow clones etc.).
+        run: |
+          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo dev)
+          go build -ldflags="-X main.version=$VERSION" -o bosun ./cmd/bosun
+        shell: bash
 
       - name: go test -race
         run: go test -race ./... -count=1

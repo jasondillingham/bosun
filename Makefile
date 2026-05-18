@@ -2,6 +2,13 @@ BINARY := bosun
 PKG := github.com/jasondillingham/bosun/cmd/bosun
 DIST := dist
 
+# VERSION is injected into the binary via -ldflags so `bosun --version`
+# reports something meaningful. `git describe --tags --always --dirty`
+# yields e.g. v0.10.0, v0.10.0-7-gc2785aa, or v0.10.0-7-gc2785aa-dirty.
+# Falls back to "dev" outside a git checkout (e.g. tarball builds).
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+LDFLAGS := -X main.version=$(VERSION)
+
 .PHONY: build test test-race test-cover check vet tidy cross clean install demo help fuzz stress
 
 # How long each fuzz target runs when invoked via `make fuzz`. Override
@@ -27,7 +34,7 @@ help:
 	@echo "  stress      Run stress + concurrency tests (no -short)"
 
 build:
-	go build -o $(BINARY) ./cmd/bosun
+	go build -ldflags="$(LDFLAGS)" -o $(BINARY) ./cmd/bosun
 
 test:
 	go test ./... -count=1
@@ -50,12 +57,12 @@ install:
 
 cross:
 	mkdir -p $(DIST)
-	GOOS=darwin  GOARCH=amd64 go build -o $(DIST)/$(BINARY)-darwin-amd64 ./cmd/bosun
-	GOOS=darwin  GOARCH=arm64 go build -o $(DIST)/$(BINARY)-darwin-arm64 ./cmd/bosun
-	GOOS=linux   GOARCH=amd64 go build -o $(DIST)/$(BINARY)-linux-amd64 ./cmd/bosun
-	GOOS=linux   GOARCH=arm64 go build -o $(DIST)/$(BINARY)-linux-arm64 ./cmd/bosun
-	GOOS=windows GOARCH=amd64 go build -o $(DIST)/$(BINARY)-windows-amd64.exe ./cmd/bosun
-	GOOS=windows GOARCH=arm64 go build -o $(DIST)/$(BINARY)-windows-arm64.exe ./cmd/bosun
+	GOOS=darwin  GOARCH=amd64 go build -ldflags="$(LDFLAGS)" -o $(DIST)/$(BINARY)-darwin-amd64 ./cmd/bosun
+	GOOS=darwin  GOARCH=arm64 go build -ldflags="$(LDFLAGS)" -o $(DIST)/$(BINARY)-darwin-arm64 ./cmd/bosun
+	GOOS=linux   GOARCH=amd64 go build -ldflags="$(LDFLAGS)" -o $(DIST)/$(BINARY)-linux-amd64 ./cmd/bosun
+	GOOS=linux   GOARCH=arm64 go build -ldflags="$(LDFLAGS)" -o $(DIST)/$(BINARY)-linux-arm64 ./cmd/bosun
+	GOOS=windows GOARCH=amd64 go build -ldflags="$(LDFLAGS)" -o $(DIST)/$(BINARY)-windows-amd64.exe ./cmd/bosun
+	GOOS=windows GOARCH=arm64 go build -ldflags="$(LDFLAGS)" -o $(DIST)/$(BINARY)-windows-arm64.exe ./cmd/bosun
 	@ls -la $(DIST)
 
 clean:

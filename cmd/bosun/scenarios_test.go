@@ -3419,17 +3419,17 @@ func TestScenario_PredictOverlappingPlan_ExitsNonZero(t *testing.T) {
 		t.Skip("predict heuristic is the round-3 stub; session-2 not merged yet")
 	}
 
-	// Two lanes that both name the same file — any reasonable
-	// filename-mention heuristic flags this. Use a slashed path so the
-	// heuristic's path-token regex picks it up (the regex requires at
-	// least one slash to avoid pulling in bare identifiers).
+	// Two lanes that both name the same file. The path is wrapped in
+	// backticks so it counts as an intentional claim under the
+	// context-sensitive parser (closes #17): unquoted prose mentions
+	// are informational only, but backticked references stay claims.
 	s.WriteFile("plans/overlap.md", `# Overlap plan
 
 ## session-1
-Refactor internal/pkg/shared.go for clarity.
+Refactor `+"`internal/pkg/shared.go`"+` for clarity.
 
 ## session-2
-Rewrite internal/pkg/shared.go to use the new API.
+Rewrite `+"`internal/pkg/shared.go`"+` to use the new API.
 `)
 
 	out, err := s.BosunErr("predict", "plans/overlap.md")

@@ -235,7 +235,10 @@ func TestPredict_SortedBySession(t *testing.T) {
 func TestPredict_FiltersImportPaths(t *testing.T) {
 	briefs := []brief.Brief{{
 		Label: "session-x",
-		Body:  "Use path/filepath, not string concat. Touch internal/foo/bar.go.",
+		// Backticks make the operator's intent explicit: `path/filepath`
+		// is a deliberate reference, `internal/foo/bar.go` is the file
+		// to touch. The extension gate still filters the import path.
+		Body: "Use `path/filepath`, not string concat. Touch `internal/foo/bar.go`.",
 	}}
 	preds, _, _ := New().Predict(briefs)
 	if containsPath(preds[0].Predicted, "path/filepath") {
@@ -243,6 +246,126 @@ func TestPredict_FiltersImportPaths(t *testing.T) {
 	}
 	if !containsPath(preds[0].Predicted, "internal/foo/bar.go") {
 		t.Errorf("expected concrete file `internal/foo/bar.go`, got %v", preds[0].Predicted)
+	}
+}
+
+// TestPredict_ContextSensitive is the table-driven coverage for the
+// claim-vs-prose split (closes #17). Code fences and backtick spans are
+// claims; unquoted prose is informational only and lands in Warned.
+func TestPredict_ContextSensitive(t *testing.T) {
+	tests := []struct {
+		name        string
+		body        string
+		wantClaim   []string // must appear in Predicted
+		wantNoClaim []string // must NOT appear in Predicted
+		wantWarned  []string // must appear in Warned
+	}{
+		{
+			name: "fenced code block: claim",
+			body: "```go\n" +
+				"// internal/predict/types.go\n" +
+				"package predict\n" +
+				"```\n",
+			wantClaim: []string{"internal/predict/types.go"},
+		},
+		{
+			name:      "single-backtick span: claim",
+			body:      "Edit `internal/foo/bar.go` to fix the bug.",
+			wantClaim: []string{"internal/foo/bar.go"},
+		},
+		{
+			name:        "plain prose: not a claim, lands in warned",
+			body:        "Touch internal/foo/bar.go in your work.",
+			wantNoClaim: []string{"internal/foo/bar.go"},
+			wantWarned:  []string{"internal/foo/bar.go"},
+		},
+		{
+			name: "backticked constraint clause: still a claim",
+			// Operator's intent: they chose to wrap the path. Even though
+			// the surrounding clause is "Do NOT modify", the backticks
+			// signal a deliberate, callable-out reference.
+			body:      "**Constraints:** Do NOT modify `internal/config/foo.go`.",
+			wantClaim: []string{"internal/config/foo.go"},
+		},
+		{
+			name: "mixed: fence + backtick + prose in one brief",
+			body: "```\n" +
+				"internal/a.go\n" +
+				"```\n" +
+				"See also `internal/b.go`.\n" +
+				"Avoid touching internal/c.go.\n",
+			wantClaim:   []string{"internal/a.go", "internal/b.go"},
+			wantNoClaim: []string{"internal/c.go"},
+			wantWarned:  []string{"internal/c.go"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			preds, _, err := New().Predict([]brief.Brief{{Label: "s", Body: tt.body}})
+			if err != nil {
+				t.Fatalf("Predict: %v", err)
+			}
+			got := preds[0]
+			for _, want := range tt.wantClaim {
+				if !containsPath(got.Predicted, want) {
+					t.Errorf("expected claim %q in Predicted=%v", want, got.Predicted)
+				}
+			}
+			for _, no := range tt.wantNoClaim {
+				if containsPath(got.Predicted, no) {
+					t.Errorf("path %q must NOT be a claim, but Predicted=%v", no, got.Predicted)
+				}
+			}
+			for _, want := range tt.wantWarned {
+				if !containsPath(got.Warned, want) {
+					t.Errorf("expected %q in Warned=%v", want, got.Warned)
+				}
+			}
+		})
+	}
+}
+
+// TestPredict_ArchitectMCPRegression reproduces the false-positive
+// blowup the architect-mcp dogfood hit before this lane landed. Two
+// briefs share a long, prose-only constraint paragraph naming a dozen
+// paths each session must avoid. Under the old prose-as-claim parser
+// every constraint path counted as a predicted touch in both briefs,
+// producing well over a dozen high-severity overlaps on a plan whose
+// real overlap surface was zero. The new context-sensitive parser
+// drops prose mentions from the overlap calc, so this case must stay
+// at ≤3 overlaps (and ideally 0).
+func TestPredict_ArchitectMCPRegression(t *testing.T) {
+	constraintProse := strings.Join([]string{
+		"Constraints: do NOT modify internal/config/loader.go,",
+		"internal/config/schema.go, internal/mcp/server.go,",
+		"internal/mcp/handlers.go, internal/git/clone.go,",
+		"internal/git/worktree.go, internal/status/render.go,",
+		"internal/status/table.go, cmd/bosun/cmd_init.go,",
+		"cmd/bosun/cmd_done.go, cmd/bosun/cmd_status.go, or",
+		"internal/brief/parse.go. The lane should also avoid",
+		"touching internal/session/manager.go.",
+	}, "\n")
+	briefs := []brief.Brief{
+		{
+			Label: "session-1",
+			Body: "**Lane: refactor predict.**\n\n" +
+				"Files (own):\n- `internal/predict/predict.go`\n\n" +
+				constraintProse,
+		},
+		{
+			Label: "session-2",
+			Body: "**Lane: refactor predict tests.**\n\n" +
+				"Files (own):\n- `internal/predict/predict_test.go`\n\n" +
+				constraintProse,
+		},
+	}
+	_, overlaps, err := New().Predict(briefs)
+	if err != nil {
+		t.Fatalf("Predict: %v", err)
+	}
+	if len(overlaps) > 3 {
+		t.Errorf("architect-mcp regression: got %d overlaps, want ≤3: %+v",
+			len(overlaps), overlaps)
 	}
 }
 

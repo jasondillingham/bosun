@@ -40,6 +40,16 @@ type Prediction struct {
 	// here so an operator-side check or future MCP tool can flag a
 	// claim that crosses into another session's avoid lane.
 	Avoid []string `json:"avoid,omitempty"`
+
+	// Warned holds path-like tokens that appeared in plain prose (no
+	// backticks, no fenced block) — typically constraint clauses like
+	// "Do NOT modify internal/config/...". These are surfaced for
+	// operator awareness but deliberately excluded from the overlap
+	// calculation: the architect-mcp dogfood found that treating prose
+	// mentions as claims produced 17 false-positive overlaps on a plan
+	// with 3 real overlaps. Only code-fenced and backtick-quoted paths
+	// count as claims now.
+	Warned []string `json:"warned,omitempty"`
 }
 
 // PredictedPath is one path the heuristic expects a session to touch and

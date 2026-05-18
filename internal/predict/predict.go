@@ -27,7 +27,7 @@ func (h *Heuristic) Predict(briefs []brief.Brief) ([]Prediction, []Overlap, erro
 	preds := make([]Prediction, 0, len(briefs))
 	for _, b := range briefs {
 		label := labelOf(b)
-		paths, sources, avoid := extractPaths(b.Body)
+		paths, sources, avoid, warned := extractPaths(b.Body)
 		pred := Prediction{
 			Session:   label,
 			Scope:     firstNonEmptyLine(b.Body),
@@ -35,6 +35,7 @@ func (h *Heuristic) Predict(briefs []brief.Brief) ([]Prediction, []Overlap, erro
 			Predicted: paths,
 			Source:    sources,
 			Avoid:     avoid,
+			Warned:    warned,
 		}
 		for i, p := range paths {
 			reason := ""
@@ -87,6 +88,14 @@ var pathRe = regexp.MustCompile(`[a-zA-Z_][a-zA-Z0-9_.-]*(?:/[a-zA-Z0-9_.*?-]+)+
 // in briefs are nearly always concrete file references.
 var fenceRe = regexp.MustCompile("(?s)```[a-zA-Z0-9_+-]*\n(.*?)\n```")
 
+// inlineCodeRe matches single-backtick code spans like `foo/bar.go`.
+// The contract: a path the operator wrapped in backticks is an
+// intentional, concrete reference — count it as a claim even in
+// "Do NOT modify `X`" constraint clauses. Unquoted prose paths fall
+// through to the warned-off bucket instead. Excludes backtick and
+// newline so a span can't run away across paragraphs.
+var inlineCodeRe = regexp.MustCompile("`([^`\n]+)`")
+
 // knownExts gates which extensions we accept as "this is probably a
 // file path." A bare token like `path/filepath` (a Go import path, not
 // a file) has no extension and would otherwise be predicted; gating on
@@ -102,16 +111,30 @@ var knownExts = map[string]bool{
 	".dockerfile": true, ".lock": true, ".mod": true, ".sum": true,
 }
 
-// extractPaths returns the predicted paths, a parallel slice of source
-// labels explaining why each was predicted, and the avoid list parsed
-// from the brief (kept separate so the predictor doesn't conflate
-// "session-N must NOT touch X" with "session-N is predicted to touch
-// X"). Predicted entries are deduped preserving the first occurrence
-// (highest-confidence source wins, since we scan the owned list before
-// code blocks before inline mentions). Avoid-listed paths are also
-// excluded from inline-mention pickups so a brief that names a file
-// only to forbid it doesn't get it counted as a prediction.
-func extractPaths(body string) ([]string, []string, []string) {
+// extractPaths returns four parallel views of the brief body:
+//
+//   - paths:   the predicted claims (owned list, fenced code blocks,
+//     single-backtick spans).
+//   - sources: a parallel slice of source labels explaining why each
+//     was predicted.
+//   - avoid:   paths the brief explicitly forbids ("Files (avoid)").
+//   - warned:  path-like tokens that appeared only in plain prose with
+//     no backticks — informational, not claims. Surfaced separately so
+//     the overlap calculation doesn't fire on constraint clauses like
+//     "Do NOT modify internal/config/..." appearing in multiple briefs.
+//
+// Predicted entries are deduped preserving the first occurrence
+// (highest-confidence source wins: owned list → code block → backtick).
+// Avoid-listed paths are excluded from predicted and warned. A path
+// already claimed is never duplicated into warned.
+//
+// The context split is the fix for the architect-mcp regression
+// (issue #17): treating prose mentions as claims produced 17
+// overlap warnings on a plan with 3 real overlaps because every
+// brief's "do not touch X" constraint prose was matching every other
+// brief's constraint prose. Backticked references remain claims —
+// the operator chose to call them out.
+func extractPaths(body string) ([]string, []string, []string, []string) {
 	type entry struct {
 		path   string
 		source string
@@ -119,8 +142,8 @@ func extractPaths(body string) ([]string, []string, []string) {
 	var entries []entry
 	seen := make(map[string]struct{})
 
-	// Pre-compute the avoid set so later inline-mention scans skip
-	// anything the brief has explicitly told the session NOT to touch.
+	// Pre-compute the avoid set so later scans skip anything the brief
+	// has explicitly told the session NOT to touch.
 	avoidRaw := extractListSection(body, "Files (avoid)")
 	avoidSet := make(map[string]struct{}, len(avoidRaw))
 	avoid := make([]string, 0, len(avoidRaw))
@@ -165,14 +188,49 @@ func extractPaths(body string) ([]string, []string, []string) {
 		}
 	}
 
-	// 3. Inline mentions throughout the body.
-	for _, p := range pathRe.FindAllString(body, -1) {
-		add(p, "inline mention")
+	// Strip fenced blocks before scanning inline backticks so a fence
+	// delimiter doesn't accidentally close-then-reopen as a span.
+	stripped := fenceRe.ReplaceAllString(body, "")
+
+	// 3. Single-backtick spans — claims. Operator chose to wrap the
+	//    path in backticks, which signals an intentional reference even
+	//    inside a constraint clause.
+	for _, m := range inlineCodeRe.FindAllStringSubmatch(stripped, -1) {
+		for _, p := range pathRe.FindAllString(m[1], -1) {
+			add(p, "backtick reference")
+		}
 	}
 
-	// 4. Test co-location — every owned non-test `.go` file implies the
-	//    matching `_test.go` even if the brief never names it. Snapshot
-	//    the loop bound so the additions don't recurse.
+	// 4. Plain prose — informational only. Strip out the backtick spans
+	//    first so any remaining path-like tokens are guaranteed prose,
+	//    then collect them into the warned-off bucket. These never feed
+	//    the overlap calc — see the function header for the rationale.
+	prose := inlineCodeRe.ReplaceAllString(stripped, " ")
+	warnedSeen := make(map[string]struct{})
+	var warned []string
+	for _, raw := range pathRe.FindAllString(prose, -1) {
+		p := cleanPath(raw)
+		if p == "" || !isPathLike(p) {
+			continue
+		}
+		if _, claimed := seen[p]; claimed {
+			continue
+		}
+		if _, blocked := avoidSet[p]; blocked {
+			continue
+		}
+		if _, dup := warnedSeen[p]; dup {
+			continue
+		}
+		warnedSeen[p] = struct{}{}
+		warned = append(warned, p)
+	}
+
+	// 5. Test co-location — every claimed non-test `.go` file implies
+	//    the matching `_test.go` even if the brief never names it.
+	//    Runs over claims only (not warned), so prose mentions don't
+	//    drag tests into the prediction either. Snapshot the loop
+	//    bound so the additions don't recurse.
 	for i, n := 0, len(entries); i < n; i++ {
 		e := entries[i]
 		if strings.HasSuffix(e.path, ".go") && !strings.HasSuffix(e.path, "_test.go") {
@@ -187,7 +245,7 @@ func extractPaths(body string) ([]string, []string, []string) {
 		paths[i] = e.path
 		sources[i] = e.source
 	}
-	return paths, sources, avoid
+	return paths, sources, avoid, warned
 }
 
 // cleanPath strips markdown noise (backticks, surrounding quotes,

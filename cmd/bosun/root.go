@@ -43,6 +43,7 @@ worktree, with one place to see what every session is doing.`,
 		newAdoptCmd(),
 		newHookCmd(),
 		newTourCmd(),
+		newNewBriefCmd(),
 	)
 
 	return root

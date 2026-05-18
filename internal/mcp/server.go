@@ -168,6 +168,15 @@ func defaultRunningFn(worktreePath string) (int, bool) {
 // the common case and silently overwriting them matches the local-daemon
 // convention.
 func (s *Server) Listen(socketPath string) error {
+	// Ensure the parent dir exists. In production, .bosun/ is created
+	// long before bosun mcp starts (by bosun init), but tests using
+	// t.TempDir() + DefaultSocketPath() supply a tmp root with no
+	// .bosun/ subdir, and bind: no such file or directory is the result.
+	// MkdirAll is idempotent — no-op when the dir already exists.
+	if err := os.MkdirAll(filepath.Dir(socketPath), 0o755); err != nil {
+		return fmt.Errorf("mkdir socket parent: %w", err)
+	}
+
 	// Best-effort remove of a stale socket; ignore not-exist.
 	_ = removeIfSocket(socketPath)
 

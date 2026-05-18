@@ -60,7 +60,12 @@ jobs:
           cache: true
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        # v9 of the action pulls a newer golangci-lint binary that's built
+        # against Go 1.25+. v6 + version=latest resolved to v1.64.8 (built
+        # against Go 1.24), which refused to lint a go.mod targeting 1.25
+        # with "can't load config: the Go language version used to build
+        # golangci-lint is lower than the targeted Go version."
+        uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
+          version: v2.5.0
           args: --timeout=5m

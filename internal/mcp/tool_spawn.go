@@ -51,39 +51,58 @@ type SpawnFailureMC struct {
 // internal/spawn.Run. Any spawn-tree mutation happens inside that
 // helper under the flock; the gates here are quota/depth checks
 // against an already-loaded tree snapshot.
+//
+// Every refusal AND the success path call logSpawnAttempt so
+// .bosun/audit/spawn.log captures the full decision history (issue
+// #14). The refuse() helper keeps the per-gate logging DRY without
+// scattering log calls across 11 return sites.
 func (s *Server) toolSpawn(_ context.Context, _ *mcp.CallToolRequest, args SpawnArgs) (*mcp.CallToolResult, SpawnResult, error) {
+	// repoRoot is captured up front so every audit log call has the
+	// same target path. s.state is always populated by NewServer, so
+	// even the server-not-configured branch below has a valid root.
+	repoRoot := s.state.RepoRoot()
+	parentRaw := strings.TrimSpace(args.Parent)
+
+	refuse := func(gate string, err error) (*mcp.CallToolResult, SpawnResult, error) {
+		logSpawnAttempt(repoRoot, spawnAuditEntry{
+			Parent:         parentRaw,
+			Outcome:        "refused",
+			RefusalGate:    gate,
+			RefusalMessage: err.Error(),
+		})
+		return errResult(err), SpawnResult{}, nil
+	}
+
 	if s.spawnTree == nil || s.cfg == nil {
-		return errResult(errors.New("bosun_spawn is not configured on this daemon (operator must wire WithSpawnSupport in cmd_mcp)")), SpawnResult{}, nil
+		return refuse(spawnGateConfigDisabled, errors.New("bosun_spawn is not configured on this daemon (operator must wire WithSpawnSupport in cmd_mcp)"))
 	}
 
 	// Auth gate #1: feature-flag.
 	if !s.cfg.AgentSpawn.Enabled {
-		return errResult(errors.New("agent_spawn is not enabled for this repo. Operator: set agent_spawn.enabled=true in .bosun/config.json")), SpawnResult{}, nil
+		return refuse(spawnGateConfigDisabled, errors.New("agent_spawn is not enabled for this repo. Operator: set agent_spawn.enabled=true in .bosun/config.json"))
 	}
 
-	parentRaw := strings.TrimSpace(args.Parent)
 	if parentRaw == "" {
-		return errResult(errors.New("parent is required")), SpawnResult{}, nil
+		return refuse(spawnGateInvalidArgs, errors.New("parent is required"))
 	}
 	parent, err := session.ParseLabel(parentRaw)
 	if err != nil {
-		return errResult(err), SpawnResult{}, nil
+		return refuse(spawnGateInvalidArgs, err)
 	}
 
 	// Auth gate #2: whitelist (if configured).
 	if !isParentAllowedToSpawn(parent, s.cfg.AgentSpawn) {
-		return errResult(fmt.Errorf("session %q is not in agent_spawn.allowed_for_sessions whitelist", parent)), SpawnResult{}, nil
+		return refuse(spawnGateAllowedForSessions, fmt.Errorf("session %q is not in agent_spawn.allowed_for_sessions whitelist", parent))
 	}
 
 	// Auth gate #3: parent identity. The calling agent must actually
-	// be running inside the parent's worktree. proc.Running uses the
-	// same CWD-matching logic bosun status uses for the RUNNING
-	// column; if no live agent is detected in the parent's worktree,
-	// we can't confirm the caller is who they say they are.
-	repoRoot := s.state.RepoRoot()
+	// be running inside the parent's worktree. s.runningFn is
+	// per-instance indirection over proc.Running so tests can mock the
+	// liveness check without touching real processes; the production
+	// wiring (NewServer) defaults to proc.Running.
 	worktreePath := session.WorktreePathForLabel(repoRoot, *s.cfg, parent)
 	if _, running := s.runningFn(worktreePath); !running {
-		return errResult(fmt.Errorf("no live agent detected in %s's worktree; bosun_spawn requires the caller to be running inside the named parent", parent)), SpawnResult{}, nil
+		return refuse(spawnGateParentLiveness, fmt.Errorf("no live agent detected in %s's worktree; bosun_spawn requires the caller to be running inside the named parent", parent))
 	}
 
 	// Auth gate #4: depth ceiling. Parent's depth + 1 must be <=
@@ -91,19 +110,19 @@ func (s *Server) toolSpawn(_ context.Context, _ *mcp.CallToolRequest, args Spawn
 	// MaxAgentSpawnDepthCeiling at config load).
 	parentDepth, derr := s.spawnTree.DepthOf(parent)
 	if derr != nil {
-		return errResult(fmt.Errorf("read spawn tree: %w", derr)), SpawnResult{}, nil
+		return refuse(spawnGateDepthCeiling, fmt.Errorf("read spawn tree: %w", derr))
 	}
 	if parentDepth+1 > s.cfg.AgentSpawn.MaxDepth {
-		return errResult(fmt.Errorf("spawn depth %d would exceed agent_spawn.max_depth=%d (parent is at depth %d)", parentDepth+1, s.cfg.AgentSpawn.MaxDepth, parentDepth)), SpawnResult{}, nil
+		return refuse(spawnGateMaxDepth, fmt.Errorf("spawn depth %d would exceed agent_spawn.max_depth=%d (parent is at depth %d)", parentDepth+1, s.cfg.AgentSpawn.MaxDepth, parentDepth))
 	}
 
 	// Auth gate #5: per-parent quota.
 	existing, cerr := s.spawnTree.CountChildren(parent)
 	if cerr != nil {
-		return errResult(fmt.Errorf("count children: %w", cerr)), SpawnResult{}, nil
+		return refuse(spawnGateConcurrentQuota, fmt.Errorf("count children: %w", cerr))
 	}
 	if existing >= s.cfg.AgentSpawn.MaxConcurrentSubSessions {
-		return errResult(fmt.Errorf("parent %q already has %d live sub-session(s); agent_spawn.max_concurrent_sub_sessions=%d", parent, existing, s.cfg.AgentSpawn.MaxConcurrentSubSessions)), SpawnResult{}, nil
+		return refuse(spawnGateConcurrentQuota, fmt.Errorf("parent %q already has %d live sub-session(s); agent_spawn.max_concurrent_sub_sessions=%d", parent, existing, s.cfg.AgentSpawn.MaxConcurrentSubSessions))
 	}
 
 	// All gates passed — delegate to the per-sub create pipeline.
@@ -115,13 +134,19 @@ func (s *Server) toolSpawn(_ context.Context, _ *mcp.CallToolRequest, args Spawn
 		Cfg:           *s.cfg,
 	})
 	if runErr != nil && len(res.Created) == 0 {
-		return errResult(runErr), SpawnResult{}, nil
+		return refuse(spawnGateInvalidArgs, runErr)
 	}
 
 	out := SpawnResult{Created: res.Created}
 	for _, f := range res.Failed {
 		out.Failed = append(out.Failed, SpawnFailureMC{Label: f.Label, Reason: f.Reason})
 	}
+
+	logSpawnAttempt(repoRoot, spawnAuditEntry{
+		Parent:         parent,
+		RequestedLabel: strings.Join(res.Created, ","),
+		Outcome:        "success",
+	})
 
 	msg := fmt.Sprintf("%s: spawned %d sub-session(s)", parent, len(res.Created))
 	if len(res.Failed) > 0 {

@@ -5,6 +5,7 @@
 package launcher
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -12,6 +13,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
+	"time"
 )
 
 // Strategy is the resolved launch method.
@@ -173,9 +176,13 @@ func launchTmux(opts Options) error {
 	if opts.InitialPrompt != "" {
 		args = append(args, opts.InitialPrompt)
 	}
-	cmd := exec.Command("tmux", args...)
-	return cmd.Run()
+	return execRunFn(exec.Command("tmux", args...))
 }
+
+// execRunFn invokes cmd.Run() in production. Tests substitute a fake
+// to assert on argv and simulate run failures without invoking the
+// real tmux binary.
+var execRunFn = func(cmd *exec.Cmd) error { return cmd.Run() }
 
 // shellInvocation returns "<command>" or "<command> '<quoted-prompt>'" for
 // use inside a POSIX shell pipeline. Shared by darwin/linux/ghostty paths.
@@ -205,7 +212,13 @@ func launchTerminal(opts Options) error {
 }
 
 func launchTerminalGhostty(opts Options, bin string) error {
-	return spawnDetached(exec.Command(bin, ghosttyArgs(opts)...))
+	// Ghostty on macOS reaches into the running .app via IPC. Back-to-back
+	// invocations from the same goroutine raced under trial #3c (only 1
+	// of 3 windows materialized); waitForMacOSStagger spaces them out.
+	if runtime.GOOS == "darwin" {
+		waitForMacOSStagger()
+	}
+	return spawnFn(exec.Command(bin, ghosttyArgs(opts)...), opts.SessionName, opts.Out)
 }
 
 // ghosttyArgs builds the argv for the Ghostty CLI.
@@ -224,6 +237,13 @@ func ghosttyArgs(opts Options) []string {
 	return []string{"-e", "bash", "-lc", inner}
 }
 
+// spawnFn is the production spawner used by the terminal-launch paths.
+// Tests assign a fake to record argv and simulate post-fork failures
+// without spawning real terminal windows. The (cmd, sessionName,
+// outWriter) shape lets the production impl surface post-fork stderr
+// to the operator without coupling spawnDetached to opts.Out directly.
+var spawnFn = spawnDetached
+
 // spawnDetached starts cmd without blocking on its exit. Used for terminal
 // launches where the child window must outlive the bosun process. We reap
 // the child in a goroutine so it doesn't sit as a zombie if bosun is still
@@ -231,20 +251,80 @@ func ghosttyArgs(opts Options) []string {
 // init/launchd which handles reaping.
 //
 // Returns the error from Start() so genuinely-failed launches (binary not
-// on PATH, permission denied, etc.) still surface to the caller. Errors
-// that happen after the fork (e.g. the spawned shell prints a not-found)
-// are not visible here — that's a trade-off for not blocking.
-func spawnDetached(cmd *exec.Cmd) error {
+// on PATH, permission denied, etc.) still surface to the caller. Post-fork
+// errors (osascript reporting an AppleScript error, ghostty CLI failing
+// its IPC handshake, an emulator exiting non-zero) used to be discarded
+// in the Wait() goroutine — trial #3c (docs/v0.9-trial-3c-findings.md
+// Bug D) found that pattern hid three vanished sub-agents. We now capture
+// stderr and write a one-line diagnostic to outWriter so the operator
+// sees what happened.
+//
+// outWriter is typically opts.Out (defaults to os.Stdout upstream); a
+// nil outWriter drops the post-fork message — kept that way so tests
+// can opt out of post-fork noise.
+func spawnDetached(cmd *exec.Cmd, sessionName string, outWriter io.Writer) error {
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	go func() { _ = cmd.Wait() }()
+	go func() {
+		err := cmd.Wait()
+		if err != nil && outWriter != nil {
+			msg := strings.TrimSpace(stderr.String())
+			if msg != "" {
+				fmt.Fprintf(outWriter, "bosun: launcher (%s) child exited %v: %s\n", sessionName, err, msg)
+			} else {
+				fmt.Fprintf(outWriter, "bosun: launcher (%s) child exited %v\n", sessionName, err)
+			}
+		}
+	}()
 	return nil
 }
 
+// macOSLaunchStagger is the minimum gap enforced between successive
+// macOS terminal launches. AppleScript / Apple Events (Terminal.app,
+// iTerm2) and Ghostty's IPC handshake all get unhappy under tight
+// back-to-back invocations from the same caller: trial #3c
+// (docs/v0.9-trial-3c-findings.md Bug D) saw three rapid bosun_spawn
+// calls in ~8 seconds yield zero visible sub-agent windows. 250ms is
+// empirically enough to clear the throttle without making the
+// operator wait noticeably for typical session counts (3-4 subs ≈
+// 750ms-1000ms total).
+const macOSLaunchStagger = 250 * time.Millisecond
+
+var (
+	macOSStaggerMu sync.Mutex
+	macOSLastAt    time.Time
+)
+
+// waitForMacOSStagger holds the package mutex while sleeping just
+// long enough to guarantee macOSLaunchStagger has elapsed since the
+// previous macOS launch. Two-purpose: serializes concurrent goroutine
+// callers AND spaces out back-to-back calls from a single caller.
+//
+// Cheap on first call (lastAt is zero so no sleep), then bounded to
+// macOSLaunchStagger thereafter. Called only from the macOS terminal
+// paths — Linux and Windows are untouched per scope.
+func waitForMacOSStagger() {
+	macOSStaggerMu.Lock()
+	defer macOSStaggerMu.Unlock()
+	if !macOSLastAt.IsZero() {
+		gap := time.Since(macOSLastAt)
+		if gap < macOSLaunchStagger {
+			time.Sleep(macOSLaunchStagger - gap)
+		}
+	}
+	macOSLastAt = time.Now()
+}
+
 func launchTerminalDarwin(opts Options) error {
+	// AppleScript-Bridge / Apple Events drop rapid back-to-back messages
+	// (trial #3c Bug D). Stagger ensures osascript-2 doesn't race with
+	// osascript-1 still wiring up its window.
+	waitForMacOSStagger()
 	if hasITerm2() {
-		return spawnDetached(exec.Command("osascript", "-e", iTerm2Script(opts)))
+		return spawnFn(exec.Command("osascript", "-e", iTerm2Script(opts)), opts.SessionName, opts.Out)
 	}
 	// Terminal.app: do script always opens a new window. There is no clean
 	// "open new tab in current window" primitive — the workaround keystrokes
@@ -256,7 +336,7 @@ func launchTerminalDarwin(opts Options) error {
 		`tell application "Terminal" to do script "cd %s && %s%s"`,
 		shellQuote(opts.WorktreePath), envPrefix, shellInvocation(opts),
 	)
-	return spawnDetached(exec.Command("osascript", "-e", script))
+	return spawnFn(exec.Command("osascript", "-e", script), opts.SessionName, opts.Out)
 }
 
 // iTerm2Script returns the AppleScript body that opens an iTerm2 window
@@ -316,7 +396,7 @@ func launchTerminalLinux(opts Options) error {
 		default:
 			cmd = exec.Command(term, "-e", "bash", "-lc", inner)
 		}
-		return spawnDetached(cmd)
+		return spawnFn(cmd, opts.SessionName, opts.Out)
 	}
 	return fmt.Errorf("no terminal emulator found")
 }
@@ -325,9 +405,9 @@ func launchTerminalWindows(opts Options) error {
 	// Prefer Windows Terminal when present — it has real tab support via
 	// `wt -w 0 new-tab`, which targets the most-recently-used window.
 	if wt, ok := hasWindowsTerminal(); ok {
-		return spawnDetached(exec.Command(wt, windowsTerminalArgs(opts)...))
+		return spawnFn(exec.Command(wt, windowsTerminalArgs(opts)...), opts.SessionName, opts.Out)
 	}
-	return spawnDetached(exec.Command("cmd", cmdExeArgs(opts)...))
+	return spawnFn(exec.Command("cmd", cmdExeArgs(opts)...), opts.SessionName, opts.Out)
 }
 
 // cmdExeArgs builds the argv for the cmd.exe fallback path on Windows. Split

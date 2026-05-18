@@ -202,6 +202,39 @@ existing repo out of iCloud" above) so it doesn't happen again.
 
 ---
 
+## Rapid-fire launches (`bosun_spawn`, `bosun init --launch N`)
+
+When bosun launches multiple agent windows in quick succession on
+macOS — `bosun_spawn` from a parent agent that's creating several
+sub-sessions, or `bosun init --launch 4` — the underlying
+AppleScript / Apple Events plumbing (Terminal.app, iTerm2) and
+Ghostty's CLI-to-app IPC handshake drop messages when invoked
+back-to-back. Trial #3c
+([`docs/v0.9-trial-3c-findings.md`](./v0.9-trial-3c-findings.md),
+Bug D) saw three `bosun_spawn` calls in ~8 seconds yield zero
+visible sub-agent windows — the parent's process was the only thing
+left in the tree.
+
+Bosun mitigates this in two ways, automatically:
+
+1. **250 ms stagger** between successive macOS terminal launches.
+   For 3-4 sub-sessions that adds ~750 ms-1 s total — invisible in
+   practice.
+2. **Post-fork stderr surfacing.** If `osascript` or Ghostty's CLI
+   exits non-zero after bosun forked it (the actual failure mode in
+   trial #3c), the captured stderr is written to bosun's output as
+   `bosun: launcher (session-X) child exited ...`. No more silent
+   vanishings.
+
+You only need to know about this if you see the diagnostic line in
+your launch output — it points at an AppleScript / Apple Events
+failure on the macOS side. The usual fix is the same as for any
+broken `--launch`: run `bosun launch <session-N>` manually, or
+configure `bosun config launcher tmux` if you'd rather have new
+sessions land as tmux windows.
+
+---
+
 ## Reporting issues
 
 If you hit a macOS-specific failure that isn't covered above, please

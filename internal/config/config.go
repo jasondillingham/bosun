@@ -48,6 +48,14 @@ const (
 	// gets clamped here so a runaway agent can't fork-bomb.
 	MaxAgentSpawnDepthCeiling = 4
 
+	// Defaults for the v1.0 agent_subtask capability. See
+	// docs/v1.0-sub-task-spec.md for the auth + quota model. The brief
+	// (#11 milestone 1+2) lands the registry-only surface — parent
+	// agents register sub-tasks via bosun_subtask and run them
+	// themselves; bosun's role is record + audit + display.
+	DefaultAgentSubtaskEnabled       = false
+	DefaultAgentSubtaskMaxConcurrent = 5
+
 	// Defaults for the liveness gate. See LivenessGate on Config for
 	// the trade-off between the two modes.
 	LivenessGateAuto     = "auto"
@@ -80,6 +88,13 @@ type Config struct {
 	// AgentSpawn gates the v0.9 bosun_spawn MCP tool. Off by default;
 	// see docs/v0.9-spawn-spec.md for the auth + quota model.
 	AgentSpawn AgentSpawnConfig `json:"agent_spawn"`
+	// AgentSubtask gates the v1.0 bosun_subtask MCP tool. Off by
+	// default; see docs/v1.0-sub-task-spec.md for the registry +
+	// per-parent-quota model. Sub-tasks share the parent's worktree
+	// (no fork, no branch, no merge), so the blast radius is far
+	// smaller than spawn — but the registry still has to record
+	// every call for the audit trail #14 set up.
+	AgentSubtask AgentSubtaskConfig `json:"agent_subtask"`
 	// LivenessGate selects how `bosun status` decides whether a WORKING
 	// session has CRASHED:
 	//
@@ -119,6 +134,24 @@ type AgentSpawnConfig struct {
 	AllowedForSessions []string `json:"allowed_for_sessions,omitempty"`
 }
 
+// AgentSubtaskConfig governs whether (and how much) agent-driven
+// sub-task registration is permitted in this repo. Enforced by
+// internal/mcp's bosun_subtask tool. Defaults: disabled, 5 concurrent.
+type AgentSubtaskConfig struct {
+	// Enabled gates the bosun_subtask MCP tool entirely. False by
+	// default — agents cannot register sub-tasks until the operator
+	// opts in. The brief is intentionally conservative until the
+	// v1.0 cancel + observability lanes land.
+	Enabled bool `json:"enabled"`
+	// MaxConcurrent caps the active sub-tasks a single parent may
+	// have registered at once. Defaults to
+	// DefaultAgentSubtaskMaxConcurrent. The spec argues for 8;
+	// the lane-1 brief pinned 5 because the registry has no
+	// completion path yet — sub-tasks linger until the parent
+	// agent removes them or the operator nukes the dir.
+	MaxConcurrent int `json:"max_concurrent"`
+}
+
 // SuggestConfig configures the brief-authoring assistant (`bosun suggest`).
 // All fields are overridable via CLI flags on the suggest command.
 type SuggestConfig struct {
@@ -153,6 +186,10 @@ func Defaults() Config {
 			Enabled:                  DefaultAgentSpawnEnabled,
 			MaxConcurrentSubSessions: DefaultAgentSpawnMaxConcurrent,
 			MaxDepth:                 DefaultAgentSpawnMaxDepth,
+		},
+		AgentSubtask: AgentSubtaskConfig{
+			Enabled:       DefaultAgentSubtaskEnabled,
+			MaxConcurrent: DefaultAgentSubtaskMaxConcurrent,
 		},
 		LivenessGate: DefaultLivenessGate,
 	}
@@ -233,6 +270,13 @@ func Load(repoRoot string) (Config, error) {
 	}
 	cfg.AgentSpawn.AllowedForSessions = overlay.AgentSpawn.AllowedForSessions
 
+	// AgentSubtask: same shape as AgentSpawn — bool adopts the parsed
+	// value (false is meaningful), positive int overrides the default.
+	cfg.AgentSubtask.Enabled = overlay.AgentSubtask.Enabled
+	if overlay.AgentSubtask.MaxConcurrent > 0 {
+		cfg.AgentSubtask.MaxConcurrent = overlay.AgentSubtask.MaxConcurrent
+	}
+
 	// LivenessGate: only override when the operator explicitly set a
 	// non-empty value, so a partial config file keeps the documented
 	// default ("auto").
@@ -283,6 +327,9 @@ func (c Config) Validate() error {
 	}
 	if c.Suggest.MaxTokens < 0 {
 		return fmt.Errorf("suggest.max_tokens must be ≥ 0, got %d", c.Suggest.MaxTokens)
+	}
+	if c.AgentSubtask.MaxConcurrent < 0 {
+		return fmt.Errorf("agent_subtask.max_concurrent must be ≥ 0, got %d", c.AgentSubtask.MaxConcurrent)
 	}
 	if c.GitOpTimeoutSeconds < 0 {
 		return fmt.Errorf("git_op_timeout_seconds must be ≥ 0, got %d", c.GitOpTimeoutSeconds)

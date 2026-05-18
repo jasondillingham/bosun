@@ -23,4 +23,5 @@ const (
 	ToolRelease    = "bosun_release"
 	ToolSpawn      = "bosun_spawn"
 	ToolStuck      = "bosun_stuck"
+	ToolSubtask    = "bosun_subtask"
 )

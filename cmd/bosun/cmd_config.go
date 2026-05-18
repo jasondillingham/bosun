@@ -63,6 +63,7 @@ var configRecognizedKeys = []string{
 	"hooks",
 	"suggest",
 	"agent_spawn",
+	"agent_subtask",
 }
 
 func newConfigCmd() *cobra.Command {
@@ -437,6 +438,8 @@ func buildConfigExample(c config.Config) string {
 	b.WriteString("// agent_spawn:             v0.9 bosun_spawn MCP tool config — disabled by default.\n")
 	b.WriteString("//                          .enabled (bool), .max_concurrent_sub_sessions (int),\n")
 	b.WriteString("//                          .max_depth (int, clamped to internal ceiling).\n")
+	b.WriteString("// agent_subtask:           v1.0 bosun_subtask MCP tool config — disabled by default.\n")
+	b.WriteString("//                          .enabled (bool), .max_concurrent (int per parent).\n")
 	b.WriteString("//\n")
 	b.Write(body)
 	b.WriteString("\n")

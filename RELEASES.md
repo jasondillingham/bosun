@@ -1,5 +1,59 @@
 # Releases
 
+## v0.11.0 — 2026-05-18 — v1.0-track implementation (sub-tasks + UID-per-worktree)
+
+Closes #11 (lightweight sub-task agents) and #8 (UID-per-worktree
+directory naming) — the two biggest items from the v1.0-track
+backlog. Both had design docs landed in earlier rounds; this
+release is implementation across four bosun-on-bosun lanes (~3,700
+LOC of code + tests).
+
+**`bosun_subtask` + `bosun_subtask_cancel` MCP tools** (#11). The
+lightweight counterpart to `bosun_spawn`: a parent agent registers
+a sub-task in `.bosun/subtasks/<parent>/<id>.json`, then runs the
+work itself (typically via Claude Code's Agent tool). No fork, no
+branch, no merge cycle — bosun's role is registry + audit +
+display. Cancellation is layered: bosun writes a `.cancelled`
+marker, the parent agent is on the hook to notice and stop. Sub-
+task count surfaces as a counter on the parent's row in CLI
+status / TUI / web dashboard. Disabled by default
+(`agent_subtask.enabled=false`); per-parent quota
+(`agent_subtask.max_concurrent`, default 5).
+
+**Timestamp-suffix worktree naming** (#8). Per the recommendation
+in `docs/uid-worktree-design.md`, worktree directories now embed
+a UTC timestamp: `<repo>-bosun-20260518-115400-1`. This kills the
+post-merge-zombie collision and the cross-round identity confusion
+described in the design doc. Labels (`session-1`), branches
+(`bosun/session-1`), and state file keys are unchanged — only
+directory names get the timestamp.
+
+**Migration support.** New `bosun migrate` subcommand renames
+legacy `<repo>-bosun-N` worktrees forward via `git worktree move`;
+idempotent, `--dry-run` previews. New `CheckLegacyWorktrees`
+doctor check surfaces legacy-named worktrees as WARN with a
+pointer to `bosun migrate` — read-only, no `--fix` autofix because
+the rename is a real operation operators should opt into.
+`internal/session` gains `ResolveWorktreePath` which stats the
+canonical (new-shape) path and falls back to legacy if absent,
+so existing callers keep working without code changes.
+
+**Round mechanics.** 4 lanes on `/tmp/bosun-work/`. Three merged
+clean; lane 2 hit a real conflict — it had created
+`internal/subtasks/` (plural) as a placeholder because lane 1's
+canonical `internal/subtask/` (singular) hadn't landed yet.
+Resolved by porting lane 2's cancel + count functions into
+`internal/subtask/cancel.go` with disk-schema adaptation
+(`<id>.json` records per lane 1), rewiring all consumers, and
+deleting the duplicate package. Plus a signature mismatch
+(`WorktreePathForLabel` got a 4th `roundTimestamp` parameter from
+lane 3 that lane 1 hadn't seen) — resolved by routing through
+`ResolveWorktreePath`.
+
+After this release, the v1.0-track backlog is empty. Remaining
+open issues: #15 (iCloud field-validation gate, awaiting real-user
+incident report).
+
 ## v0.10.2 — 2026-05-18 — backlog round 1
 
 Three lanes closing the smaller half of the v0.10 open issues.

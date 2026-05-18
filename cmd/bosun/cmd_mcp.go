@@ -17,17 +17,19 @@ func newMcpCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "mcp",
-		Short: "Run bosun's MCP server (foreground; experimental, v0.2.0-alpha)",
+		Short: "Run bosun's MCP server (foreground; agents call bosun_claim / bosun_done / bosun_spawn / etc.)",
 		Long: `Run bosun's Model Context Protocol server. Agent sessions inside an
-MCP-capable client can call bosun tools (bosun_check today; bosun_claim /
-bosun_done / etc. in round 1) directly instead of shelling out to the bosun CLI.
+MCP-capable client (Claude Code, ...) call bosun tools — bosun_claim,
+bosun_done, bosun_check, bosun_spawn, bosun_check_tree — directly instead
+of shelling out to the bosun CLI.
 
 The server binds to a Unix socket — by default <repo>/.bosun/mcp.sock — and
-keeps running in the foreground until interrupted. Configure the agent to
-point at the socket via the BOSUN_MCP_SOCK environment variable.
+keeps running in the foreground until interrupted. ` + "`bosun init --launch`" + ` and
+` + "`bosun launch`" + ` autostart this server and inject BOSUN_MCP_SOCK into the
+agent's environment, so you rarely need to run ` + "`bosun mcp`" + ` directly.
 
-Status: v0.2.0-alpha. Filesystem-based coordination remains the canonical
-source of truth; sessions that don't connect to MCP keep working as before.`,
+Filesystem-based coordination remains the canonical source of truth;
+sessions that don't connect to MCP keep working as before.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runMcp(cmd, socketPath)

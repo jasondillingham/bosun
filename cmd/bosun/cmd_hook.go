@@ -22,13 +22,9 @@ func newHookCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "hook",
 		Short: "Manage the Claude Code PreToolUse hook that auto-records bosun_claim",
-		// Session-2 is introducing the Cobra command groups in
-		// parallel with this lane; setting GroupID here would panic
-		// when session-4 merges first (no group registered yet).
-		// Session-2's merge appends `GroupID: "wiring"` to this
-		// command alongside the rest of the wiring commands.
 	}
 	cmd.AddCommand(newHookInstallCmd(), newHookUninstallCmd(), newHookClaimCmd())
+	cmd.GroupID = "wiring"
 	return cmd
 }
 

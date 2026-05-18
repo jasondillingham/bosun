@@ -20,7 +20,7 @@ func newServeCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "serve",
-		Short: "Run an HTTP dashboard server (experimental, v0.3)",
+		Short: "Run an HTTP dashboard server (JSON + SSE; loopback-only by default)",
 		Long: `Run a long-lived HTTP server that exposes the same data the TUI shows
 over JSON (/api/status) and Server-Sent Events (/api/events). A minimal
 HTML page at / consumes both, giving a browser-based view of the fleet.

@@ -32,13 +32,13 @@ jobs:
           cache: true
 
       - name: Run fuzz targets
-        run: |
-          export FUZZTIME='${{ github.event.inputs.fuzztime || ''10m'' }}'
-          make fuzz
+        env:
+          FUZZTIME: ${{ inputs.fuzztime || '10m' }}
+        run: make fuzz
 
       - name: Upload failing corpus entries on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: fuzz-corpus-failures
           path: |

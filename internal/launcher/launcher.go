@@ -392,9 +392,9 @@ func launchTerminalLinux(opts Options) error {
 				args = append(args, "--tab")
 			}
 			args = append(args, "--", "bash", "-lc", inner)
-			cmd = exec.Command(term, args...)
+			cmd = exec.Command(term, args...) //nolint:gosec // G204: bosun's Linux terminal launcher; term is PATH-resolved, argv from validated opts
 		default:
-			cmd = exec.Command(term, "-e", "bash", "-lc", inner)
+			cmd = exec.Command(term, "-e", "bash", "-lc", inner) //nolint:gosec // G204: bosun's Linux terminal fallback launcher; same model as above
 		}
 		return spawnFn(cmd, opts.SessionName, opts.Out)
 	}
@@ -405,9 +405,9 @@ func launchTerminalWindows(opts Options) error {
 	// Prefer Windows Terminal when present — it has real tab support via
 	// `wt -w 0 new-tab`, which targets the most-recently-used window.
 	if wt, ok := hasWindowsTerminal(); ok {
-		return spawnFn(exec.Command(wt, windowsTerminalArgs(opts)...), opts.SessionName, opts.Out)
+		return spawnFn(exec.Command(wt, windowsTerminalArgs(opts)...), opts.SessionName, opts.Out) //nolint:gosec // G204: bosun's Windows Terminal launcher; wt PATH-resolved, argv from validated opts
 	}
-	return spawnFn(exec.Command("cmd", cmdExeArgs(opts)...), opts.SessionName, opts.Out)
+	return spawnFn(exec.Command("cmd", cmdExeArgs(opts)...), opts.SessionName, opts.Out) //nolint:gosec // G204: bosun's cmd.exe fallback launcher; argv from validated opts
 }
 
 // cmdExeArgs builds the argv for the cmd.exe fallback path on Windows. Split
@@ -458,8 +458,8 @@ func windowsTerminalArgs(opts Options) []string {
 
 func printFallback(opts Options) {
 	envPrefix := buildShellEnvPrefix(opts.Env)
-	fmt.Fprintf(opts.Out, "bosun: run %s manually:\n", opts.SessionName)
-	fmt.Fprintf(opts.Out, "  cd %s && %s%s\n", shellQuote(opts.WorktreePath), envPrefix, shellInvocation(opts))
+	_, _ = fmt.Fprintf(opts.Out, "bosun: run %s manually:\n", opts.SessionName)
+	_, _ = fmt.Fprintf(opts.Out, "  cd %s && %s%s\n", shellQuote(opts.WorktreePath), envPrefix, shellInvocation(opts))
 }
 
 func buildEnvPairs(env map[string]string) []string {

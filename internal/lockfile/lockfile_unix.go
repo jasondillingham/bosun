@@ -14,7 +14,7 @@ import (
 // call sites this consolidated.
 func WithLockResult[T any](lockPath string, fn func() (T, error)) (T, error) {
 	var zero T
-	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o750); err != nil {
 		return zero, fmt.Errorf("mkdir lock parent: %w", err)
 	}
 	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)

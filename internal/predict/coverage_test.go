@@ -38,12 +38,12 @@ func findingsByCategory(f []CoverageFinding) map[string][]CoverageFinding {
 
 func TestScanCoverage_DefaultFlags_AllFourCategories(t *testing.T) {
 	root := writeTree(t, map[string]string{
-		"personal.go":      "package main\n\n// path is /Users/jason/code/foo.go\n",
-		"host.go":          "package main\n\nconst host = \"thor:11434\"\n",
-		"hostlocal.go":     "package main\n\nconst host = \"raspi.local\"\n",
-		"secret.go":        "package main\n\nconst k = \"sk-abc123def456ghi789jkl0\"\n",
-		"todo.go":          "package main\n\n// TODO: replace with real impl\n",
-		"clean.go":         "package main\n\nfunc Add(a, b int) int { return a + b }\n",
+		"personal.go":  "package main\n\n// path is /Users/jason/code/foo.go\n",
+		"host.go":      "package main\n\nconst host = \"thor:11434\"\n",
+		"hostlocal.go": "package main\n\nconst host = \"raspi.local\"\n",
+		"secret.go":    "package main\n\nconst k = \"sk-abc123def456ghi789jkl0\"\n",
+		"todo.go":      "package main\n\n// TODO: replace with real impl\n",
+		"clean.go":     "package main\n\nfunc Add(a, b int) int { return a + b }\n",
 	})
 
 	got, err := ScanCoverage(root, nil, DefaultCoverageConfig())
@@ -84,9 +84,9 @@ func TestScanCoverage_DefaultFlags_AllFourCategories(t *testing.T) {
 
 func TestScanCoverage_ClaimedFilesAreCovered(t *testing.T) {
 	root := writeTree(t, map[string]string{
-		"internal/auth/handlers.go":   "// TODO: refactor\n",
-		"internal/storage/db.go":      "// TODO: migrate\n",
-		"docs/notes.md":               "TODO sort this out\n",
+		"internal/auth/handlers.go": "// TODO: refactor\n",
+		"internal/storage/db.go":    "// TODO: migrate\n",
+		"docs/notes.md":             "TODO sort this out\n",
 	})
 
 	// "internal/auth/" claims the directory; "internal/storage/db.go"
@@ -109,7 +109,7 @@ func TestScanCoverage_GlobClaimCovers(t *testing.T) {
 	root := writeTree(t, map[string]string{
 		"cmd/bosun/cmd_predict.go": "// TODO: implement coverage\n",
 		"cmd/bosun/cmd_status.go":  "// FIXME: wire watch mode\n",
-		"internal/other.go":         "// XXX: hack\n",
+		"internal/other.go":        "// XXX: hack\n",
 	})
 	claimed := []string{"cmd/bosun/cmd_*.go"}
 	got, err := ScanCoverage(root, claimed, DefaultCoverageConfig())
@@ -123,9 +123,9 @@ func TestScanCoverage_GlobClaimCovers(t *testing.T) {
 
 func TestScanCoverage_GlobalExcludesSkipDirs(t *testing.T) {
 	root := writeTree(t, map[string]string{
-		".git/HEAD":           "// TODO: ignored — under .git\n",
-		"vendor/lib/lib.go":   "// TODO: ignored — vendored\n",
-		"internal/keep.go":    "// TODO: surfaced\n",
+		".git/HEAD":         "// TODO: ignored — under .git\n",
+		"vendor/lib/lib.go": "// TODO: ignored — vendored\n",
+		"internal/keep.go":  "// TODO: surfaced\n",
 	})
 	got, err := ScanCoverage(root, nil, DefaultCoverageConfig())
 	if err != nil {
@@ -143,8 +143,8 @@ func TestScanCoverage_GlobalExcludesSkipDirs(t *testing.T) {
 
 func TestScanCoverage_PerFlagExclude(t *testing.T) {
 	root := writeTree(t, map[string]string{
-		"docs/notes.md":     "TODO sort this later\n",
-		"internal/foo.go":   "// TODO real code\n",
+		"docs/notes.md":   "TODO sort this later\n",
+		"internal/foo.go": "// TODO real code\n",
 	})
 	cfg := DefaultCoverageConfig()
 	// Per-flag exclude for TODOs in docs/**.
@@ -225,10 +225,10 @@ func TestScanCoverage_ArchitectMCPRegression(t *testing.T) {
 	// scanner must surface both files as coverage gaps so the
 	// operator catches them before init.
 	root := writeTree(t, map[string]string{
-		"cmd/bosun/cmd_predict.go":             "package main\n\nfunc main() {}\n",
-		"internal/storage/db.go":               "package storage\n",
-		"internal/screenshot/screenshot.go":    "package screenshot\n\nconst url = \"http://vault:8200/v1\"\n",
-		"internal/mcp/blueprint_tool.go":       "package mcp\n\nconst sample = \"/Users/jason/.config/bosun.json\"\n",
+		"cmd/bosun/cmd_predict.go":          "package main\n\nfunc main() {}\n",
+		"internal/storage/db.go":            "package storage\n",
+		"internal/screenshot/screenshot.go": "package screenshot\n\nconst url = \"http://vault:8200/v1\"\n",
+		"internal/mcp/blueprint_tool.go":    "package mcp\n\nconst sample = \"/Users/jason/.config/bosun.json\"\n",
 	})
 	claimed := []string{"cmd/bosun/", "internal/storage/"}
 

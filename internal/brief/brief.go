@@ -250,10 +250,11 @@ func FindDependencyCycle(depMap map[string][]string) []string {
 // v0.1 dogfood session where 3 of 4 sessions "finished" but never committed.
 //
 // Placeholders substituted at write time:
-//   {label}      → the session label (e.g. "session-1" or "auth")
-//   {verifyCmd}  → the verification command (default `make check`; override
-//                  via .bosun/config.json `verify_cmd` so non-bosun projects
-//                  can use their own target like `make test` or `go test ./...`)
+//
+//	{label}      → the session label (e.g. "session-1" or "auth")
+//	{verifyCmd}  → the verification command (default `make check`; override
+//	               via .bosun/config.json `verify_cmd` so non-bosun projects
+//	               can use their own target like `make test` or `go test ./...`)
 const WorkflowPreamble = "## How to work this session\n\n" +
 	"1. Read this brief in full — your assignment is in **Your assignment** below.\n" +
 	"2. Implement the work. Keep changes minimal; don't refactor adjacent code.\n" +
@@ -318,7 +319,7 @@ func WriteToWorktree(worktreePath string, b Brief, verifyCmd string) error {
 // label ("session-1" or "auth") rendered into the pointer text.
 func WriteSessionPointer(worktreePath string, label string) error {
 	dir := filepath.Join(worktreePath, ".claude")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("mkdir %s: %w", dir, err)
 	}
 	content := fmt.Sprintf("**You're in a bosun-managed worktree (%s).**\n\n"+

@@ -218,7 +218,7 @@ func WriteFixReport(w io.Writer, outcomes []FixOutcome) {
 			applied++
 		}
 	}
-	fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w)
 	switch {
 	case outcomes[0].DryRun:
 		fmt.Fprintf(w, "%d fix(es) would be applied — re-run without --dry-run to execute.\n", len(outcomes))

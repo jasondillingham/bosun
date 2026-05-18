@@ -261,8 +261,8 @@ func runStatusWatch(opts statusOpts, interval time.Duration) error {
 	defer cancel()
 
 	w := os.Stdout
-	fmt.Fprint(w, ansiAltScreenEnter+ansiCursorHide)
-	defer fmt.Fprint(w, ansiCursorShow+ansiAltScreenExit)
+	_, _ = fmt.Fprint(w, ansiAltScreenEnter+ansiCursorHide)
+	defer func() { _, _ = fmt.Fprint(w, ansiCursorShow+ansiAltScreenExit) }()
 
 	return watchStatusLoop(ctx, w, rc, opts, interval)
 }

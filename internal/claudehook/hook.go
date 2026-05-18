@@ -88,7 +88,7 @@ func HandlePreToolUse(r io.Reader, stderr io.Writer, opts HandleOptions) error {
 	var in preToolUseInput
 	dec := json.NewDecoder(r)
 	if err := dec.Decode(&in); err != nil {
-		fmt.Fprintf(stderr, "bosun: hook: parse error: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "bosun: hook: parse error: %v\n", err)
 		return nil
 	}
 

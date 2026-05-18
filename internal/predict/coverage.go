@@ -18,10 +18,10 @@ import (
 // uses to disable or tune a built-in flag (`[flags.personal-path]
 // enabled = false`).
 const (
-	FlagPersonalPath    = "personal-path"
-	FlagInternalHost    = "internal-host"
-	FlagPossibleSecret  = "possible-secret"
-	FlagTodo            = "todo"
+	FlagPersonalPath   = "personal-path"
+	FlagInternalHost   = "internal-host"
+	FlagPossibleSecret = "possible-secret"
+	FlagTodo           = "todo"
 )
 
 // CoverageFinding is one flagged content match in a repo file that no
@@ -694,4 +694,3 @@ func parseTOMLStringArray(v string) ([]string, error) {
 	}
 	return out, nil
 }
-

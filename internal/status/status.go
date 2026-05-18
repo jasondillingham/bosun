@@ -53,7 +53,7 @@ func RenderText(w io.Writer, opts RenderOptions) error {
 	useColor := tui.ShouldColor(opts.NoColor)
 
 	if len(opts.Sessions) == 0 {
-		fmt.Fprintln(w, "bosun: no sessions. Run `bosun init` to create some.")
+		_, _ = fmt.Fprintln(w, "bosun: no sessions. Run `bosun init` to create some.")
 		return nil
 	}
 
@@ -64,7 +64,7 @@ func RenderText(w io.Writer, opts RenderOptions) error {
 	writeEvents(w, opts, useColor)
 
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "SESSION\tBRANCH\tSTATE\tAHEAD\tDIRTY\tCLAIMED\tRUNNING\tLAST_COMMIT")
+	_, _ = fmt.Fprintln(tw, "SESSION\tBRANCH\tSTATE\tAHEAD\tDIRTY\tCLAIMED\tRUNNING\tLAST_COMMIT")
 	rows := opts.Sessions
 	if !opts.NoTree {
 		rows = TreeOrdered(opts.Sessions)

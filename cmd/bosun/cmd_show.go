@@ -183,7 +183,7 @@ func renderShowText(rc *runCtx, s *session.Session) error {
 	if log == "" {
 		fmt.Fprintln(os.Stdout, "(no commits)")
 	} else {
-		fmt.Fprint(os.Stdout, log)
+		_, _ = fmt.Fprint(os.Stdout, log)
 	}
 
 	fmt.Fprintln(os.Stdout, "\n--- git status ---")

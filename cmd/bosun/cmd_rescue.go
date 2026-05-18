@@ -284,4 +284,3 @@ func rescueLaunch(rc *runCtx, s *session.Session) error {
 	fmt.Fprintf(os.Stdout, "bosun: rescued %s via %s — terminal is yours\n", s.Label, strategy)
 	return nil
 }
-

@@ -78,7 +78,7 @@ func RenderText(w io.Writer, opts RenderOptions) error {
 			// when --no-tree exists for scripts that care.
 			name = Indent(s.Depth) + "└─ " + s.Name
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%d\t%d\t%s\t%s\n",
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%d\t%d\t%s\t%s\n",
 			name,
 			s.Branch,
 			renderStateCell(s, useColor),
@@ -165,7 +165,7 @@ func writeEvents(w io.Writer, opts RenderOptions, useColor bool) {
 		if useColor {
 			kind = colorKind(e.Kind)
 		}
-		fmt.Fprintf(w, "Recent: %s [%s] %s (%s)\n",
+		_, _ = fmt.Fprintf(w, "Recent: %s [%s] %s (%s)\n",
 			e.Session, kind, e.Message, relativeAge(now, e.At))
 	}
 }
@@ -297,7 +297,7 @@ func writeOverlaps(w io.Writer, overlaps []claims.Overlap) {
 	_, _ = fmt.Fprintln(w, "Overlapping claims:")
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	for _, o := range overlaps {
-		fmt.Fprintf(tw, "  %s\t%s\n", o.Path, strings.Join(o.Sessions, ", "))
+		_, _ = fmt.Fprintf(tw, "  %s\t%s\n", o.Path, strings.Join(o.Sessions, ", "))
 	}
 	_ = tw.Flush()
 }

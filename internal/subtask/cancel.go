@@ -79,7 +79,7 @@ func Cancel(repoRoot, parent, id string) (CancelOutcome, error) {
 	}
 
 	marker := markerPath(repoRoot, parent, id)
-	if err := os.MkdirAll(filepath.Dir(marker), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(marker), 0o750); err != nil {
 		return out, fmt.Errorf("mkdir subtask dir: %w", err)
 	}
 	body := []byte(time.Now().UTC().Format(time.RFC3339) + "\n")
@@ -212,7 +212,7 @@ func CreateForTest(repoRoot, parent, id string) error {
 		return errors.New("parent and id are required")
 	}
 	dir := filepath.Join(repoRoot, dirRelative, parent)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("mkdir %s: %w", dir, err)
 	}
 	// Minimal record body — enough for FindParent + ActiveCount to

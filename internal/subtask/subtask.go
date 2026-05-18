@@ -126,7 +126,7 @@ func (s *Store) Create(parent, description string, files []string) (Subtask, err
 
 	var record Subtask
 	err := lockfile.WithLock(s.lockPath(), func() error {
-		if err := os.MkdirAll(s.parentDir(parent), 0o755); err != nil {
+		if err := os.MkdirAll(s.parentDir(parent), 0o750); err != nil {
 			return fmt.Errorf("mkdir %s: %w", s.parentDir(parent), err)
 		}
 		// Generate a fresh ID. Collisions inside the 2^48 keyspace

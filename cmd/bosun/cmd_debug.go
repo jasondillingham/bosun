@@ -116,11 +116,11 @@ func writeDebugBundle(w io.Writer, rc *runCtx, opts debugOptions, now time.Time)
 	writeBanner(bw, fmt.Sprintf("BOSUN DEBUG REPORT — %s", now.Format("2006-01-02 15:04:05 UTC")))
 	fmt.Fprintf(bw, "repo: %s\n", rc.repoRoot)
 	if opts.redact {
-		fmt.Fprintln(bw, "redaction: ON (re-run with --no-redact to disable)")
+		_, _ = fmt.Fprintln(bw, "redaction: ON (re-run with --no-redact to disable)")
 	} else {
-		fmt.Fprintln(bw, "redaction: OFF (--no-redact)")
+		_, _ = fmt.Fprintln(bw, "redaction: OFF (--no-redact)")
 	}
-	fmt.Fprintln(bw)
+	_, _ = fmt.Fprintln(bw)
 
 	writeSection(bw, "bosun --version", func(w io.Writer) {
 		fmt.Fprintf(w, "%s\n", version)

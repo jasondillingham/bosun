@@ -291,4 +291,3 @@ func waitForFile(path string, timeout time.Duration) error {
 	}
 	return errors.New("file did not appear: " + path)
 }
-

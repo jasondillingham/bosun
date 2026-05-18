@@ -93,7 +93,7 @@ func Run(ctx context.Context, hooks []Hook, event string, env map[string]string)
 		}
 		if err := runOne(ctx, h, env); err != nil {
 			if h.FailOpen {
-				fmt.Fprintf(os.Stderr, "bosun: warning: hook %s #%d failed: %v\n", event, i, err)
+				_, _ = fmt.Fprintf(os.Stderr, "bosun: warning: hook %s #%d failed: %v\n", event, i, err)
 				continue
 			}
 			return fmt.Errorf("hook %s: %w", event, err)

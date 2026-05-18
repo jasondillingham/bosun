@@ -39,7 +39,7 @@ func CheckMCPDaemonStartup(_ context.Context, repoRoot string) Result {
 	}
 
 	// Make sure the parent dir exists before binding.
-	if err := os.MkdirAll(filepath.Dir(sock), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(sock), 0o750); err != nil {
 		return Result{
 			Name:    "mcp-socket",
 			Status:  Fail,

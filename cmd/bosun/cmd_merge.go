@@ -430,7 +430,7 @@ func mergeOne(rc *runCtx, s *session.Session, opts mergeOpts) (status, reason st
 		EndReason:    history.ReasonMerged,
 		MergeSHA:     postSHA,
 	}); err != nil {
-		fmt.Fprintf(os.Stderr, "bosun: warning: archive history for %s: %v\n", s.Name, err)
+		_, _ = fmt.Fprintf(os.Stderr, "bosun: warning: archive history for %s: %v\n", s.Name, err)
 	}
 
 	clearSessionMetadata(rc, s.Name)
@@ -445,10 +445,10 @@ func mergeOne(rc *runCtx, s *session.Session, opts mergeOpts) (status, reason st
 // forever after.
 func clearSessionMetadata(rc *runCtx, name string) {
 	if err := rc.state.Clear(name); err != nil {
-		fmt.Fprintf(os.Stderr, "bosun: warning: clear state for %s: %v\n", name, err)
+		_, _ = fmt.Fprintf(os.Stderr, "bosun: warning: clear state for %s: %v\n", name, err)
 	}
 	if err := rc.claims.Clear(name); err != nil {
-		fmt.Fprintf(os.Stderr, "bosun: warning: clear claims for %s: %v\n", name, err)
+		_, _ = fmt.Fprintf(os.Stderr, "bosun: warning: clear claims for %s: %v\n", name, err)
 	}
 }
 
@@ -623,7 +623,7 @@ func mergeLogPath(repoRoot string) string {
 // the same directory).
 func appendMergeLog(repoRoot string, entry mergeLogEntry) error {
 	bosunDir := filepath.Join(repoRoot, ".bosun")
-	if err := os.MkdirAll(bosunDir, 0o755); err != nil {
+	if err := os.MkdirAll(bosunDir, 0o750); err != nil {
 		return fmt.Errorf("mkdir .bosun: %w", err)
 	}
 	data, err := json.Marshal(entry)
@@ -804,9 +804,9 @@ func runMergeTree(cmd *cobra.Command, parentLabel string, opts mergeOpts) error 
 	// non-fatal; the walk still works, just with the confusing git
 	// error if a ghost survives.
 	if pruned, err := tree.SyncWithGit(rc.ctx, rc.git, rc.repoRoot); err != nil {
-		fmt.Fprintf(os.Stderr, "bosun: warning: spawn-tree sync: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "bosun: warning: spawn-tree sync: %v\n", err)
 	} else if len(pruned) > 0 {
-		fmt.Fprintf(os.Stderr, "bosun: pruned %d ghost spawn-tree entr%s before cascade: %s\n",
+		_, _ = fmt.Fprintf(os.Stderr, "bosun: pruned %d ghost spawn-tree entr%s before cascade: %s\n",
 			len(pruned), pluralEntries(len(pruned)), strings.Join(pruned, ", "))
 	}
 
@@ -839,7 +839,7 @@ func runMergeTree(cmd *cobra.Command, parentLabel string, opts mergeOpts) error 
 	for _, label := range order {
 		s, ok := byName[label]
 		if !ok {
-			fmt.Fprintf(os.Stdout, "  ⏭ %s: not a live session (skipping)\n", label)
+			_, _ = fmt.Fprintf(os.Stdout, "  ⏭ %s: not a live session (skipping)\n", label)
 			continue
 		}
 		status, reason, err := mergeOne(rc, s, subOpts)
@@ -848,20 +848,20 @@ func runMergeTree(cmd *cobra.Command, parentLabel string, opts mergeOpts) error 
 		}
 		switch status {
 		case mergeStatusMerged:
-			fmt.Fprintf(os.Stdout, "  ✓ %s: %s\n", label, reason)
+			_, _ = fmt.Fprintf(os.Stdout, "  ✓ %s: %s\n", label, reason)
 			merged = append(merged, label)
 		case mergeStatusSkipped:
-			fmt.Fprintf(os.Stdout, "  ⏭ %s: %s\n", label, reason)
+			_, _ = fmt.Fprintf(os.Stdout, "  ⏭ %s: %s\n", label, reason)
 			skipped = append(skipped, label)
 		case mergeStatusConflict:
-			fmt.Fprintf(os.Stderr, "  ✗ %s: %s\n", label, reason)
+			_, _ = fmt.Fprintf(os.Stderr, "  ✗ %s: %s\n", label, reason)
 			return userErr("merge --tree aborted at %s due to conflict; resolve manually and re-run with --tree to continue", label)
 		case mergeStatusWouldMerge:
-			fmt.Fprintf(os.Stdout, "  ▸ %s: would merge (%s)\n", label, reason)
+			_, _ = fmt.Fprintf(os.Stdout, "  ▸ %s: would merge (%s)\n", label, reason)
 		}
 	}
 
-	fmt.Fprintf(os.Stdout, "tree merge for %s: %d merged, %d skipped\n",
+	_, _ = fmt.Fprintf(os.Stdout, "tree merge for %s: %d merged, %d skipped\n",
 		parsed, len(merged), len(skipped))
 	return nil
 }

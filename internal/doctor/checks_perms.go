@@ -19,7 +19,7 @@ func CheckRepoWriteable(_ context.Context, repoRoot string) Result {
 // .bosun/; if it's not writable bosun can't record anything.
 func CheckBosunDirWriteable(_ context.Context, repoRoot string) Result {
 	bosunDir := filepath.Join(repoRoot, ".bosun")
-	if err := os.MkdirAll(bosunDir, 0o755); err != nil {
+	if err := os.MkdirAll(bosunDir, 0o750); err != nil {
 		return Result{
 			Name:    "bosun-dir-writeable",
 			Status:  Fail,

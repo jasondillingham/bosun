@@ -84,14 +84,14 @@ func TestCheckTree_FourStates(t *testing.T) {
 		t.Fatalf("seed parent: %v", err)
 	}
 	cases := []struct {
-		label       string
-		wantState   string
-		wantReason  string // substring; "" → don't check
-		needsWT     bool   // create the worktree dir?
-		brokenAdmin bool   // create the admin dir without HEAD/commondir/gitdir?
-		intactAdmin bool   // create a valid admin dir?
-		markDone    bool   // drop a .done state marker?
-		processAlive bool  // declare the worktree as having a live agent process?
+		label        string
+		wantState    string
+		wantReason   string // substring; "" → don't check
+		needsWT      bool   // create the worktree dir?
+		brokenAdmin  bool   // create the admin dir without HEAD/commondir/gitdir?
+		intactAdmin  bool   // create a valid admin dir?
+		markDone     bool   // drop a .done state marker?
+		processAlive bool   // declare the worktree as having a live agent process?
 	}{
 		{
 			label:        parent + ".alive",
@@ -114,11 +114,11 @@ func TestCheckTree_FourStates(t *testing.T) {
 			// needsWT=false → worktree never created → no-launch.
 		},
 		{
-			label:      parent + ".done",
-			wantState:  CheckTreeStateDone,
-			needsWT:    true,
+			label:       parent + ".done",
+			wantState:   CheckTreeStateDone,
+			needsWT:     true,
 			intactAdmin: true,
-			markDone:   true,
+			markDone:    true,
 			// processAlive intentionally false — once a sub is DONE,
 			// its process state stops mattering. The test pins that
 			// dominance.

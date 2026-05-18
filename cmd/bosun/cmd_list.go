@@ -114,7 +114,7 @@ func runList(cmd *cobra.Command, ready, jsonOut, tree bool) error {
 		if tree && s.Depth > 0 {
 			name = strings.Repeat("  ", s.Depth) + "└─ " + s.Name
 		}
-		fmt.Fprintln(os.Stdout, name)
+		_, _ = fmt.Fprintln(os.Stdout, name)
 	}
 	return nil
 }

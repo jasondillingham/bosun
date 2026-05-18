@@ -114,7 +114,7 @@ func writeDebugBundle(w io.Writer, rc *runCtx, opts debugOptions, now time.Time)
 	defer func() { _ = bw.Flush() }()
 
 	writeBanner(bw, fmt.Sprintf("BOSUN DEBUG REPORT — %s", now.Format("2006-01-02 15:04:05 UTC")))
-	fmt.Fprintf(bw, "repo: %s\n", rc.repoRoot)
+	_, _ = fmt.Fprintf(bw, "repo: %s\n", rc.repoRoot)
 	if opts.redact {
 		_, _ = fmt.Fprintln(bw, "redaction: ON (re-run with --no-redact to disable)")
 	} else {
@@ -123,7 +123,7 @@ func writeDebugBundle(w io.Writer, rc *runCtx, opts debugOptions, now time.Time)
 	_, _ = fmt.Fprintln(bw)
 
 	writeSection(bw, "bosun --version", func(w io.Writer) {
-		fmt.Fprintf(w, "%s\n", version)
+		_, _ = fmt.Fprintf(w, "%s\n", version)
 	})
 
 	writeSection(bw, "bosun doctor", func(w io.Writer) {
@@ -164,8 +164,8 @@ func writeDebugBundle(w io.Writer, rc *runCtx, opts debugOptions, now time.Time)
 	})
 
 	writeSection(bw, "environment", func(w io.Writer) {
-		fmt.Fprintf(w, "GOOS:   %s\nGOARCH: %s\n", runtime.GOOS, runtime.GOARCH)
-		fmt.Fprintf(w, "go:     %s\n", runtime.Version())
+		_, _ = fmt.Fprintf(w, "GOOS:   %s\nGOARCH: %s\n", runtime.GOOS, runtime.GOARCH)
+		_, _ = fmt.Fprintf(w, "go:     %s\n", runtime.Version())
 		writeCommandOutput(w, "uname -a", "uname", "-a")
 		writeCommandOutput(w, "git --version", "git", "--version")
 	})
@@ -177,9 +177,9 @@ func writeDebugBundle(w io.Writer, rc *runCtx, opts debugOptions, now time.Time)
 // the rules. Used at the top of every section and at the report header.
 func writeBanner(w io.Writer, title string) {
 	const bar = "============================================================"
-	fmt.Fprintln(w, bar)
-	fmt.Fprintf(w, " %s\n", title)
-	fmt.Fprintln(w, bar)
+	_, _ = fmt.Fprintln(w, bar)
+	_, _ = fmt.Fprintf(w, " %s\n", title)
+	_, _ = fmt.Fprintln(w, bar)
 }
 
 // writeSection emits a banner for title and then invokes body to fill
@@ -188,7 +188,7 @@ func writeBanner(w io.Writer, title string) {
 func writeSection(w io.Writer, title string, body func(io.Writer)) {
 	writeBanner(w, title)
 	body(w)
-	fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w)
 }
 
 // writeGitOutput runs `git <args>` in dir and emits stdout under the
@@ -198,16 +198,16 @@ func writeGitOutput(w io.Writer, ctx context.Context, dir string, args ...string
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		fmt.Fprintf(w, "(unavailable: %v)\n", err)
+		_, _ = fmt.Fprintf(w, "(unavailable: %v)\n", err)
 		return
 	}
 	if len(out) == 0 {
-		fmt.Fprintln(w, "(empty)")
+		_, _ = fmt.Fprintln(w, "(empty)")
 		return
 	}
 	_, _ = w.Write(out)
 	if out[len(out)-1] != '\n' {
-		fmt.Fprintln(w)
+		_, _ = fmt.Fprintln(w)
 	}
 }
 
@@ -218,15 +218,15 @@ func writeGitOutput(w io.Writer, ctx context.Context, dir string, args ...string
 func writeCommandOutput(w io.Writer, label, name string, args ...string) {
 	out, err := exec.Command(name, args...).CombinedOutput()
 	if err != nil {
-		fmt.Fprintf(w, "%s: (unavailable: %v)\n", label, err)
+		_, _ = fmt.Fprintf(w, "%s: (unavailable: %v)\n", label, err)
 		return
 	}
 	s := strings.TrimRight(string(out), "\n")
 	if s == "" {
-		fmt.Fprintf(w, "%s: (empty)\n", label)
+		_, _ = fmt.Fprintf(w, "%s: (empty)\n", label)
 		return
 	}
-	fmt.Fprintf(w, "%s:\n  %s\n", label, strings.ReplaceAll(s, "\n", "\n  "))
+	_, _ = fmt.Fprintf(w, "%s:\n  %s\n", label, strings.ReplaceAll(s, "\n", "\n  "))
 }
 
 // writeConfigSection prints .bosun/config.json verbatim, applying
@@ -235,10 +235,10 @@ func writeConfigSection(w io.Writer, repoRoot string, redact bool) {
 	data, err := os.ReadFile(filepath.Join(repoRoot, ".bosun", "config.json"))
 	if err != nil {
 		if os.IsNotExist(err) {
-			fmt.Fprintln(w, "(no .bosun/config.json — bosun is using defaults)")
+			_, _ = fmt.Fprintln(w, "(no .bosun/config.json — bosun is using defaults)")
 			return
 		}
-		fmt.Fprintf(w, "(unavailable: %v)\n", err)
+		_, _ = fmt.Fprintf(w, "(unavailable: %v)\n", err)
 		return
 	}
 	body := string(data)
@@ -247,7 +247,7 @@ func writeConfigSection(w io.Writer, repoRoot string, redact bool) {
 	}
 	_, _ = fmt.Fprint(w, body)
 	if !strings.HasSuffix(body, "\n") {
-		fmt.Fprintln(w)
+		_, _ = fmt.Fprintln(w)
 	}
 }
 
@@ -259,10 +259,10 @@ func writeAuditSection(w io.Writer, repoRoot string, opts debugOptions) {
 	entries, err := os.ReadDir(auditDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			fmt.Fprintln(w, "(no .bosun/audit/ directory — no audit events recorded)")
+			_, _ = fmt.Fprintln(w, "(no .bosun/audit/ directory — no audit events recorded)")
 			return
 		}
-		fmt.Fprintf(w, "(unavailable: %v)\n", err)
+		_, _ = fmt.Fprintf(w, "(unavailable: %v)\n", err)
 		return
 	}
 	var logs []string
@@ -272,19 +272,19 @@ func writeAuditSection(w io.Writer, repoRoot string, opts debugOptions) {
 		}
 	}
 	if len(logs) == 0 {
-		fmt.Fprintln(w, "(audit directory empty)")
+		_, _ = fmt.Fprintln(w, "(audit directory empty)")
 		return
 	}
 	sort.Strings(logs)
 	for _, name := range logs {
-		fmt.Fprintf(w, "--- %s ---\n", name)
+		_, _ = fmt.Fprintf(w, "--- %s ---\n", name)
 		path := filepath.Join(auditDir, name)
 		if opts.includeAudit() {
 			writeFileSectionWithRedact(w, path, opts.redact)
 		} else {
 			writeLastNLinesRedact(w, path, 10, opts.redact)
 		}
-		fmt.Fprintln(w)
+		_, _ = fmt.Fprintln(w)
 	}
 }
 
@@ -299,10 +299,10 @@ func writeFileSectionWithRedact(w io.Writer, path string, redact bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			fmt.Fprintln(w, "(missing)")
+			_, _ = fmt.Fprintln(w, "(missing)")
 			return
 		}
-		fmt.Fprintf(w, "(unavailable: %v)\n", err)
+		_, _ = fmt.Fprintf(w, "(unavailable: %v)\n", err)
 		return
 	}
 	body := string(data)
@@ -310,12 +310,12 @@ func writeFileSectionWithRedact(w io.Writer, path string, redact bool) {
 		body = debug.Redact(body)
 	}
 	if body == "" {
-		fmt.Fprintln(w, "(empty)")
+		_, _ = fmt.Fprintln(w, "(empty)")
 		return
 	}
 	_, _ = fmt.Fprint(w, body)
 	if !strings.HasSuffix(body, "\n") {
-		fmt.Fprintln(w)
+		_, _ = fmt.Fprintln(w)
 	}
 }
 
@@ -328,10 +328,10 @@ func writeDirSection(w io.Writer, dir string, expand bool) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			fmt.Fprintln(w, "(missing)")
+			_, _ = fmt.Fprintln(w, "(missing)")
 			return
 		}
-		fmt.Fprintf(w, "(unavailable: %v)\n", err)
+		_, _ = fmt.Fprintf(w, "(unavailable: %v)\n", err)
 		return
 	}
 	var files []os.DirEntry
@@ -341,17 +341,17 @@ func writeDirSection(w io.Writer, dir string, expand bool) {
 		}
 	}
 	if len(files) == 0 {
-		fmt.Fprintln(w, "(empty)")
+		_, _ = fmt.Fprintln(w, "(empty)")
 		return
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Name() < files[j].Name() })
 	for _, e := range files {
 		info, err := e.Info()
 		if err != nil {
-			fmt.Fprintf(w, "  %s  (stat failed: %v)\n", e.Name(), err)
+			_, _ = fmt.Fprintf(w, "  %s  (stat failed: %v)\n", e.Name(), err)
 			continue
 		}
-		fmt.Fprintf(w, "  %s  %d bytes  mtime=%s\n",
+		_, _ = fmt.Fprintf(w, "  %s  %d bytes  mtime=%s\n",
 			e.Name(), info.Size(), info.ModTime().UTC().Format(time.RFC3339))
 	}
 	if !expand {
@@ -359,7 +359,7 @@ func writeDirSection(w io.Writer, dir string, expand bool) {
 	}
 	for _, e := range files {
 		path := filepath.Join(dir, e.Name())
-		fmt.Fprintf(w, "--- %s ---\n", e.Name())
+		_, _ = fmt.Fprintf(w, "--- %s ---\n", e.Name())
 		writeFileSection(w, path)
 	}
 }
@@ -378,26 +378,26 @@ func writeLastNLinesRedact(w io.Writer, path string, n int, redact bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			fmt.Fprintln(w, "(missing)")
+			_, _ = fmt.Fprintln(w, "(missing)")
 			return
 		}
-		fmt.Fprintf(w, "(unavailable: %v)\n", err)
+		_, _ = fmt.Fprintf(w, "(unavailable: %v)\n", err)
 		return
 	}
 	lines := splitNonEmptyLines(data)
 	if len(lines) == 0 {
-		fmt.Fprintln(w, "(empty)")
+		_, _ = fmt.Fprintln(w, "(empty)")
 		return
 	}
 	if len(lines) > n {
-		fmt.Fprintf(w, "(%d entries total; showing last %d)\n", len(lines), n)
+		_, _ = fmt.Fprintf(w, "(%d entries total; showing last %d)\n", len(lines), n)
 		lines = lines[len(lines)-n:]
 	}
 	for _, line := range lines {
 		if redact {
 			line = debug.Redact(line)
 		}
-		fmt.Fprintln(w, line)
+		_, _ = fmt.Fprintln(w, line)
 	}
 }
 
@@ -421,8 +421,8 @@ func splitNonEmptyLines(b []byte) []string {
 // pasting it into a public issue tracker?" gate.
 func writeChecklist(w io.Writer) {
 	writeBanner(w, "BEFORE SHARING THIS FILE")
-	fmt.Fprintln(w, "- [ ] Skim for any secrets the auto-redaction missed")
-	fmt.Fprintln(w, "- [ ] Skim for personal paths (/Users/<name>/...)")
-	fmt.Fprintln(w, "- [ ] Confirm you want to share this publicly (it'll be in a")
-	fmt.Fprintln(w, "      GitHub issue or email thread)")
+	_, _ = fmt.Fprintln(w, "- [ ] Skim for any secrets the auto-redaction missed")
+	_, _ = fmt.Fprintln(w, "- [ ] Skim for personal paths (/Users/<name>/...)")
+	_, _ = fmt.Fprintln(w, "- [ ] Confirm you want to share this publicly (it'll be in a")
+	_, _ = fmt.Fprintln(w, "      GitHub issue or email thread)")
 }

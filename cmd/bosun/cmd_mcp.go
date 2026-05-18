@@ -65,7 +65,7 @@ func runMcp(_ *cobra.Command, socketPath string) error {
 
 	// Ensure the parent directory exists (default lives under .bosun/, which
 	// might not exist yet on a freshly-cloned repo).
-	if err := os.MkdirAll(filepath.Dir(socketPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(socketPath), 0o750); err != nil {
 		return internalErr("mkdir socket parent", err)
 	}
 
@@ -103,13 +103,13 @@ func runMcp(_ *cobra.Command, socketPath string) error {
 	// Drop a pidfile so subsequent `bosun init --launch` runs can detect
 	// us and reuse the socket instead of spawning a duplicate daemon.
 	if err := writeMcpPidfile(rc.repoRoot, os.Getpid(), socketPath); err != nil {
-		fmt.Fprintf(os.Stderr, "bosun mcp: warning: write pidfile: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "bosun mcp: warning: write pidfile: %v\n", err)
 	}
 	defer removeMcpPidfile(rc.repoRoot)
 
-	fmt.Fprintf(os.Stdout, "bosun mcp: listening on %s\n", socketPath)
-	fmt.Fprintf(os.Stdout, "bosun mcp: agents reach the server via %s=%s\n", bosunmcp.SocketEnv, socketPath)
-	fmt.Fprintln(os.Stdout, "bosun mcp: ^C to stop")
+	_, _ = fmt.Fprintf(os.Stdout, "bosun mcp: listening on %s\n", socketPath)
+	_, _ = fmt.Fprintf(os.Stdout, "bosun mcp: agents reach the server via %s=%s\n", bosunmcp.SocketEnv, socketPath)
+	_, _ = fmt.Fprintln(os.Stdout, "bosun mcp: ^C to stop")
 
 	// SIGINT / SIGTERM → graceful shutdown. The server's Serve loop watches
 	// its own context to break out of Accept().
@@ -119,6 +119,6 @@ func runMcp(_ *cobra.Command, socketPath string) error {
 	if err := srv.Serve(ctx); err != nil {
 		return internalErr("mcp serve", err)
 	}
-	fmt.Fprintln(os.Stdout, "\nbosun mcp: stopped")
+	_, _ = fmt.Fprintln(os.Stdout, "\nbosun mcp: stopped")
 	return nil
 }

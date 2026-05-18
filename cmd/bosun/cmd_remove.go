@@ -193,7 +193,7 @@ func runRemove(cmd *cobra.Command, sessionArg string, force, ignoreRunning bool)
 		EndReason:    history.ReasonRemoved,
 		Detail:       detail,
 	}); err != nil {
-		fmt.Fprintf(os.Stderr, "bosun: warning: archive history for %s: %v\n", label, err)
+		_, _ = fmt.Fprintf(os.Stderr, "bosun: warning: archive history for %s: %v\n", label, err)
 	}
 
 	// Salvage uncommitted content before destruction whenever the operator
@@ -205,7 +205,7 @@ func runRemove(cmd *cobra.Command, sessionArg string, force, ignoreRunning bool)
 	if destructive {
 		salvagePath, n, salvageErr := salvageWorktreeContent(rc, s.Label, s.Path)
 		if salvageErr != nil {
-			fmt.Fprintf(os.Stderr, "bosun: warning: salvage %s: %v\n", s.Label, salvageErr)
+			_, _ = fmt.Fprintf(os.Stderr, "bosun: warning: salvage %s: %v\n", s.Label, salvageErr)
 		} else if salvagePath != "" {
 			printf("bosun: salvaged %d file(s) from %s → %s\n", n, s.Label, salvagePath)
 		}
@@ -234,7 +234,7 @@ func runRemove(cmd *cobra.Command, sessionArg string, force, ignoreRunning bool)
 func removeCorruptedWorktree(rc *runCtx, label, worktreePath string) error {
 	salvagePath, n, salvageErr := salvageWorktreeContent(rc, label, worktreePath)
 	if salvageErr != nil {
-		fmt.Fprintf(os.Stderr, "bosun: warning: salvage %s: %v\n", label, salvageErr)
+		_, _ = fmt.Fprintf(os.Stderr, "bosun: warning: salvage %s: %v\n", label, salvageErr)
 	}
 
 	if err := os.RemoveAll(worktreePath); err != nil {
@@ -242,12 +242,12 @@ func removeCorruptedWorktree(rc *runCtx, label, worktreePath string) error {
 	}
 	if err := rc.git.PruneWorktrees(rc.ctx, rc.repoRoot); err != nil {
 		// Best-effort: the orphan admin dir will be cleaned next prune cycle.
-		fmt.Fprintf(os.Stderr, "bosun: warning: prune worktree admin: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "bosun: warning: prune worktree admin: %v\n", err)
 	}
 	branch := rc.cfg.BranchForLabel(label)
 	if exists, _ := rc.git.BranchExists(rc.ctx, rc.repoRoot, branch); exists {
 		if err := rc.git.DeleteBranch(rc.ctx, rc.repoRoot, branch, true); err != nil {
-			fmt.Fprintf(os.Stderr, "bosun: warning: delete branch %s: %v\n", branch, err)
+			_, _ = fmt.Fprintf(os.Stderr, "bosun: warning: delete branch %s: %v\n", branch, err)
 		}
 	}
 	_ = rc.claims.Clear(label)
@@ -278,7 +278,7 @@ func salvageWorktreeContent(rc *runCtx, label, worktreePath string) (string, int
 
 	lines, statusErr := rc.git.Status(rc.ctx, worktreePath)
 	if statusErr == nil {
-		if err := os.MkdirAll(dest, 0o755); err != nil {
+		if err := os.MkdirAll(dest, 0o750); err != nil {
 			return "", 0, err
 		}
 		n, err := copyRescueFiles(worktreePath, dest, lines)
@@ -294,7 +294,7 @@ func salvageWorktreeContent(rc *runCtx, label, worktreePath string) (string, int
 
 	// Git is broken (corrupted gitdir, repo metadata torched, …) — copy
 	// everything except `.git` so the operator can sort it out by hand.
-	if err := os.MkdirAll(dest, 0o755); err != nil {
+	if err := os.MkdirAll(dest, 0o750); err != nil {
 		return "", 0, err
 	}
 	n, skipped, err := copyWorktreeBestEffort(worktreePath, dest)
@@ -306,10 +306,10 @@ func salvageWorktreeContent(rc *runCtx, label, worktreePath string) (string, int
 	// didn't make it into the snapshot; the silent "salvaged N" count
 	// the previous shape produced was load-bearing misinformation.
 	for _, s := range skipped {
-		fmt.Fprintf(os.Stderr, "bosun: rescue: skipped %s (%s)\n", s.rel, s.reason)
+		_, _ = fmt.Fprintf(os.Stderr, "bosun: rescue: skipped %s (%s)\n", s.rel, s.reason)
 	}
 	if len(skipped) > 0 {
-		fmt.Fprintf(os.Stderr, "bosun: rescue: %d file(s) couldn't be salvaged — see warnings above\n", len(skipped))
+		_, _ = fmt.Fprintf(os.Stderr, "bosun: rescue: %d file(s) couldn't be salvaged — see warnings above\n", len(skipped))
 	}
 	if n == 0 {
 		_ = os.Remove(dest)
@@ -365,14 +365,14 @@ func copyWorktreeBestEffort(src, dest string) (int, []skippedItem, error) {
 		out := filepath.Join(dest, rel)
 		switch {
 		case info.IsDir():
-			return os.MkdirAll(out, 0o755)
+			return os.MkdirAll(out, 0o750)
 		case info.Mode()&os.ModeSymlink != 0:
 			target, terr := os.Readlink(path)
 			if terr != nil {
 				skipped = append(skipped, skippedItem{rel: rel, reason: fmt.Sprintf("readlink: %v", terr)})
 				return nil
 			}
-			if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
+			if err := os.MkdirAll(filepath.Dir(out), 0o750); err != nil {
 				return err
 			}
 			if err := os.Symlink(target, out); err != nil {
@@ -381,7 +381,7 @@ func copyWorktreeBestEffort(src, dest string) (int, []skippedItem, error) {
 			}
 			n++
 		default:
-			if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
+			if err := os.MkdirAll(filepath.Dir(out), 0o750); err != nil {
 				return err
 			}
 			if err := copyFile(path, out, info.Mode().Perm()); err != nil {

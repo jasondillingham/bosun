@@ -98,8 +98,8 @@ func NewStore(repoRoot string) *Store { return &Store{repoRoot: repoRoot} }
 // RepoRoot returns the repo root this store was constructed against.
 func (s *Store) RepoRoot() string { return s.repoRoot }
 
-func (s *Store) dir() string         { return filepath.Join(s.repoRoot, dirRelative) }
-func (s *Store) lockPath() string    { return filepath.Join(s.repoRoot, lockRelative) }
+func (s *Store) dir() string      { return filepath.Join(s.repoRoot, dirRelative) }
+func (s *Store) lockPath() string { return filepath.Join(s.repoRoot, lockRelative) }
 func (s *Store) parentDir(p string) string {
 	return filepath.Join(s.dir(), p)
 }

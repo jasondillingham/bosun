@@ -53,7 +53,7 @@ type Store struct {
 // NewStore returns a Store rooted at repoRoot.
 func NewStore(repoRoot string) *Store { return &Store{repoRoot: repoRoot} }
 
-func (s *Store) dir() string  { return filepath.Join(s.repoRoot, dirRelative) }
+func (s *Store) dir() string { return filepath.Join(s.repoRoot, dirRelative) }
 func (s *Store) file(session string) string {
 	return filepath.Join(s.dir(), session+".json")
 }

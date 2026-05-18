@@ -58,12 +58,12 @@ func loadCtx() (*runCtx, error) {
 
 // printf is a convenience that writes to stdout via fmt.Fprintf.
 func printf(format string, args ...any) {
-	fmt.Fprintf(os.Stdout, format, args...)
+	_, _ = fmt.Fprintf(os.Stdout, format, args...)
 }
 
 // println writes to stdout.
 func println(s string) {
-	fmt.Fprintln(os.Stdout, s)
+	_, _ = fmt.Fprintln(os.Stdout, s)
 }
 
 // lookupWorktreePathByLabel asks git for the on-disk path of the worktree

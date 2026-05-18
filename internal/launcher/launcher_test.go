@@ -39,9 +39,9 @@ func TestPrintStrategy(t *testing.T) {
 
 func TestShellQuote(t *testing.T) {
 	cases := map[string]string{
-		"plain":             "'plain'",
-		"with space":        "'with space'",
-		"with'quote":        `'with'\''quote'`,
+		"plain":      "'plain'",
+		"with space": "'with space'",
+		"with'quote": `'with'\''quote'`,
 	}
 	for in, want := range cases {
 		if got := shellQuote(in); got != want {

@@ -20,9 +20,9 @@ type stubPredictor struct {
 	predictions []predict.Prediction
 	overlaps    []predict.Overlap
 
-	calls       int
-	lastBriefs  []brief.Brief
-	lastLabels  []string
+	calls      int
+	lastBriefs []brief.Brief
+	lastLabels []string
 }
 
 func (s *stubPredictor) Predict(briefs []brief.Brief) ([]predict.Prediction, []predict.Overlap, error) {

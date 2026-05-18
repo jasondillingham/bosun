@@ -100,7 +100,8 @@ func RenderText(w io.Writer, opts RenderOptions) error {
 }
 
 // writeSummary prints a one-line summary above the status table:
-//   3 sessions — 1 DONE, 2 WORKING · 5 commits ahead total · 1 overlap
+//
+//	3 sessions — 1 DONE, 2 WORKING · 5 commits ahead total · 1 overlap
 //
 // State counts are colored when color is enabled. Only non-zero state
 // buckets are listed (DONE, WORKING, STUCK order). Overlap count is only

@@ -172,7 +172,7 @@ func runPredict(w io.Writer, planPath string, jsonOut, coverage bool, deps predi
 		if err != nil {
 			return internalErr("encode json", err)
 		}
-		fmt.Fprintln(w, string(data))
+		_, _ = fmt.Fprintln(w, string(data))
 	} else {
 		renderPredictReport(w, planPath, predictions, overlaps)
 		if coverage {
@@ -199,8 +199,8 @@ func runPredict(w io.Writer, planPath string, jsonOut, coverage bool, deps predi
 // listing scope + predicted paths with reasons, then an Overlaps section
 // if any were flagged.
 func renderPredictReport(w io.Writer, planPath string, predictions []predict.Prediction, overlaps []predict.Overlap) {
-	fmt.Fprintf(w, "Predicted conflict report for %s\n", planPath)
-	fmt.Fprintln(w)
+	_, _ = fmt.Fprintf(w, "Predicted conflict report for %s\n", planPath)
+	_, _ = fmt.Fprintln(w)
 
 	// Stable per-session order so two runs over the same plan produce
 	// byte-identical reports — easier for operators eyeballing diffs.
@@ -210,40 +210,40 @@ func renderPredictReport(w io.Writer, planPath string, predictions []predict.Pre
 	})
 
 	for _, p := range sorted {
-		fmt.Fprintf(w, "%s\n", p.Session)
+		_, _ = fmt.Fprintf(w, "%s\n", p.Session)
 		if p.Scope != "" {
-			fmt.Fprintf(w, "  scope: %s\n", p.Scope)
+			_, _ = fmt.Fprintf(w, "  scope: %s\n", p.Scope)
 		}
 		if len(p.Paths) == 0 {
-			fmt.Fprintln(w, "  paths: (none predicted)")
+			_, _ = fmt.Fprintln(w, "  paths: (none predicted)")
 			continue
 		}
-		fmt.Fprintln(w, "  paths:")
+		_, _ = fmt.Fprintln(w, "  paths:")
 		for _, pp := range p.Paths {
 			if pp.Reason != "" {
-				fmt.Fprintf(w, "    - %s  (%s)\n", pp.Path, pp.Reason)
+				_, _ = fmt.Fprintf(w, "    - %s  (%s)\n", pp.Path, pp.Reason)
 			} else {
-				fmt.Fprintf(w, "    - %s\n", pp.Path)
+				_, _ = fmt.Fprintf(w, "    - %s\n", pp.Path)
 			}
 		}
 	}
 
-	fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w)
 	if len(overlaps) == 0 {
-		fmt.Fprintln(w, "Overlaps: none predicted.")
+		_, _ = fmt.Fprintln(w, "Overlaps: none predicted.")
 		return
 	}
 
-	fmt.Fprintf(w, "Overlaps: %d\n", len(overlaps))
+	_, _ = fmt.Fprintf(w, "Overlaps: %d\n", len(overlaps))
 	for _, o := range overlaps {
 		sessions := strings.Join(o.Sessions, ", ")
 		severity := o.Severity
 		if severity == "" {
 			severity = "unknown"
 		}
-		fmt.Fprintf(w, "  - [%s] %s (sessions: %s)\n", severity, o.Path, sessions)
+		_, _ = fmt.Fprintf(w, "  - [%s] %s (sessions: %s)\n", severity, o.Path, sessions)
 		if o.Mitigation != "" {
-			fmt.Fprintf(w, "      suggestion: %s\n", o.Mitigation)
+			_, _ = fmt.Fprintf(w, "      suggestion: %s\n", o.Mitigation)
 		}
 	}
 }
@@ -254,9 +254,9 @@ func renderPredictReport(w io.Writer, planPath string, predictions []predict.Pre
 // suggestion when gaps exist. A zero-finding scan prints a "no gaps"
 // confirmation so the operator can tell the flag actually ran.
 func renderCoverageReport(w io.Writer, findings []predict.CoverageFinding) {
-	fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w)
 	if len(findings) == 0 {
-		fmt.Fprintln(w, "Coverage gaps: none — every flagged file is in some lane's scope.")
+		_, _ = fmt.Fprintln(w, "Coverage gaps: none — every flagged file is in some lane's scope.")
 		return
 	}
 
@@ -275,14 +275,14 @@ func renderCoverageReport(w io.Writer, findings []predict.CoverageFinding) {
 	if len(findings) > 1 {
 		noun = "files have"
 	}
-	fmt.Fprintf(w, "Coverage gaps (%d %s flagged content but no lane claims them):\n", len(findings), noun)
+	_, _ = fmt.Fprintf(w, "Coverage gaps (%d %s flagged content but no lane claims them):\n", len(findings), noun)
 	for i, f := range findings {
 		tag := f.Category
 		if f.Match != "" && f.Category != predict.FlagTodo {
 			tag = fmt.Sprintf("%s: '%s'", f.Category, f.Match)
 		}
-		fmt.Fprintf(w, "  %-*s  (%s)\n", maxLeft, leftCol[i], tag)
+		_, _ = fmt.Fprintf(w, "  %-*s  (%s)\n", maxLeft, leftCol[i], tag)
 	}
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Suggestion: add these to a lane's scope, or assign an audit lane.")
+	_, _ = fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w, "Suggestion: add these to a lane's scope, or assign an audit lane.")
 }

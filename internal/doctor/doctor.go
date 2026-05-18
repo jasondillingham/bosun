@@ -127,7 +127,7 @@ func Worst(results []Result) Status {
 // future consumer — TUI, MCP tool, JSON output mode — can call the
 // same renderer.
 func WriteReport(w io.Writer, repoRoot string, results []Result) {
-	fmt.Fprintf(w, "Bosun health check — %s\n\n", repoRoot)
+	_, _ = fmt.Fprintf(w, "Bosun health check — %s\n\n", repoRoot)
 	var warns, fails int
 	for _, r := range results {
 		mark := "✓"
@@ -139,17 +139,17 @@ func WriteReport(w io.Writer, repoRoot string, results []Result) {
 			mark = "✗"
 			fails++
 		}
-		fmt.Fprintf(w, "  %s %s: %s\n", mark, r.Name, r.Message)
+		_, _ = fmt.Fprintf(w, "  %s %s: %s\n", mark, r.Name, r.Message)
 		if r.Fix != "" {
-			fmt.Fprintf(w, "      fix: %s\n", r.Fix)
+			_, _ = fmt.Fprintf(w, "      fix: %s\n", r.Fix)
 		}
 	}
 	_, _ = fmt.Fprintln(w)
 	switch {
 	case fails > 0:
-		fmt.Fprintf(w, "%d failure(s), %d warning(s) — bosun may not work cleanly until these are addressed.\n", fails, warns)
+		_, _ = fmt.Fprintf(w, "%d failure(s), %d warning(s) — bosun may not work cleanly until these are addressed.\n", fails, warns)
 	case warns > 0:
-		fmt.Fprintf(w, "%d warning(s) — bosun should work but the operator should be aware.\n", warns)
+		_, _ = fmt.Fprintf(w, "%d warning(s) — bosun should work but the operator should be aware.\n", warns)
 	default:
 		_, _ = fmt.Fprintln(w, "All checks passed.")
 	}
@@ -209,23 +209,23 @@ func WriteFixReport(w io.Writer, outcomes []FixOutcome) {
 	for _, oc := range outcomes {
 		switch {
 		case oc.DryRun:
-			fmt.Fprintf(w, "  → would fix %s: %s\n", oc.Name, oc.Description)
+			_, _ = fmt.Fprintf(w, "  → would fix %s: %s\n", oc.Name, oc.Description)
 		case oc.Err != nil:
-			fmt.Fprintf(w, "  ✗ %s: fix failed — %v\n", oc.Name, oc.Err)
+			_, _ = fmt.Fprintf(w, "  ✗ %s: fix failed — %v\n", oc.Name, oc.Err)
 			failed++
 		case oc.Applied:
-			fmt.Fprintf(w, "  ✓ %s: %s\n", oc.Name, oc.Description)
+			_, _ = fmt.Fprintf(w, "  ✓ %s: %s\n", oc.Name, oc.Description)
 			applied++
 		}
 	}
 	_, _ = fmt.Fprintln(w)
 	switch {
 	case outcomes[0].DryRun:
-		fmt.Fprintf(w, "%d fix(es) would be applied — re-run without --dry-run to execute.\n", len(outcomes))
+		_, _ = fmt.Fprintf(w, "%d fix(es) would be applied — re-run without --dry-run to execute.\n", len(outcomes))
 	case failed > 0:
-		fmt.Fprintf(w, "%d fix(es) applied, %d failed — see errors above.\n", applied, failed)
+		_, _ = fmt.Fprintf(w, "%d fix(es) applied, %d failed — see errors above.\n", applied, failed)
 	default:
-		fmt.Fprintf(w, "%d fix(es) applied.\n", applied)
+		_, _ = fmt.Fprintf(w, "%d fix(es) applied.\n", applied)
 	}
 }
 

@@ -75,8 +75,8 @@ func runServe(bind string, port int, interval time.Duration) error {
 		Interval: interval,
 	})
 
-	fmt.Fprintf(os.Stdout, "bosun serve: listening on http://%s:%d\n", bind, port)
-	fmt.Fprintln(os.Stdout, "bosun serve: ^C to stop")
+	_, _ = fmt.Fprintf(os.Stdout, "bosun serve: listening on http://%s:%d\n", bind, port)
+	_, _ = fmt.Fprintln(os.Stdout, "bosun serve: ^C to stop")
 
 	ctx, cancel := signal.NotifyContext(rc.ctx, os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -94,7 +94,7 @@ func runServe(bind string, port int, interval time.Duration) error {
 	if err := srv.Start(ctx); err != nil {
 		return internalErr("serve", err)
 	}
-	fmt.Fprintln(os.Stdout, "\nbosun serve: stopped")
+	_, _ = fmt.Fprintln(os.Stdout, "\nbosun serve: stopped")
 	return nil
 }
 
@@ -109,7 +109,7 @@ func writeServePidfileWhenReady(ctx context.Context, repoRoot string, srv *web.S
 	for {
 		if addr := srv.Addr(); addr != "" {
 			if err := writeServePidfile(repoRoot, os.Getpid(), addr); err != nil {
-				fmt.Fprintf(os.Stderr, "bosun serve: warning: write pidfile: %v\n", err)
+				_, _ = fmt.Fprintf(os.Stderr, "bosun serve: warning: write pidfile: %v\n", err)
 			}
 			return
 		}
@@ -132,7 +132,7 @@ func writeServePidfileWhenReady(ctx context.Context, repoRoot string, srv *web.S
 func writeServePidfile(repoRoot string, pid int, addr string) error {
 	final := filepath.Join(repoRoot, servePidfileRelative)
 	dir := filepath.Dir(final)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
 	}
 	tmp, err := os.CreateTemp(dir, filepath.Base(final)+".tmp-*")

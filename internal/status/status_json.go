@@ -71,24 +71,24 @@ const JSONSchemaVersion = "v0.4.0"
 // sessionJSON is the per-session row in the public payload. Field tags are
 // the stable wire names — see the package doc above before renaming.
 type sessionJSON struct {
-	Name          string `json:"name"`
-	Number        int    `json:"number"`
-	Branch        string `json:"branch"`
-	Path          string `json:"path"`
-	State         string `json:"state"`
-	Ahead         int    `json:"ahead"`
-	Dirty         int    `json:"dirty"`
-	Claimed       int    `json:"claimed"`
-	Running         bool `json:"running"`
-	RunningPID      int  `json:"running_pid,omitempty"`
-	RunningExternal bool `json:"running_external,omitempty"`
-	Stale           bool `json:"stale,omitempty"`
-	HeartbeatUnix int64  `json:"heartbeat_unix,omitempty"`
-	LastSHA       string `json:"last_sha,omitempty"`
-	LastSubject   string `json:"last_subject,omitempty"`
-	LastRel       string `json:"last_relative,omitempty"`
-	LastUnix      int64  `json:"last_unix,omitempty"`
-	StateMsg      string `json:"state_message,omitempty"`
+	Name            string `json:"name"`
+	Number          int    `json:"number"`
+	Branch          string `json:"branch"`
+	Path            string `json:"path"`
+	State           string `json:"state"`
+	Ahead           int    `json:"ahead"`
+	Dirty           int    `json:"dirty"`
+	Claimed         int    `json:"claimed"`
+	Running         bool   `json:"running"`
+	RunningPID      int    `json:"running_pid,omitempty"`
+	RunningExternal bool   `json:"running_external,omitempty"`
+	Stale           bool   `json:"stale,omitempty"`
+	HeartbeatUnix   int64  `json:"heartbeat_unix,omitempty"`
+	LastSHA         string `json:"last_sha,omitempty"`
+	LastSubject     string `json:"last_subject,omitempty"`
+	LastRel         string `json:"last_relative,omitempty"`
+	LastUnix        int64  `json:"last_unix,omitempty"`
+	StateMsg        string `json:"state_message,omitempty"`
 	// Parent/Children/Depth surface the spawn-tree shape to consumers
 	// that want to render it (web dashboard, TUI). All three are
 	// omitempty: top-level sessions with no children produce the same

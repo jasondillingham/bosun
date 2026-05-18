@@ -205,7 +205,7 @@ func TestSpawnAuditRotation_DropsOldest(t *testing.T) {
 		t.Fatalf("seed active: %v", err)
 	}
 	for i := 1; i <= spawnAuditMaxFiles; i++ {
-		marker := []byte(string(rune('A'+i-1))) // 'A' for .1, 'B' for .2, …
+		marker := []byte(string(rune('A' + i - 1))) // 'A' for .1, 'B' for .2, …
 		if err := os.WriteFile(logPath+"."+itoa(i), marker, 0o644); err != nil {
 			t.Fatalf("seed .%d: %v", i, err)
 		}

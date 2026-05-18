@@ -143,4 +143,3 @@ func TestScenario_MergeNoLoadCheckSkipsWarning(t *testing.T) {
 		t.Errorf("--no-load-check should suppress merge warning, got:\n%s", out)
 	}
 }
-

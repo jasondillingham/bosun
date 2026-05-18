@@ -173,7 +173,7 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 	case opts.force && !opts.resume:
 		// --force is bosun's "I know, blow it away" escape hatch. Clear
 		// the stale state breadcrumb and start a fresh run.
-		fmt.Fprintf(os.Stdout, "bosun: --force: discarding stale %s.\n", initstate.Path(rc.repoRoot))
+		_, _ = fmt.Fprintf(os.Stdout, "bosun: --force: discarding stale %s.\n", initstate.Path(rc.repoRoot))
 		if err := initstate.ClearFile(rc.repoRoot); err != nil {
 			return internalErr("clear stale init state", err)
 		}
@@ -210,7 +210,7 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 	// --resume are advisory (warning + ignored) rather than a hard mismatch.
 	var labels []string
 	if opts.resume {
-		fmt.Fprintf(os.Stdout, "Resuming previous init (started %s).\n", istate.StartedAt.Format(time.RFC3339))
+		_, _ = fmt.Fprintf(os.Stdout, "Resuming previous init (started %s).\n", istate.StartedAt.Format(time.RFC3339))
 		labels = istate.SessionLabels()
 		if len(args) > 0 {
 			argLabels, derr := resolveInitLabels(args, rc.cfg)
@@ -218,7 +218,7 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 				return derr
 			}
 			if !sameLabels(argLabels, labels) {
-				fmt.Fprintf(os.Stderr,
+				_, _ = fmt.Fprintf(os.Stderr,
 					"bosun: warning: --resume ignoring CLI args (%d session(s)); using init.state labels from prior run (%d session(s))\n",
 					len(argLabels), len(labels),
 				)
@@ -230,9 +230,9 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 		switch {
 		case opts.brief == "" && istate.PlanPath != "":
 			opts.brief = istate.PlanPath
-			fmt.Fprintf(os.Stdout, "Using brief from init.state: %s\n", opts.brief)
+			_, _ = fmt.Fprintf(os.Stdout, "Using brief from init.state: %s\n", opts.brief)
 		case opts.brief != "" && istate.PlanPath != "" && opts.brief != istate.PlanPath:
-			fmt.Fprintf(os.Stderr,
+			_, _ = fmt.Fprintf(os.Stderr,
 				"bosun: warning: --brief %q differs from prior init's plan (%s); using init.state value\n",
 				opts.brief, istate.PlanPath,
 			)
@@ -256,7 +256,7 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 			return err
 		}
 		opts.brief = path
-		fmt.Fprintf(os.Stdout, "Generated brief from --suggest: %s\n", path)
+		_, _ = fmt.Fprintf(os.Stdout, "Generated brief from --suggest: %s\n", path)
 		// init.state was just created without a plan path; update it so
 		// --resume after a failed init points at the suggested brief.
 		istate = initstate.New(labels, opts.brief, roundTimestamp)
@@ -266,18 +266,18 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 	// catches Finder / Time Machine / Spotlight artifacts (literal "<name>
 	// <digit>" duplicates) before they confuse later git operations.
 	if phantoms, err := findPhantomBranchRefs(rc.repoRoot, rc.cfg.SessionPrefix); err != nil {
-		fmt.Fprintf(os.Stderr, "bosun: warning: phantom-ref scan failed: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "bosun: warning: phantom-ref scan failed: %v\n", err)
 	} else if len(phantoms) > 0 {
 		if opts.cleanPhantoms {
 			for _, p := range phantoms {
 				if err := os.Remove(p); err != nil {
-					fmt.Fprintf(os.Stderr, "bosun: warning: remove phantom ref %s: %v\n", p, err)
+					_, _ = fmt.Fprintf(os.Stderr, "bosun: warning: remove phantom ref %s: %v\n", p, err)
 				}
 			}
-			fmt.Fprintf(os.Stdout, "Removed %d phantom branch ref(s) under .git/refs/heads/%s/.\n", len(phantoms), rc.cfg.SessionPrefix)
+			_, _ = fmt.Fprintf(os.Stdout, "Removed %d phantom branch ref(s) under .git/refs/heads/%s/.\n", len(phantoms), rc.cfg.SessionPrefix)
 		} else {
 			example := filepath.Join(".git", "refs", "heads", rc.cfg.SessionPrefix, filepath.Base(phantoms[0]))
-			fmt.Fprintf(os.Stdout, "found %d phantom branch ref(s) under .git/refs/heads/%s/; remove with `rm '%s'` (or re-run with --clean-phantoms)\n", len(phantoms), rc.cfg.SessionPrefix, example)
+			_, _ = fmt.Fprintf(os.Stdout, "found %d phantom branch ref(s) under .git/refs/heads/%s/; remove with `rm '%s'` (or re-run with --clean-phantoms)\n", len(phantoms), rc.cfg.SessionPrefix, example)
 		}
 	}
 
@@ -374,7 +374,7 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 			path := session.WorktreePathForLabel(rc.repoRoot, rc.cfg, label, roundTimestamp)
 			for _, wt := range existingWorktrees {
 				if wt.Branch == "refs/heads/"+branch || wt.Path == path {
-					fmt.Fprintf(os.Stdout, "bosun: --force: removing worktree %s...\n", wt.Path)
+					_, _ = fmt.Fprintf(os.Stdout, "bosun: --force: removing worktree %s...\n", wt.Path)
 					if err := rc.git.RemoveWorktree(rc.ctx, rc.repoRoot, wt.Path, true); err != nil {
 						return gitErr(fmt.Sprintf("remove existing worktree %s", wt.Path), err)
 					}
@@ -384,7 +384,7 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 				// Orphan dirs can contain large Go module caches (observed:
 				// ~6 min recursive delete during the v0.7 kickoff). Surface
 				// what's happening so operators don't suspect a hang.
-				fmt.Fprintf(os.Stdout, "bosun: --force: deleting stale on-disk dir %s (may take a moment if it contains a build cache)...\n", path)
+				_, _ = fmt.Fprintf(os.Stdout, "bosun: --force: deleting stale on-disk dir %s (may take a moment if it contains a build cache)...\n", path)
 				if err := os.RemoveAll(path); err != nil {
 					return internalErr("force-remove stale worktree dir "+path, err)
 				}
@@ -427,7 +427,7 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 				)
 			}
 			if !known[path] {
-				fmt.Fprintf(os.Stderr, "bosun: warning: %s exists on disk but is not registered as a worktree; resume continuing\n", path)
+				_, _ = fmt.Fprintf(os.Stderr, "bosun: warning: %s exists on disk but is not registered as a worktree; resume continuing\n", path)
 			}
 		}
 	}
@@ -446,7 +446,7 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 
 		// Resume short-circuit: already-completed sessions are skipped wholesale.
 		if opts.resume && istate.IsCompleted(label) {
-			fmt.Fprintf(os.Stdout, "Skipping %s (already completed in prior run).\n", label)
+			_, _ = fmt.Fprintf(os.Stdout, "Skipping %s (already completed in prior run).\n", label)
 			made = append(made, created{label: label, branch: branch, path: path})
 			continue
 		}
@@ -473,7 +473,7 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 		// aren't wiped mid-flight.
 		if !opts.resume {
 			if err := rc.claims.Clear(label); err != nil {
-				fmt.Fprintf(os.Stderr, "bosun: warning: clear stale claims for %s: %v\n", label, err)
+				_, _ = fmt.Fprintf(os.Stderr, "bosun: warning: clear stale claims for %s: %v\n", label, err)
 			}
 		}
 
@@ -520,17 +520,17 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 							match.path, err, match.path,
 						)
 					}
-					fmt.Fprintf(os.Stdout, "Unlocked stale worktree for %s.\n", label)
+					_, _ = fmt.Fprintf(os.Stdout, "Unlocked stale worktree for %s.\n", label)
 				}
-				fmt.Fprintf(os.Stdout, "Reusing existing worktree for %s (%d/%d).\n", label, i+1, len(labels))
+				_, _ = fmt.Fprintf(os.Stdout, "Reusing existing worktree for %s (%d/%d).\n", label, i+1, len(labels))
 			} else {
-				fmt.Fprintf(os.Stdout, "Creating worktree %s (%d/%d)...\n", label, i+1, len(labels))
+				_, _ = fmt.Fprintf(os.Stdout, "Creating worktree %s (%d/%d)...\n", label, i+1, len(labels))
 				if err := rc.git.AddWorktree(rc.ctx, rc.repoRoot, path, branch); err != nil {
 					return gitErr("add worktree "+path, err)
 				}
 			}
 		} else {
-			fmt.Fprintf(os.Stdout, "Creating worktree %s (%d/%d)...\n", label, i+1, len(labels))
+			_, _ = fmt.Fprintf(os.Stdout, "Creating worktree %s (%d/%d)...\n", label, i+1, len(labels))
 			if err := rc.git.AddWorktree(rc.ctx, rc.repoRoot, path, branch); err != nil {
 				return gitErr("add worktree "+path, err)
 			}
@@ -547,10 +547,10 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 		// way a brief authored later stays out of commits without bosun
 		// having to remember.
 		if err := rc.git.AppendWorktreeExclude(rc.ctx, path, "BOSUN_BRIEF.md"); err != nil {
-			fmt.Fprintf(os.Stderr, "bosun: warning: update %s exclude: %v\n", label, err)
+			_, _ = fmt.Fprintf(os.Stderr, "bosun: warning: update %s exclude: %v\n", label, err)
 		}
 		if err := rc.git.AppendWorktreeExclude(rc.ctx, path, ".claude/CLAUDE.md"); err != nil {
-			fmt.Fprintf(os.Stderr, "bosun: warning: update %s exclude: %v\n", label, err)
+			_, _ = fmt.Fprintf(os.Stderr, "bosun: warning: update %s exclude: %v\n", label, err)
 		}
 
 		if b := brief.LookupBriefByLabel(briefs, label); b != nil {
@@ -571,34 +571,34 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 		// it. Best-effort: a failure here doesn't unwind the worktree
 		// (spawn-tree is advisory; status/cleanup work without it).
 		if err := spawntree.NewStore(rc.repoRoot).AddTopLevel(label); err != nil {
-			fmt.Fprintf(os.Stderr, "bosun: warning: record %s in spawn tree: %v\n", label, err)
+			_, _ = fmt.Fprintf(os.Stderr, "bosun: warning: record %s in spawn tree: %v\n", label, err)
 		}
 	}
 
 	if opts.brief != "" {
 		if err := brief.ArchivePlan(rc.repoRoot, opts.brief); err != nil {
 			// Non-fatal: archiving is a nice-to-have.
-			fmt.Fprintf(os.Stderr, "bosun: warning: archive plan: %v\n", err)
+			_, _ = fmt.Fprintf(os.Stderr, "bosun: warning: archive plan: %v\n", err)
 		}
 		// If the plan file lives inside the main repo (the common case — operator
 		// wrote `plan.md` at the root), add it to .gitignore so `git status`
 		// doesn't surface it as untracked. v0.1 dogfood finding: dogfood-plan.md
 		// sat at the root and felt "wrong" to leave there.
 		if err := ensurePlanIgnored(rc.repoRoot, opts.brief); err != nil {
-			fmt.Fprintf(os.Stderr, "bosun: warning: ignore plan file: %v\n", err)
+			_, _ = fmt.Fprintf(os.Stderr, "bosun: warning: ignore plan file: %v\n", err)
 		}
 	}
 
 	// Ensure .bosun/ is in .gitignore so we don't accidentally commit it.
 	if err := ensureBosunIgnored(rc.repoRoot); err != nil {
-		fmt.Fprintf(os.Stderr, "bosun: warning: update .gitignore: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "bosun: warning: update .gitignore: %v\n", err)
 	}
 
 	// Drop the Spotlight "do not index" marker so macOS stops creating
 	// `session-1 2.done` duplicates inside .bosun/state/ that would
 	// otherwise surface as phantom sessions in `bosun list`.
 	if err := state.EnsureSpotlightMarker(rc.repoRoot); err != nil {
-		fmt.Fprintf(os.Stderr, "bosun: warning: write spotlight marker: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "bosun: warning: write spotlight marker: %v\n", err)
 	}
 
 	if err := istate.SetCurrent(rc.repoRoot, "", initstate.StepHookPostInit); err != nil {
@@ -621,13 +621,13 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 	// Everything succeeded — discard the resume breadcrumb so the next
 	// plain `bosun init` isn't refused on stale state.
 	if err := istate.Clear(rc.repoRoot); err != nil {
-		fmt.Fprintf(os.Stderr, "bosun: warning: clear init state: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "bosun: warning: clear init state: %v\n", err)
 	}
 
 	// Print summary.
-	fmt.Fprintf(os.Stdout, "Created %d session(s):\n", len(made))
+	_, _ = fmt.Fprintf(os.Stdout, "Created %d session(s):\n", len(made))
 	for _, c := range made {
-		fmt.Fprintf(os.Stdout, "  %-10s → %s  (branch: %s)\n", c.label, c.path, c.branch)
+		_, _ = fmt.Fprintf(os.Stdout, "  %-10s → %s  (branch: %s)\n", c.label, c.path, c.branch)
 	}
 
 	// Optional launch.
@@ -646,20 +646,20 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 		// still launch, they just fall back to filesystem coordination.
 		mcpSocket := ""
 		if info, err := ensureMcp(rc.repoRoot); err != nil {
-			fmt.Fprintf(os.Stderr, "bosun: warning: MCP autostart failed: %v\n", err)
+			_, _ = fmt.Fprintf(os.Stderr, "bosun: warning: MCP autostart failed: %v\n", err)
 		} else {
 			mcpSocket = info.socketPath
 			switch {
 			case info.spawned:
-				fmt.Fprintf(os.Stdout, "Started MCP server (pid %d) on %s\n", info.pid, info.socketPath)
+				_, _ = fmt.Fprintf(os.Stdout, "Started MCP server (pid %d) on %s\n", info.pid, info.socketPath)
 			case info.pid != 0:
-				fmt.Fprintf(os.Stdout, "Reusing MCP server (pid %d) on %s\n", info.pid, info.socketPath)
+				_, _ = fmt.Fprintf(os.Stdout, "Reusing MCP server (pid %d) on %s\n", info.pid, info.socketPath)
 			default:
-				fmt.Fprintf(os.Stdout, "Using MCP server from %s=%s\n", bosunmcp.SocketEnv, info.socketPath)
+				_, _ = fmt.Fprintf(os.Stdout, "Using MCP server from %s=%s\n", bosunmcp.SocketEnv, info.socketPath)
 			}
 		}
 
-		fmt.Fprintln(os.Stdout, "\nLaunching sessions:")
+		_, _ = fmt.Fprintln(os.Stdout, "\nLaunching sessions:")
 		for i, c := range made {
 			env := map[string]string{}
 			if opts.isolateCache {
@@ -680,10 +680,10 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 				Env:       env,
 			})
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "  %s: launch failed: %v\n", c.label, err)
+				_, _ = fmt.Fprintf(os.Stderr, "  %s: launch failed: %v\n", c.label, err)
 				continue
 			}
-			fmt.Fprintf(os.Stdout, "  %-10s via %s\n", c.label, strategy)
+			_, _ = fmt.Fprintf(os.Stdout, "  %-10s via %s\n", c.label, strategy)
 		}
 	}
 
@@ -993,7 +993,7 @@ func generateBriefFromSuggest(rc *runCtx, goal string, sessionCount int) (string
 
 	md := suggest.RenderPlanMarkdown(proposal)
 	planPath := filepath.Join(rc.repoRoot, ".bosun", "suggested-plan.md")
-	if err := os.MkdirAll(filepath.Dir(planPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(planPath), 0o750); err != nil {
 		return "", internalErr("--suggest: mkdir .bosun", err)
 	}
 	if err := os.WriteFile(planPath, []byte(md), 0o644); err != nil {

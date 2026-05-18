@@ -598,7 +598,7 @@ var procIsAlive = func(pid int) bool {
 
 func TestDerive_EmptyWhenNoBosunBranches(t *testing.T) {
 	r := &fakeRunner{
-		t: t,
+		t:        t,
 		worktree: "worktree /repo\nHEAD aaa\nbranch refs/heads/main\n\n",
 	}
 	c := &git.Client{Runner: r}

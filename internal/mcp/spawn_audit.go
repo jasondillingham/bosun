@@ -67,7 +67,7 @@ func logSpawnAttempt(repoRoot string, entry spawnAuditEntry) {
 		entry.Time = time.Now().UTC().Format(time.RFC3339)
 	}
 	if err := writeSpawnAuditLine(repoRoot, entry); err != nil {
-		fmt.Fprintf(os.Stderr, "bosun: spawn audit log write failed: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "bosun: spawn audit log write failed: %v\n", err)
 	}
 }
 
@@ -78,7 +78,7 @@ func writeSpawnAuditLine(repoRoot string, entry spawnAuditEntry) error {
 		return errors.New("repoRoot is empty")
 	}
 	dir := filepath.Join(repoRoot, spawnAuditDirRel)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("mkdir audit dir: %w", err)
 	}
 	line, err := json.Marshal(entry)

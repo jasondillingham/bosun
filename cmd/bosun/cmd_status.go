@@ -117,9 +117,9 @@ func renderStatusOnce(w io.Writer, rc *runCtx, opts statusOpts) error {
 			// hiccup shouldn't break status rendering. Surface the
 			// failure to stderr so an operator who cares can see it,
 			// then fall through.
-			fmt.Fprintf(os.Stderr, "bosun: warning: spawn-tree sync: %v\n", err)
+			_, _ = fmt.Fprintf(os.Stderr, "bosun: warning: spawn-tree sync: %v\n", err)
 		} else if len(pruned) > 0 {
-			fmt.Fprintf(os.Stderr, "bosun: pruned %d ghost spawn-tree entr%s (worktree + branch missing): %s\n",
+			_, _ = fmt.Fprintf(os.Stderr, "bosun: pruned %d ghost spawn-tree entr%s (worktree + branch missing): %s\n",
 				len(pruned), pluralEntries(len(pruned)), strings.Join(pruned, ", "))
 		}
 	}
@@ -299,7 +299,7 @@ func renderWatchFrame(w io.Writer, rc *runCtx, opts statusOpts, interval time.Du
 	if err := renderStatusOnce(w, rc, opts); err != nil {
 		return err
 	}
-	fmt.Fprintf(w, "\nPress Ctrl-C to exit. Refreshes every %s.\n", formatRefreshInterval(interval))
+	_, _ = fmt.Fprintf(w, "\nPress Ctrl-C to exit. Refreshes every %s.\n", formatRefreshInterval(interval))
 	return nil
 }
 

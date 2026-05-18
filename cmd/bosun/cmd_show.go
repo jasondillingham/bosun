@@ -132,24 +132,24 @@ func renderShowJSON(rc *runCtx, s *session.Session) error {
 }
 
 func renderShowText(rc *runCtx, s *session.Session) error {
-	fmt.Fprintf(os.Stdout, "Session:  %s\n", s.Name)
-	fmt.Fprintf(os.Stdout, "Branch:   %s\n", s.Branch)
-	fmt.Fprintf(os.Stdout, "Worktree: %s\n", s.Path)
-	fmt.Fprintf(os.Stdout, "State:    %s", s.State)
+	_, _ = fmt.Fprintf(os.Stdout, "Session:  %s\n", s.Name)
+	_, _ = fmt.Fprintf(os.Stdout, "Branch:   %s\n", s.Branch)
+	_, _ = fmt.Fprintf(os.Stdout, "Worktree: %s\n", s.Path)
+	_, _ = fmt.Fprintf(os.Stdout, "State:    %s", s.State)
 	if s.StateMsg != "" {
-		fmt.Fprintf(os.Stdout, "  (%s)", strings.ReplaceAll(s.StateMsg, "\n", " "))
+		_, _ = fmt.Fprintf(os.Stdout, "  (%s)", strings.ReplaceAll(s.StateMsg, "\n", " "))
 	}
-	fmt.Fprintln(os.Stdout)
-	fmt.Fprintf(os.Stdout, "Ahead:    %d\n", s.Ahead)
-	fmt.Fprintf(os.Stdout, "Dirty:    %d\n", s.Dirty)
+	_, _ = fmt.Fprintln(os.Stdout)
+	_, _ = fmt.Fprintf(os.Stdout, "Ahead:    %d\n", s.Ahead)
+	_, _ = fmt.Fprintf(os.Stdout, "Dirty:    %d\n", s.Dirty)
 
 	// v0.9 spawn-tree info, if this session is part of one.
 	if tree := spawntree.NewStore(rc.repoRoot); tree != nil {
 		if parent, err := tree.ParentOf(s.Name); err == nil && parent != "" {
-			fmt.Fprintf(os.Stdout, "Parent:   %s\n", parent)
+			_, _ = fmt.Fprintf(os.Stdout, "Parent:   %s\n", parent)
 		}
 		if children, err := tree.ChildrenOf(s.Name); err == nil && len(children) > 0 {
-			fmt.Fprintf(os.Stdout, "Children: %s\n", strings.Join(children, ", "))
+			_, _ = fmt.Fprintf(os.Stdout, "Children: %s\n", strings.Join(children, ", "))
 		}
 	}
 
@@ -158,44 +158,44 @@ func renderShowText(rc *runCtx, s *session.Session) error {
 		return internalErr("read claims", err)
 	}
 	if c != nil && len(c.Paths) > 0 {
-		fmt.Fprintf(os.Stdout, "\nClaimed paths (%d):\n", len(c.Paths))
+		_, _ = fmt.Fprintf(os.Stdout, "\nClaimed paths (%d):\n", len(c.Paths))
 		for _, p := range c.Paths {
-			fmt.Fprintf(os.Stdout, "  %s\n", p)
+			_, _ = fmt.Fprintf(os.Stdout, "  %s\n", p)
 		}
 	}
 
 	if briefBody, err := brief.ReadFromWorktree(s.Path); err != nil {
 		return internalErr("read brief", err)
 	} else if briefBody != "" {
-		fmt.Fprintln(os.Stdout, "\n--- BOSUN_BRIEF.md ---")
+		_, _ = fmt.Fprintln(os.Stdout, "\n--- BOSUN_BRIEF.md ---")
 		_, _ = fmt.Fprint(os.Stdout, briefBody)
 		if !strings.HasSuffix(briefBody, "\n") {
-			fmt.Fprintln(os.Stdout)
+			_, _ = fmt.Fprintln(os.Stdout)
 		}
-		fmt.Fprintln(os.Stdout, "----------------------")
+		_, _ = fmt.Fprintln(os.Stdout, "----------------------")
 	}
 
-	fmt.Fprintln(os.Stdout, "\n--- last 10 commits ---")
+	_, _ = fmt.Fprintln(os.Stdout, "\n--- last 10 commits ---")
 	log, err := rc.git.LogN(rc.ctx, s.Path, 10)
 	if err != nil {
 		return gitErr("git log", err)
 	}
 	if log == "" {
-		fmt.Fprintln(os.Stdout, "(no commits)")
+		_, _ = fmt.Fprintln(os.Stdout, "(no commits)")
 	} else {
 		_, _ = fmt.Fprint(os.Stdout, log)
 	}
 
-	fmt.Fprintln(os.Stdout, "\n--- git status ---")
+	_, _ = fmt.Fprintln(os.Stdout, "\n--- git status ---")
 	lines, err := rc.git.Status(rc.ctx, s.Path)
 	if err != nil {
 		return gitErr("git status", err)
 	}
 	if len(lines) == 0 {
-		fmt.Fprintln(os.Stdout, "(clean)")
+		_, _ = fmt.Fprintln(os.Stdout, "(clean)")
 	} else {
 		for _, l := range lines {
-			fmt.Fprintf(os.Stdout, "%s %s\n", l.XY, l.Path)
+			_, _ = fmt.Fprintf(os.Stdout, "%s %s\n", l.XY, l.Path)
 		}
 	}
 	return nil

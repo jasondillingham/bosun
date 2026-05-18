@@ -235,7 +235,7 @@ func appendHook(obj map[string]any) (map[string]any, error) {
 // editor that wrote the settings; `claude` reading them) never see a
 // half-written file.
 func writeSettings(path string, obj map[string]any) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return fmt.Errorf("mkdir %s: %w", filepath.Dir(path), err)
 	}
 	var buf bytes.Buffer
@@ -253,7 +253,7 @@ func writeSettings(path string, obj map[string]any) error {
 // concurrent readers either see the old file or the new one, never a
 // half-written intermediate.
 func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return fmt.Errorf("mkdir %s: %w", filepath.Dir(path), err)
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")

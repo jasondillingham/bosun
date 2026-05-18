@@ -251,4 +251,3 @@ func requireAuditEntry(t *testing.T, repoRoot, outcome, gate string) {
 	}
 	t.Errorf("expected audit entry outcome=%q gate=%q; got log:\n%s", outcome, gate, string(data))
 }
-

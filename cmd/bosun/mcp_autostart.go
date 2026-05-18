@@ -83,7 +83,7 @@ func spawnMcpDaemon(repoRoot string) (mcpServerInfo, error) {
 		return mcpServerInfo{}, fmt.Errorf("locate bosun binary: %w", err)
 	}
 	socketPath := bosunmcp.DefaultSocketPath(repoRoot)
-	if err := os.MkdirAll(filepath.Dir(socketPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(socketPath), 0o750); err != nil {
 		return mcpServerInfo{}, fmt.Errorf("mkdir socket parent: %w", err)
 	}
 
@@ -156,7 +156,7 @@ func readMcpPidfile(repoRoot string) (mcpServerInfo, bool) {
 func writeMcpPidfile(repoRoot string, pid int, socketPath string) error {
 	final := filepath.Join(repoRoot, mcpPidfileRelative)
 	dir := filepath.Dir(final)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
 	}
 	tmp, err := os.CreateTemp(dir, filepath.Base(final)+".tmp-*")

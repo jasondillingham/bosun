@@ -386,7 +386,7 @@ func runConfigInit(force bool) error {
 	}
 
 	dir := filepath.Join(root, ".bosun")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return internalErr("mkdir .bosun", err)
 	}
 
@@ -701,7 +701,7 @@ func configFromRaw(raw map[string]json.RawMessage) (config.Config, error) {
 // observes a half-written file. The .bosun directory is created if missing.
 func writeConfigAtomic(repoRoot string, raw map[string]json.RawMessage) error {
 	dir := filepath.Join(repoRoot, ".bosun")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(raw, "", "  ")

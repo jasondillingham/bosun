@@ -102,14 +102,14 @@ func runLaunch(sessionArg string, opts launchOpts) error {
 		env = launcher.IsolateCacheEnv(s.Path)
 	}
 	if info, err := ensureMcp(rc.repoRoot); err != nil {
-		fmt.Fprintf(os.Stderr, "bosun: warning: MCP autostart failed: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "bosun: warning: MCP autostart failed: %v\n", err)
 	} else {
 		env[bosunmcp.SocketEnv] = info.socketPath
 		switch {
 		case info.spawned:
-			fmt.Fprintf(os.Stdout, "Started MCP server (pid %d) on %s\n", info.pid, info.socketPath)
+			_, _ = fmt.Fprintf(os.Stdout, "Started MCP server (pid %d) on %s\n", info.pid, info.socketPath)
 		case info.pid != 0:
-			fmt.Fprintf(os.Stdout, "Reusing MCP server (pid %d) on %s\n", info.pid, info.socketPath)
+			_, _ = fmt.Fprintf(os.Stdout, "Reusing MCP server (pid %d) on %s\n", info.pid, info.socketPath)
 		}
 	}
 
@@ -125,6 +125,6 @@ func runLaunch(sessionArg string, opts launchOpts) error {
 	if err != nil {
 		return internalErr("launch "+s.Label, err)
 	}
-	fmt.Fprintf(os.Stdout, "Launched %s via %s\n", s.Label, strategy)
+	_, _ = fmt.Fprintf(os.Stdout, "Launched %s via %s\n", s.Label, strategy)
 	return nil
 }

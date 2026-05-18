@@ -388,11 +388,11 @@ func parsePackageJSON(file string) []string {
 // so RepoIntel JSON is deterministic.
 func testLayoutHints(files []string) []string {
 	var (
-		hasGoTest    bool
-		hasTestsDir  bool
-		hasJestDir   bool
-		hasJsTestCo  bool
-		hasRSpec     bool
+		hasGoTest   bool
+		hasTestsDir bool
+		hasJestDir  bool
+		hasJsTestCo bool
+		hasRSpec    bool
 	)
 	for _, f := range files {
 		if strings.HasSuffix(f, "_test.go") {

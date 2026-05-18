@@ -308,7 +308,7 @@ func executeCleanupOne(rc *runCtx, p cleanupPlan) error {
 		EndReason:    archiveReason,
 		Detail:       p.reason,
 	}); err != nil {
-		fmt.Fprintf(os.Stderr, "bosun: warning: archive history for %s: %v\n", p.s.Name, err)
+		_, _ = fmt.Fprintf(os.Stderr, "bosun: warning: archive history for %s: %v\n", p.s.Name, err)
 	}
 
 	forceWT := true
@@ -633,9 +633,9 @@ func runCleanupTree(cmd *cobra.Command, parentLabel string, opts cleanupOpts) er
 	// works, the operator just sees the confusing "no such worktree"
 	// error from the underlying git call.
 	if pruned, err := tree.SyncWithGit(rc.ctx, rc.git, rc.repoRoot); err != nil {
-		fmt.Fprintf(os.Stderr, "bosun: warning: spawn-tree sync: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "bosun: warning: spawn-tree sync: %v\n", err)
 	} else if len(pruned) > 0 {
-		fmt.Fprintf(os.Stderr, "bosun: pruned %d ghost spawn-tree entr%s before cascade: %s\n",
+		_, _ = fmt.Fprintf(os.Stderr, "bosun: pruned %d ghost spawn-tree entr%s before cascade: %s\n",
 			len(pruned), pluralEntries(len(pruned)), strings.Join(pruned, ", "))
 	}
 
@@ -677,7 +677,7 @@ func runCleanupTree(cmd *cobra.Command, parentLabel string, opts cleanupOpts) er
 			continue
 		}
 		if opts.dryRun {
-			fmt.Fprintf(os.Stdout, "would cleanup %s\n", label)
+			_, _ = fmt.Fprintf(os.Stdout, "would cleanup %s\n", label)
 			reaped = append(reaped, label)
 			continue
 		}
@@ -693,10 +693,10 @@ func runCleanupTree(cmd *cobra.Command, parentLabel string, opts cleanupOpts) er
 		}
 	}
 
-	fmt.Fprintf(os.Stdout, "tree cleanup for %s: %d reaped, %d skipped\n",
+	_, _ = fmt.Fprintf(os.Stdout, "tree cleanup for %s: %d reaped, %d skipped\n",
 		parsed, len(reaped), len(skipped))
 	for _, s := range skipped {
-		fmt.Fprintf(os.Stdout, "  skipped: %s\n", s)
+		_, _ = fmt.Fprintf(os.Stdout, "  skipped: %s\n", s)
 	}
 	return nil
 }

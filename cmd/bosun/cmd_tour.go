@@ -83,7 +83,7 @@ func runTour(w io.Writer, r io.Reader, opts tourOpts) error {
 		}
 		cleanedUp = true
 		if opts.keepSandbox {
-			fmt.Fprintf(w, "\nSandbox preserved at %s (--keep-sandbox).\n", sandbox)
+			_, _ = fmt.Fprintf(w, "\nSandbox preserved at %s (--keep-sandbox).\n", sandbox)
 			return
 		}
 		// Sibling worktree dirs are created by `bosun init` under
@@ -102,7 +102,7 @@ func runTour(w io.Writer, r io.Reader, opts tourOpts) error {
 			}
 		}
 		_ = os.RemoveAll(sandbox)
-		fmt.Fprintf(w, "\nSandbox at %s removed.\n", sandbox)
+		_, _ = fmt.Fprintf(w, "\nSandbox at %s removed.\n", sandbox)
 	}
 	defer doCleanup()
 
@@ -114,7 +114,7 @@ func runTour(w io.Writer, r io.Reader, opts tourOpts) error {
 	defer signal.Stop(sigCh)
 	go func() {
 		<-sigCh
-		fmt.Fprintln(w, "\nbosun: tour aborted")
+		_, _ = fmt.Fprintln(w, "\nbosun: tour aborted")
 		doCleanup()
 		os.Exit(exitUserErr)
 	}()
@@ -134,7 +134,7 @@ func runTour(w io.Writer, r io.Reader, opts tourOpts) error {
 	}
 	waitForKey := func() error {
 		if auto {
-			fmt.Fprintln(w, "[BOSUN_TOUR_AUTO=1: continuing]")
+			_, _ = fmt.Fprintln(w, "[BOSUN_TOUR_AUTO=1: continuing]")
 			if autoStepPause > 0 {
 				time.Sleep(autoStepPause)
 			}
@@ -151,56 +151,56 @@ func runTour(w io.Writer, r io.Reader, opts tourOpts) error {
 		return nil
 	}
 
-	fmt.Fprintln(w, "bosun tour — a 5-minute guided round on a throwaway repo")
-	fmt.Fprintf(w, "Sandbox: %s\n\n", sandbox)
+	_, _ = fmt.Fprintln(w, "bosun tour — a 5-minute guided round on a throwaway repo")
+	_, _ = fmt.Fprintf(w, "Sandbox: %s\n\n", sandbox)
 
 	// ---- Step 1 ----
-	fmt.Fprintln(w, "── Step 1/5 ──────────────────────────────────────────────")
-	fmt.Fprintln(w, "Setting up a sandbox repo with three placeholder Go files...")
+	_, _ = fmt.Fprintln(w, "── Step 1/5 ──────────────────────────────────────────────")
+	_, _ = fmt.Fprintln(w, "Setting up a sandbox repo with three placeholder Go files...")
 	if err := setupTourSandboxRepo(sandbox); err != nil {
 		return internalErr("set up sandbox repo", err)
 	}
-	fmt.Fprintf(w, "Set up a sandbox repo at %s. Continue?\n", sandbox)
+	_, _ = fmt.Fprintf(w, "Set up a sandbox repo at %s. Continue?\n", sandbox)
 	if err := waitForKey(); err != nil {
 		return err
 	}
 
 	// ---- Step 2 ----
-	fmt.Fprintln(w, "\n── Step 2/5 ──────────────────────────────────────────────")
-	fmt.Fprintln(w, "Running `bosun init 2`:")
+	_, _ = fmt.Fprintln(w, "\n── Step 2/5 ──────────────────────────────────────────────")
+	_, _ = fmt.Fprintln(w, "Running `bosun init 2`:")
 	if err := runTourBosun(w, sandbox, bin, "init", "2"); err != nil {
 		return err
 	}
-	fmt.Fprintln(w, "\nTwo worktrees created. Each has its own branch off main.")
-	fmt.Fprintln(w, "The original repo (the one your editor is open on) is untouched.")
+	_, _ = fmt.Fprintln(w, "\nTwo worktrees created. Each has its own branch off main.")
+	_, _ = fmt.Fprintln(w, "The original repo (the one your editor is open on) is untouched.")
 	if err := waitForKey(); err != nil {
 		return err
 	}
 
 	// ---- Step 3 ----
-	fmt.Fprintln(w, "\n── Step 3/5 ──────────────────────────────────────────────")
-	fmt.Fprintln(w, "Simulating each session's work + committing on its branch...")
+	_, _ = fmt.Fprintln(w, "\n── Step 3/5 ──────────────────────────────────────────────")
+	_, _ = fmt.Fprintln(w, "Simulating each session's work + committing on its branch...")
 	if err := simulateTourEdits(sandbox); err != nil {
 		return internalErr("simulate session edits", err)
 	}
 	if err := commitTourEdits(sandbox); err != nil {
 		return internalErr("commit session work", err)
 	}
-	fmt.Fprintln(w, "Running `bosun status`:")
+	_, _ = fmt.Fprintln(w, "Running `bosun status`:")
 	if err := runTourBosun(w, sandbox, bin, "status"); err != nil {
 		return err
 	}
-	fmt.Fprintln(w, "\nEach session committed its change to its own branch.")
-	fmt.Fprintln(w, "Main is untouched. In a real run, agents would be doing")
-	fmt.Fprintln(w, "this work in parallel; bosun would track per-session state")
-	fmt.Fprintln(w, "(WORKING / DIRTY / DONE) live as agents wrote files.")
+	_, _ = fmt.Fprintln(w, "\nEach session committed its change to its own branch.")
+	_, _ = fmt.Fprintln(w, "Main is untouched. In a real run, agents would be doing")
+	_, _ = fmt.Fprintln(w, "this work in parallel; bosun would track per-session state")
+	_, _ = fmt.Fprintln(w, "(WORKING / DIRTY / DONE) live as agents wrote files.")
 	if err := waitForKey(); err != nil {
 		return err
 	}
 
 	// ---- Step 4 ----
-	fmt.Fprintln(w, "\n── Step 4/5 ──────────────────────────────────────────────")
-	fmt.Fprintln(w, "Running `bosun predict` against a non-overlapping plan:")
+	_, _ = fmt.Fprintln(w, "\n── Step 4/5 ──────────────────────────────────────────────")
+	_, _ = fmt.Fprintln(w, "Running `bosun predict` against a non-overlapping plan:")
 	planPath := filepath.Join(sandbox, "tour-plan.md")
 	if err := os.WriteFile(planPath, []byte(tourPlanMarkdown), 0o644); err != nil {
 		return internalErr("write tour plan", err)
@@ -208,45 +208,45 @@ func runTour(w io.Writer, r io.Reader, opts tourOpts) error {
 	if err := runTourBosun(w, sandbox, bin, "predict", planPath); err != nil {
 		return err
 	}
-	fmt.Fprintln(w, "\nNo overlap. Safe to proceed.")
+	_, _ = fmt.Fprintln(w, "\nNo overlap. Safe to proceed.")
 	if err := waitForKey(); err != nil {
 		return err
 	}
 
 	// ---- Step 5 ----
-	fmt.Fprintln(w, "\n── Step 5/5 ──────────────────────────────────────────────")
-	fmt.Fprintln(w, "Marking each session done, merging, cleaning up...")
+	_, _ = fmt.Fprintln(w, "\n── Step 5/5 ──────────────────────────────────────────────")
+	_, _ = fmt.Fprintln(w, "Marking each session done, merging, cleaning up...")
 	if err := runTourBosun(w, sandbox, bin, "done", "session-1", "-m", "tour session-1 ready"); err != nil {
 		return err
 	}
 	if err := runTourBosun(w, sandbox, bin, "done", "session-2", "-m", "tour session-2 ready"); err != nil {
 		return err
 	}
-	fmt.Fprintln(w, "\nRunning `bosun merge session-1`:")
+	_, _ = fmt.Fprintln(w, "\nRunning `bosun merge session-1`:")
 	if err := runTourBosun(w, sandbox, bin, "merge", "session-1"); err != nil {
 		return err
 	}
-	fmt.Fprintln(w, "\nRunning `bosun merge session-2`:")
+	_, _ = fmt.Fprintln(w, "\nRunning `bosun merge session-2`:")
 	if err := runTourBosun(w, sandbox, bin, "merge", "session-2"); err != nil {
 		return err
 	}
-	fmt.Fprintln(w, "\nMain branch's recent commits:")
+	_, _ = fmt.Fprintln(w, "\nMain branch's recent commits:")
 	if err := runTourGit(w, sandbox, "log", "--oneline", "-n", "5"); err != nil {
 		return err
 	}
-	fmt.Fprintln(w, "\nRunning `bosun cleanup`:")
+	_, _ = fmt.Fprintln(w, "\nRunning `bosun cleanup`:")
 	if err := runTourBosun(w, sandbox, bin, "cleanup"); err != nil {
 		return err
 	}
-	fmt.Fprintln(w, "\nBoth lanes landed on main. Worktrees torn down. You're back")
-	fmt.Fprintln(w, "where you started — except main now has the work both lanes")
-	fmt.Fprintln(w, "produced. That's bosun.")
+	_, _ = fmt.Fprintln(w, "\nBoth lanes landed on main. Worktrees torn down. You're back")
+	_, _ = fmt.Fprintln(w, "where you started — except main now has the work both lanes")
+	_, _ = fmt.Fprintln(w, "produced. That's bosun.")
 
 	// ---- Next steps ----
-	fmt.Fprintln(w, "\nNext steps:")
-	fmt.Fprintln(w, "  • README quickstart: README.md#quick-start")
-	fmt.Fprintln(w, "  • Brief recipe template: docs/brief-recipe-template.md")
-	fmt.Fprintln(w, "  • Auto-suggest a plan from a goal: bosun suggest \"<your goal>\"")
+	_, _ = fmt.Fprintln(w, "\nNext steps:")
+	_, _ = fmt.Fprintln(w, "  • README quickstart: README.md#quick-start")
+	_, _ = fmt.Fprintln(w, "  • Brief recipe template: docs/brief-recipe-template.md")
+	_, _ = fmt.Fprintln(w, "  • Auto-suggest a plan from a goal: bosun suggest \"<your goal>\"")
 
 	return nil
 }

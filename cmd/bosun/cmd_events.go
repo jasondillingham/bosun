@@ -154,7 +154,7 @@ func (p *eventsPrinter) onEvent(ev events.Event) {
 		// A line we can't decode is almost certainly schema drift or a
 		// corrupt record on disk; surfacing it to stderr keeps the
 		// stream usable but lets the operator know something's off.
-		fmt.Fprintf(os.Stderr, "bosun events: skip undecodable record: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "bosun events: skip undecodable record: %v\n", err)
 		return
 	}
 	if !p.cutoff.IsZero() && rec.At.Before(p.cutoff) {
@@ -173,9 +173,9 @@ func (p *eventsPrinter) onEvent(ev events.Event) {
 		if err != nil {
 			return
 		}
-		fmt.Fprintln(p.out, string(out))
+		_, _ = fmt.Fprintln(p.out, string(out))
 	} else {
-		fmt.Fprintln(p.out, formatEvent(rec))
+		_, _ = fmt.Fprintln(p.out, formatEvent(rec))
 	}
 
 	p.printed++

@@ -52,7 +52,7 @@ concurrent cleanup via the lockfile.`,
 			if err := tree.Adopt(label); err != nil {
 				return internalErr("adopt session", err)
 			}
-			fmt.Fprintf(os.Stdout, "bosun: adopted %s (was a sub-session of %s; now top-level)\n", label, parent)
+			_, _ = fmt.Fprintf(os.Stdout, "bosun: adopted %s (was a sub-session of %s; now top-level)\n", label, parent)
 			return nil
 		},
 	}

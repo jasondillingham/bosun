@@ -69,7 +69,7 @@ func exitCodeFor(err error) int {
 
 func main() {
 	if _, err := exec.LookPath("git"); err != nil {
-		fmt.Fprintln(os.Stderr, "bosun: git binary not found on PATH")
+		_, _ = fmt.Fprintln(os.Stderr, "bosun: git binary not found on PATH")
 		os.Exit(exitUserErr)
 	}
 

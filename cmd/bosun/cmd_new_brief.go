@@ -73,8 +73,8 @@ func runNewBrief(w io.Writer, pattern, out string, listPatterns bool) error {
 	if err := os.WriteFile(out, []byte(p.Body), 0o644); err != nil {
 		return internalErr("write "+out, err)
 	}
-	fmt.Fprintf(w, "Wrote %s pattern to %s.\n", p.Name, out)
-	fmt.Fprintf(w, "Next: review the plan, fill the {{placeholders}}, then run `bosun init --brief %s`.\n", out)
+	_, _ = fmt.Fprintf(w, "Wrote %s pattern to %s.\n", p.Name, out)
+	_, _ = fmt.Fprintf(w, "Next: review the plan, fill the {{placeholders}}, then run `bosun init --brief %s`.\n", out)
 	return nil
 }
 
@@ -84,7 +84,7 @@ func runListPatterns(w io.Writer) error {
 		return internalErr("load patterns", err)
 	}
 	for _, p := range patterns {
-		fmt.Fprintf(w, "%s: %s\n", p.Name, p.Description)
+		_, _ = fmt.Fprintf(w, "%s: %s\n", p.Name, p.Description)
 	}
 	return nil
 }

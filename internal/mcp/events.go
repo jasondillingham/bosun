@@ -104,7 +104,7 @@ func appendEventLine(path string, e Event) error {
 	// Create the parent directory on demand — .bosun/ may not exist yet on
 	// a freshly cloned repo before any claim/state file has been written.
 	if dir := filepath.Dir(path); dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
 			return fmt.Errorf("mkdir events parent: %w", err)
 		}
 	}

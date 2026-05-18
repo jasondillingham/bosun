@@ -119,7 +119,7 @@ func rescueSnapshot(rc *runCtx, s *session.Session) error {
 
 	ts := time.Now().UTC().Format("20060102T150405Z")
 	dest := filepath.Join(rc.repoRoot, rescueDirRelative, s.Label+"-"+ts)
-	if err := os.MkdirAll(dest, 0o755); err != nil {
+	if err := os.MkdirAll(dest, 0o750); err != nil {
 		return internalErr("create rescue dir", err)
 	}
 
@@ -164,7 +164,7 @@ func copyRescueFiles(worktree, dest string, lines []git.PorcelainStatusLine) (in
 			if terr != nil {
 				continue
 			}
-			if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
+			if err := os.MkdirAll(filepath.Dir(out), 0o750); err != nil {
 				return copied, err
 			}
 			if err := os.Symlink(target, out); err != nil {
@@ -181,7 +181,7 @@ func copyRescueFiles(worktree, dest string, lines []git.PorcelainStatusLine) (in
 			copied += n
 			continue
 		}
-		if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(out), 0o750); err != nil {
 			return copied, err
 		}
 		if err := copyFile(src, out, info.Mode().Perm()); err != nil {
@@ -207,13 +207,13 @@ func copyTree(src, dest string) (int, error) {
 		out := filepath.Join(dest, rel)
 		switch {
 		case info.IsDir():
-			return os.MkdirAll(out, 0o755)
+			return os.MkdirAll(out, 0o750)
 		case info.Mode()&os.ModeSymlink != 0:
 			target, terr := os.Readlink(path)
 			if terr != nil {
 				return nil
 			}
-			if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
+			if err := os.MkdirAll(filepath.Dir(out), 0o750); err != nil {
 				return err
 			}
 			if err := os.Symlink(target, out); err != nil {
@@ -221,7 +221,7 @@ func copyTree(src, dest string) (int, error) {
 			}
 			n++
 		default:
-			if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
+			if err := os.MkdirAll(filepath.Dir(out), 0o750); err != nil {
 				return err
 			}
 			if err := copyFile(path, out, info.Mode().Perm()); err != nil {
@@ -260,14 +260,14 @@ func copyFile(src, dest string, mode os.FileMode) error {
 func rescueLaunch(rc *runCtx, s *session.Session) error {
 	env := map[string]string{}
 	if info, err := ensureMcp(rc.repoRoot); err != nil {
-		fmt.Fprintf(os.Stderr, "bosun: warning: MCP autostart failed: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "bosun: warning: MCP autostart failed: %v\n", err)
 	} else {
 		env[bosunmcp.SocketEnv] = info.socketPath
 		switch {
 		case info.spawned:
-			fmt.Fprintf(os.Stdout, "Started MCP server (pid %d) on %s\n", info.pid, info.socketPath)
+			_, _ = fmt.Fprintf(os.Stdout, "Started MCP server (pid %d) on %s\n", info.pid, info.socketPath)
 		case info.pid != 0:
-			fmt.Fprintf(os.Stdout, "Reusing MCP server (pid %d) on %s\n", info.pid, info.socketPath)
+			_, _ = fmt.Fprintf(os.Stdout, "Reusing MCP server (pid %d) on %s\n", info.pid, info.socketPath)
 		}
 	}
 
@@ -281,6 +281,6 @@ func rescueLaunch(rc *runCtx, s *session.Session) error {
 	if err != nil {
 		return internalErr("rescue launch "+s.Label, err)
 	}
-	fmt.Fprintf(os.Stdout, "bosun: rescued %s via %s — terminal is yours\n", s.Label, strategy)
+	_, _ = fmt.Fprintf(os.Stdout, "bosun: rescued %s via %s — terminal is yours\n", s.Label, strategy)
 	return nil
 }

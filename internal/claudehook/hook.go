@@ -146,7 +146,7 @@ func HandlePreToolUse(r io.Reader, stderr io.Writer, opts HandleOptions) error {
 
 	relPath, err := relativizePath(worktreeRoot, path)
 	if err != nil {
-		fmt.Fprintf(stderr, "bosun: hook: relativize path: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "bosun: hook: relativize path: %v\n", err)
 		return nil
 	}
 	if relPath == "" {
@@ -156,7 +156,7 @@ func HandlePreToolUse(r io.Reader, stderr io.Writer, opts HandleOptions) error {
 	}
 
 	if err := opts.Claim(mainRoot, label, []string{relPath}); err != nil {
-		fmt.Fprintf(stderr, "bosun: hook: claim write failed: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "bosun: hook: claim write failed: %v\n", err)
 	}
 	return nil
 }

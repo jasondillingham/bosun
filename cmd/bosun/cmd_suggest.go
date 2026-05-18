@@ -126,7 +126,7 @@ func runSuggest(ctx context.Context, w io.Writer, repoRoot string, opts suggestO
 		if err != nil {
 			return internalErr("marshal repo intel", err)
 		}
-		fmt.Fprintln(w, string(data))
+		_, _ = fmt.Fprintln(w, string(data))
 		return nil
 	}
 
@@ -149,20 +149,20 @@ func runSuggest(ctx context.Context, w io.Writer, repoRoot string, opts suggestO
 		var cycleErr *suggest.CycleError
 		switch {
 		case errors.As(vErr, &overlapErr):
-			fmt.Fprintf(w, "bosun: validator overlap: lane %q pattern %q overlaps lane %q pattern %q\n",
+			_, _ = fmt.Fprintf(w, "bosun: validator overlap: lane %q pattern %q overlaps lane %q pattern %q\n",
 				overlapErr.LaneA, overlapErr.PatternA, overlapErr.LaneB, overlapErr.PatternB)
 		case errors.As(vErr, &cycleErr):
-			fmt.Fprintf(w, "bosun: validator cycle: %s\n", strings.Join(cycleErr.Cycle, " → "))
+			_, _ = fmt.Fprintf(w, "bosun: validator cycle: %s\n", strings.Join(cycleErr.Cycle, " → "))
 		default:
 			return userErr("validate plan: %v", vErr)
 		}
 		if !opts.allowOverlaps {
 			return userErr("plan failed validation; rerun with --allow-overlaps to write it anyway")
 		}
-		fmt.Fprintln(w, "bosun: --allow-overlaps set, writing plan despite validation error")
+		_, _ = fmt.Fprintln(w, "bosun: --allow-overlaps set, writing plan despite validation error")
 	}
 	for _, msg := range warnings {
-		fmt.Fprintf(w, "bosun: warning: %s\n", msg)
+		_, _ = fmt.Fprintf(w, "bosun: warning: %s\n", msg)
 	}
 
 	md := suggest.RenderPlanMarkdown(proposal)
@@ -170,7 +170,7 @@ func runSuggest(ctx context.Context, w io.Writer, repoRoot string, opts suggestO
 		return internalErr("write plan "+opts.out, err)
 	}
 
-	fmt.Fprintf(w, "Wrote plan to %s (%d sessions).\n", opts.out, len(proposal.Sessions))
-	fmt.Fprintf(w, "Next: review the plan, then run `bosun init --brief %s`.\n", opts.out)
+	_, _ = fmt.Fprintf(w, "Wrote plan to %s (%d sessions).\n", opts.out, len(proposal.Sessions))
+	_, _ = fmt.Fprintf(w, "Next: review the plan, then run `bosun init --brief %s`.\n", opts.out)
 	return nil
 }

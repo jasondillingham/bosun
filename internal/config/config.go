@@ -15,13 +15,13 @@ import (
 )
 
 const (
-	DefaultBaseBranch        = "main"
-	DefaultSessionPrefix     = "bosun"
-	DefaultSuffixPattern     = "-bosun-{N}"
-	DefaultSessionCount      = 4
-	DefaultIsolateCache      = false
-	DefaultLauncherStrategy  = "auto"
-	DefaultVerifyCmd         = "make check"
+	DefaultBaseBranch       = "main"
+	DefaultSessionPrefix    = "bosun"
+	DefaultSuffixPattern    = "-bosun-{N}"
+	DefaultSessionCount     = 4
+	DefaultIsolateCache     = false
+	DefaultLauncherStrategy = "auto"
+	DefaultVerifyCmd        = "make check"
 	// DefaultGitOpTimeoutSeconds is the per-operation timeout applied to
 	// every `git` subprocess by internal/git.Client. Catches the
 	// silent-init-hang case where `git worktree add` blocks indefinitely

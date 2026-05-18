@@ -3492,7 +3492,6 @@ func TestScenario_PredictMissingPlan_ExitsNonZero(t *testing.T) {
 	}
 }
 
-
 // --- v0.6: shared fake-agent helper (used by merge/remove/cleanup tests) ---
 
 // startFakeAgent execs the test-built "claude" binary (compiled by

@@ -139,14 +139,14 @@ func TestInspect_LanguageDetection(t *testing.T) {
 
 func TestInspect_FileCountAndHistogram(t *testing.T) {
 	files := map[string]string{
-		"go.mod":            "module x\n\ngo 1.23\n",
-		"a.go":              "package x\n",
-		"b.go":              "package x\n",
-		"c.go":              "package x\n",
-		"docs/readme.md":    "hi\n",
-		"docs/CHANGES.md":   "hi\n",
-		"Makefile":          "build:\n\techo ok\n",
-		"internal/x/x.go":   "package x\n",
+		"go.mod":          "module x\n\ngo 1.23\n",
+		"a.go":            "package x\n",
+		"b.go":            "package x\n",
+		"c.go":            "package x\n",
+		"docs/readme.md":  "hi\n",
+		"docs/CHANGES.md": "hi\n",
+		"Makefile":        "build:\n\techo ok\n",
+		"internal/x/x.go": "package x\n",
 	}
 	repo := fakeRepo(t, files)
 	intel, err := Inspect(repo)
@@ -179,17 +179,17 @@ func TestInspect_FileCountAndHistogram(t *testing.T) {
 
 func TestInspect_TopDirsSkipsHiddenAndVendor(t *testing.T) {
 	files := map[string]string{
-		"go.mod":                        "module x\n\ngo 1.23\n",
-		"cmd/foo/main.go":               "package main\n",
-		"cmd/bar/main.go":               "package main\n",
-		"internal/a/a.go":               "package a\n",
-		"internal/b/b.go":               "package b\n",
-		"internal/c/c.go":               "package c\n",
-		"docs/readme.md":                "hi\n",
-		"vendor/dep/file.go":            "package dep\n",
-		"node_modules/x/index.js":       "x\n",
-		".github/workflows/ci.yml":      "ci\n",
-		"top.go":                        "package x\n",
+		"go.mod":                   "module x\n\ngo 1.23\n",
+		"cmd/foo/main.go":          "package main\n",
+		"cmd/bar/main.go":          "package main\n",
+		"internal/a/a.go":          "package a\n",
+		"internal/b/b.go":          "package b\n",
+		"internal/c/c.go":          "package c\n",
+		"docs/readme.md":           "hi\n",
+		"vendor/dep/file.go":       "package dep\n",
+		"node_modules/x/index.js":  "x\n",
+		".github/workflows/ci.yml": "ci\n",
+		"top.go":                   "package x\n",
 	}
 	repo := fakeRepo(t, files)
 	intel, err := Inspect(repo)
@@ -318,8 +318,8 @@ func TestInspect_TestLayoutHints(t *testing.T) {
 		{
 			name: "go co-located",
 			files: map[string]string{
-				"go.mod":     "module x\n\ngo 1.23\n",
-				"foo.go":     "package x\n",
+				"go.mod":      "module x\n\ngo 1.23\n",
+				"foo.go":      "package x\n",
 				"foo_test.go": "package x\n",
 			},
 			want: []string{"Go tests co-located"},
@@ -327,9 +327,9 @@ func TestInspect_TestLayoutHints(t *testing.T) {
 		{
 			name: "python tests dir",
 			files: map[string]string{
-				"pyproject.toml":   "[project]\nname='x'\n",
-				"src/x.py":         "x = 1\n",
-				"tests/test_x.py":  "def test_x(): pass\n",
+				"pyproject.toml":  "[project]\nname='x'\n",
+				"src/x.py":        "x = 1\n",
+				"tests/test_x.py": "def test_x(): pass\n",
 			},
 			want: []string{"Python-style tests dir"},
 		},

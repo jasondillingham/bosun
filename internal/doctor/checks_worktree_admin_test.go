@@ -95,7 +95,7 @@ func TestCheckWorktreeAdminCorruption_FixReapsPhantoms(t *testing.T) {
 	// Simulates the issue #15 corruption shape end-to-end: heal-after-fix.
 	repo := t.TempDir()
 	mkHealthyAdmin(t, repo, "repo-bosun-1")
-	mkBrokenAdmin(t, repo, "repo-bosun-1 2") // phantom
+	mkBrokenAdmin(t, repo, "repo-bosun-1 2")            // phantom
 	brokenDir := mkBrokenAdmin(t, repo, "repo-bosun-2") // broken real
 
 	res := CheckWorktreeAdminCorruption(context.Background(), repo)

@@ -46,7 +46,7 @@ const (
 // any duplicates that slip through.
 func EnsureSpotlightMarker(repoRoot string) error {
 	dir := filepath.Join(repoRoot, bosunDirRelative)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("mkdir %s: %w", dir, err)
 	}
 	marker := filepath.Join(dir, spotlightMarkerName)
@@ -110,7 +110,7 @@ func (s *Store) path(sessionName string, suffix string) string {
 func (s *Store) MarkDone(sessionName, message string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := os.MkdirAll(s.dir(), 0o755); err != nil {
+	if err := os.MkdirAll(s.dir(), 0o750); err != nil {
 		return fmt.Errorf("mkdir %s: %w", s.dir(), err)
 	}
 	return lockfile.WithLock(filepath.Join(s.dir(), ".lock"), func() error {
@@ -128,7 +128,7 @@ func (s *Store) MarkDone(sessionName, message string) error {
 func (s *Store) MarkStuck(sessionName, message string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := os.MkdirAll(s.dir(), 0o755); err != nil {
+	if err := os.MkdirAll(s.dir(), 0o750); err != nil {
 		return fmt.Errorf("mkdir %s: %w", s.dir(), err)
 	}
 	return lockfile.WithLock(filepath.Join(s.dir(), ".lock"), func() error {
@@ -155,7 +155,7 @@ func (s *Store) MarkStuck(sessionName, message string) error {
 func (s *Store) WriteAttachedPID(sessionName string, pid int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := os.MkdirAll(s.dir(), 0o755); err != nil {
+	if err := os.MkdirAll(s.dir(), 0o750); err != nil {
 		return fmt.Errorf("mkdir %s: %w", s.dir(), err)
 	}
 	return lockfile.WithLock(filepath.Join(s.dir(), ".lock"), func() error {
@@ -243,7 +243,7 @@ func (s *Store) Clear(sessionName string) error {
 func (s *Store) WriteHeartbeat(sessionName string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := os.MkdirAll(s.dir(), 0o755); err != nil {
+	if err := os.MkdirAll(s.dir(), 0o750); err != nil {
 		return fmt.Errorf("mkdir %s: %w", s.dir(), err)
 	}
 	return lockfile.WithLock(filepath.Join(s.dir(), ".lock"), func() error {

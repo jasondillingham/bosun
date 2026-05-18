@@ -117,17 +117,17 @@ func TestValidateLabel(t *testing.T) {
 	// characters that would tangle the derived `<repo>-bosun-<label>` path
 	// or any shell call site downstream.
 	bad := []string{
-		"",                 // empty
-		"Auth",             // uppercase
-		"AUTH",             // all caps
-		"1auth",            // starts with digit
-		"-auth",            // leading dash
-		"auth-",            // trailing dash
-		"auth--storage",    // consecutive dashes
-		"session-",         // trailing dash via "session-" prefix
-		"auth!",            // disallowed punctuation
-		"auth_storage",     // underscore
-		"5",                // bare number (route through ParseLabel)
+		"",              // empty
+		"Auth",          // uppercase
+		"AUTH",          // all caps
+		"1auth",         // starts with digit
+		"-auth",         // leading dash
+		"auth-",         // trailing dash
+		"auth--storage", // consecutive dashes
+		"session-",      // trailing dash via "session-" prefix
+		"auth!",         // disallowed punctuation
+		"auth_storage",  // underscore
+		"5",             // bare number (route through ParseLabel)
 		"0",
 		"Ωmega",            // non-ASCII letter — survives on macOS/Linux but tangles git-for-windows
 		"café",             // accented — same concern

@@ -173,7 +173,7 @@ func (s *Server) Listen(socketPath string) error {
 	// t.TempDir() + DefaultSocketPath() supply a tmp root with no
 	// .bosun/ subdir, and bind: no such file or directory is the result.
 	// MkdirAll is idempotent — no-op when the dir already exists.
-	if err := os.MkdirAll(filepath.Dir(socketPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(socketPath), 0o750); err != nil {
 		return fmt.Errorf("mkdir socket parent: %w", err)
 	}
 

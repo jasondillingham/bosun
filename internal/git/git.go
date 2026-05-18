@@ -660,10 +660,10 @@ func (c *Client) DirtyCount(ctx context.Context, dir string) (int, error) {
 
 // LogEntry is one row from `git log --format=...`.
 type LogEntry struct {
-	ShortSHA   string
-	Unix       int64
-	Relative   string
-	Subject    string
+	ShortSHA string
+	Unix     int64
+	Relative string
+	Subject  string
 }
 
 // LastCommit returns the most recent commit on HEAD in dir. Returns (nil, nil) if there are no commits ahead.

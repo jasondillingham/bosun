@@ -126,15 +126,15 @@ func TestValidate_LabelCharset(t *testing.T) {
 
 		// Invalid labels — same rules session.ValidateLabel enforces.
 		{"", true},
-		{"1session", true},        // starts with digit
-		{"session-", true},        // trailing dash
-		{"-session", true},        // leading dash
-		{"Auth", true},            // uppercase
-		{"auth--handler", true},   // consecutive dashes
-		{"session_1", true},       // underscore
-		{"session.1", true},       // dot
-		{"session 1", true},       // space
-		{"session/1", true},       // slash
+		{"1session", true},      // starts with digit
+		{"session-", true},      // trailing dash
+		{"-session", true},      // leading dash
+		{"Auth", true},          // uppercase
+		{"auth--handler", true}, // consecutive dashes
+		{"session_1", true},     // underscore
+		{"session.1", true},     // dot
+		{"session 1", true},     // space
+		{"session/1", true},     // slash
 	}
 	for _, tt := range tests {
 		t.Run(tt.label, func(t *testing.T) {

@@ -450,10 +450,10 @@ func TestRenderText_NoTreeForcesFlatOrder(t *testing.T) {
 // math stays stable regardless of count.
 func TestRenderText_SubtaskCounter(t *testing.T) {
 	for _, tc := range []struct {
-		name      string
-		count     int
-		wantHave  []string
-		wantMiss  []string
+		name     string
+		count    int
+		wantHave []string
+		wantMiss []string
 	}{
 		{
 			name:     "zero — no suffix",
@@ -476,9 +476,9 @@ func TestRenderText_SubtaskCounter(t *testing.T) {
 				{
 					Number: 1, Name: "session-1", Label: "session-1",
 					Branch: "bosun/session-1",
-					Path: "/code/wt-1", State: session.StateWorking,
-					Ahead: 1,
-					Last: &git.LogEntry{ShortSHA: "abcd", Relative: "5m ago", Subject: "fan out audit"},
+					Path:   "/code/wt-1", State: session.StateWorking,
+					Ahead:    1,
+					Last:     &git.LogEntry{ShortSHA: "abcd", Relative: "5m ago", Subject: "fan out audit"},
 					Subtasks: tc.count,
 				},
 			}

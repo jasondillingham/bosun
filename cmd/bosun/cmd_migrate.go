@@ -86,9 +86,9 @@ func runMigrate(dryRun bool) error {
 		// that's harder to reason about than the original; better to
 		// stop and ask them to clean up first.
 		var b strings.Builder
-		fmt.Fprintf(&b, "bosun: cannot migrate — %d session(s) have BOTH the legacy and new-shape paths on disk:\n", len(conflicts))
+		_, _ = fmt.Fprintf(&b, "bosun: cannot migrate — %d session(s) have BOTH the legacy and new-shape paths on disk:\n", len(conflicts))
 		for _, c := range conflicts {
-			fmt.Fprintf(&b, "  %s: legacy=%s new=%s\n", c.label, c.from, c.to)
+			_, _ = fmt.Fprintf(&b, "  %s: legacy=%s new=%s\n", c.label, c.from, c.to)
 		}
 		b.WriteString("Decide which to keep, remove the other manually, then re-run `bosun migrate`.")
 		return userErr("%s", b.String())

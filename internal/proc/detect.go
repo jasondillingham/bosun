@@ -69,14 +69,14 @@ func (GopsutilLister) List() ([]ProcInfo, error) {
 		name, err := p.Name()
 		if err != nil {
 			if debug {
-				fmt.Fprintf(os.Stderr, "proc: pid %d: name unavailable: %v\n", p.Pid, err)
+				_, _ = fmt.Fprintf(os.Stderr, "proc: pid %d: name unavailable: %v\n", p.Pid, err)
 			}
 			continue
 		}
 		cwd, err := p.Cwd()
 		if err != nil {
 			if debug && IsAgent(name) {
-				fmt.Fprintf(os.Stderr, "proc: pid %d (%s): cwd unavailable: %v — agent candidate skipped\n", p.Pid, name, err)
+				_, _ = fmt.Fprintf(os.Stderr, "proc: pid %d (%s): cwd unavailable: %v — agent candidate skipped\n", p.Pid, name, err)
 			}
 			continue
 		}
@@ -128,7 +128,7 @@ func RunningWith(l Lister, isAgent func(name string) bool, worktreePath string) 
 			return p.PID, true, nil
 		}
 		if debug {
-			fmt.Fprintf(os.Stderr, "proc: pid %d (%s) cwd=%s does not match target=%s\n", p.PID, p.Name, got, target)
+			_, _ = fmt.Fprintf(os.Stderr, "proc: pid %d (%s) cwd=%s does not match target=%s\n", p.PID, p.Name, got, target)
 		}
 	}
 	return 0, false, nil

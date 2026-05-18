@@ -21,7 +21,7 @@ import (
 // and an operator-overridable threshold could be wired in later without
 // reshaping callers.
 var (
-	DefaultLoadWarnThreshold       = 5.0
+	DefaultLoadWarnThreshold        = 5.0
 	DefaultLoadAveragePauseDuration = 2 * time.Second
 )
 
@@ -67,7 +67,7 @@ func LoadAverage() (float64, error) {
 func CheckLoad(out io.Writer, op string, threshold float64, pause time.Duration) bool {
 	load, err := LoadAverage()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "bosun: warning: load-average check failed: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "bosun: warning: load-average check failed: %v\n", err)
 		return false
 	}
 	if load <= threshold {

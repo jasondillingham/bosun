@@ -2,8 +2,6 @@
 package tui
 
 import (
-	"fmt"
-	"io"
 	"os"
 
 	"golang.org/x/term"
@@ -49,9 +47,3 @@ func Green() string  { return green }
 func Yellow() string { return yellow }
 func Red() string    { return red }
 func Dim() string    { return dim }
-
-// ClearScreen writes the ANSI "clear screen + home cursor" sequence to w.
-// Used by `bosun status --watch` to refresh in place.
-func ClearScreen(w io.Writer) {
-	fmt.Fprint(w, "\x1b[2J\x1b[H")
-}

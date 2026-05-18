@@ -271,50 +271,25 @@ func TestScenario_StatusJSONSchemaStable(t *testing.T) {
 	}
 }
 
-func TestScenario_StatusWatchRendersAndExitsCleanlyOnSIGINT(t *testing.T) {
-	// Drive `bosun status --watch --interval 1` end-to-end: start the
-	// process, wait long enough for at least one full render, send SIGINT,
-	// and verify the process exits 0 with the expected output. The default
-	// Go signal handler would exit non-zero on SIGINT, so a clean 0 here
-	// proves the signal.NotifyContext + return-nil-on-cancel plumbing.
+func TestScenario_StatusWatchRefusesNonTTY(t *testing.T) {
+	// `bosun status --watch` refuses when stdout isn't a terminal: the
+	// alt-screen / cursor-hide escape dance produces garbage in a file
+	// or pager, so the operator gets pointed at --json instead. The
+	// per-frame loop logic (ANSI escapes, footer, SIGINT cleanup) is
+	// covered by the unit tests in cmd_status_test.go — those use a
+	// bytes.Buffer + cancelled context instead of a subprocess.
 	s := newScenario(t)
 	s.Bosun("init", "1")
 
-	cmd := exec.Command(bosunBin, "status", "--watch", "--interval", "1")
-	cmd.Dir = s.repo
-	var buf bytes.Buffer
-	cmd.Stdout = &buf
-	cmd.Stderr = &buf
-
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start bosun status --watch: %v", err)
+	out, err := s.BosunErr("status", "--watch")
+	if err == nil {
+		t.Fatalf("status --watch should refuse when stdout isn't a TTY:\n%s", out)
 	}
-
-	// ~1.2s gives the first render time to flush before we interrupt.
-	time.Sleep(1200 * time.Millisecond)
-
-	if err := cmd.Process.Signal(os.Interrupt); err != nil {
-		t.Fatalf("signal SIGINT: %v", err)
+	if !strings.Contains(out, "terminal") {
+		t.Errorf("expected error mentioning terminal requirement:\n%s", out)
 	}
-
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("bosun status --watch did not exit 0 on SIGINT: %v\n%s", err, buf.String())
-		}
-	case <-time.After(5 * time.Second):
-		_ = cmd.Process.Kill()
-		t.Fatalf("bosun status --watch did not exit within 5s of SIGINT:\n%s", buf.String())
-	}
-
-	out := buf.String()
-	if !strings.Contains(out, "session-1") {
-		t.Errorf("expected at least one render containing session-1:\n%s", out)
-	}
-	if !strings.Contains(out, "\x1b[2J\x1b[H") {
-		t.Errorf("expected clear-screen escape in watch output:\n%q", out)
+	if !strings.Contains(out, "--json") {
+		t.Errorf("expected error pointing at --json alternative:\n%s", out)
 	}
 }
 

@@ -57,8 +57,8 @@ func newStatusCmd() *cobra.Command {
 				if jsonOut {
 					return userErr("--watch and --json are mutually exclusive")
 				}
-				if interval < 1 {
-					return userErr("--interval must be >= 1 (seconds)")
+				if interval < 1 || interval > 60 {
+					return userErr("--interval must be between 1 and 60 seconds (got %d)", interval)
 				}
 				return runStatusWatch(opts, time.Duration(interval)*time.Second)
 			}
@@ -227,33 +227,84 @@ func recentEvents(repoRoot string) []status.Event {
 	return out
 }
 
+// ANSI escape sequences used by --watch. Pulled out as named constants
+// so the tests can assert on them without re-hardcoding the bytes.
+const (
+	// ansiAltScreenEnter switches to the alternate screen buffer so the
+	// regular scrollback is preserved across the watch session.
+	ansiAltScreenEnter = "\x1b[?1049h"
+	// ansiAltScreenExit restores the regular screen buffer.
+	ansiAltScreenExit = "\x1b[?1049l"
+	// ansiCursorHide hides the cursor for the duration of the loop.
+	ansiCursorHide = "\x1b[?25l"
+	// ansiCursorShow restores the cursor.
+	ansiCursorShow = "\x1b[?25h"
+	// ansiCursorHome moves the cursor to row 1, column 1.
+	ansiCursorHome = "\x1b[H"
+	// ansiClearDown clears the screen from the cursor to the end.
+	ansiClearDown = "\x1b[J"
+)
+
 // runStatusWatch wires up SIGINT handling and drives the watch loop against
 // stdout. SIGINT cancels the context, the loop returns nil, and the process
 // exits 0 — instead of the non-zero exit Go's default signal handling
 // produces.
 func runStatusWatch(opts statusOpts, interval time.Duration) error {
+	if !tui.IsTTY() {
+		return userErr("--watch requires a terminal; use `bosun status --json` for pipe-friendly output")
+	}
 	rc, err := loadCtx()
 	if err != nil {
 		return err
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
-	return watchStatusLoop(ctx, os.Stdout, rc, opts, interval)
+
+	w := os.Stdout
+	fmt.Fprint(w, ansiAltScreenEnter+ansiCursorHide)
+	defer fmt.Fprint(w, ansiCursorShow+ansiAltScreenExit)
+
+	return watchStatusLoop(ctx, w, rc, opts, interval)
 }
 
 // watchStatusLoop is the testable loop body: clear screen, render, wait for
 // either the next tick or ctx cancellation, repeat. Returns nil on
 // cancellation (so SIGINT translates to exit 0).
+//
+// The alt-screen entry / cursor hide / cleanup sequences live in
+// runStatusWatch — the loop itself only emits per-frame escapes so a test
+// driving it with a bytes.Buffer can assert on the frame content without
+// pretending to manage the alt-screen lifecycle.
 func watchStatusLoop(ctx context.Context, w io.Writer, rc *runCtx, opts statusOpts, interval time.Duration) error {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
 	for {
-		tui.ClearScreen(w)
-		if err := renderStatusOnce(w, rc, opts); err != nil {
+		if err := renderWatchFrame(w, rc, opts, interval); err != nil {
 			return err
 		}
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-time.After(interval):
+		case <-ticker.C:
 		}
 	}
+}
+
+// renderWatchFrame draws one frame: cursor home + clear-down, the same
+// content `bosun status` would emit, then the footer hint. Factored out
+// of the loop so tests can verify a single frame's output without
+// driving the ticker.
+func renderWatchFrame(w io.Writer, rc *runCtx, opts statusOpts, interval time.Duration) error {
+	fmt.Fprint(w, ansiCursorHome+ansiClearDown)
+	if err := renderStatusOnce(w, rc, opts); err != nil {
+		return err
+	}
+	fmt.Fprintf(w, "\nPress Ctrl-C to exit. Refreshes every %s.\n", formatRefreshInterval(interval))
+	return nil
+}
+
+// formatRefreshInterval renders the per-frame footer's interval as e.g.
+// "2s". Whole seconds only — the CLI flag is an int seconds value.
+func formatRefreshInterval(d time.Duration) string {
+	return fmt.Sprintf("%ds", int(d/time.Second))
 }

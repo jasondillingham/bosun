@@ -177,14 +177,21 @@ bosun serve [--port N]      HTTP dashboard with SSE event stream
 - Git on PATH (>= 2.40)
 - Go 1.25+ to build (the MCP SDK requires it)
 
-Runs on macOS, Linux, and Windows (x86_64 + arm64 binaries available).
-**macOS users:** keep the bosun project **out of** `~/Documents/` and `~/Desktop/` — both are iCloud-synced by default, which creates phantom-duplicate files inside worktrees. `bosun doctor` warns when it detects this. See [`docs/macos-setup.md`](./docs/macos-setup.md) for the full first-time-setup guide and the recipe to relocate an existing repo out of iCloud.
+## Supported platforms
+
+| OS | Status | Notes |
+|---|---|---|
+| **macOS** (Intel + Apple Silicon) | ✓ primary development target | iCloud-path refusal in `bosun init`; see below |
+| **Linux** (x86_64) | ✓ tested on Ubuntu 25.04 (kernel 6.14) | `bosun tour` + `bosun doctor` + full init/merge/cleanup cycle validated end-to-end |
+| **Windows** | ⚠ not yet supported in v0.10 | Builds compile but the terminal launcher only knows about Ghostty / Terminal.app / gnome-terminal. Windows Terminal / cmd.exe / WSL integration is post-v0.10 work. Compile-only CI may land sooner. |
+
+**macOS users:** keep the bosun project **out of** `~/Documents/`, `~/Desktop/`, and `~/Library/Mobile Documents/` — all are iCloud-synced by default, and iCloud File Provider strips git's worktree admin metadata under load. `bosun init` refuses these paths by default (override with `--force-icloud` if you've disabled iCloud sync for the dir). `bosun doctor` catches and recovers the corruption shape if you hit it. See [`docs/macos-setup.md`](./docs/macos-setup.md) for the full guide and the recipe to relocate an existing repo out of iCloud.
 
 ## Status
 
-**Validated.** The safety contract held through SIGBUS, CRASHED state, corrupted-gitdir recovery, and `merge --undo` reflog reset during the v0.8 trial #2 against `homelab-status-mcp` — see [`docs/v0.8-trial-findings.md`](./docs/v0.8-trial-findings.md). 22 packages currently green under `make check`; `make fuzz` and `make stress` clean.
+**Validated end-to-end.** Safety contract held across SIGBUS, CRASHED state, corrupted-gitdir recovery, and `merge --undo` reflog reset in trial #2 (`docs/v0.8-trial-findings.md`). The v0.9 spawn-tree machinery — hierarchical labels, `merge --tree` post-order cascade, dotted-label worktree naming — held in trial #3c (`docs/v0.9-trial-3c-findings.md`). Issue #15 (macOS iCloud worktree-admin corruption) has a foundational fix: `bosun init` refuses iCloud-managed paths by default, `bosun doctor` detects the corruption shape, and `bosun doctor --fix` recovers it. The fix's empirical validation gate is "a real user hits this and the doctor catches it" — see issue #15. All 23 packages green under `make check`; `make fuzz` and `make stress` clean; cross-OS validated on macOS + Ubuntu 25.04.
 
-**Not yet validated.** Zero external users — bosun has not been used by anyone other than the maintainer on their own repo. v0.9's agent-spawn flow (`bosun_spawn`) has not been exercised externally; trial #3 is queued (see issue #7) and the public release of v0.9 is gated on it. v1.0 will be gated on accumulated external usage signal, not on shipping more features.
+**Not yet validated.** Zero external users. Three v0.9 trials (#3, #3a, #3b, #3c) ran on a maintainer-owned repo on a maintainer's machine. The "stranger picked it up and shipped real work" signal flips this from "compelling prototype" to "this graduates." Until then: treat the safety contract as load-bearing trust and the rest as well-tested-but-unprovenfor your specific workflow.
 
 See `RELEASES.md` for full version history, `SPEC.md` for the v0.1 implementation spec, and `CLAUDE.md` if you're a Claude Code session contributing to this codebase.
 
@@ -197,7 +204,9 @@ See `RELEASES.md` for full version history, `SPEC.md` for the v0.1 implementatio
 - **v0.5** — All hook call-sites wired (pre-merge / post-merge / pre-cleanup / post-cleanup / pre-remove), kickoff robustness (per-op timeouts, progress reporting), predictive conflict analysis (`bosun predict`), `bosun suggest` brief authoring.
 - **v0.6** — Resilience anchor: agent-liveness gate on destructive ops, pre-merge `git fsck`, reflog-based `merge --undo`, CRASHED state + `bosun rescue`, heartbeat MCP tool, hook timeout enforcement, init resumability (`bosun init --resume`), README "Safety contract" section.
 - **v0.7** — Polish round: launch UX, predictor accuracy (Files-avoid exclusion), pre-flight robustness (stale-branch refusal in init, load check at merge), state+rescue resilience (Spotlight phantom filter, corrupted-gitdir recovery, salvage on `remove --force`). Plus a bug-hunt wave: proc detection via cmdline, MCP goroutine leak, rescue salvage error surfacing, cleanup/merge silent-error fixes. Refactors: `internal/phantom`, `internal/lockfile`. Fuzz + stress test targets via `make fuzz` and `make stress`.
-- **v0.8** *(in progress)* — Public-launch readiness: `bosun doctor` system preflight, `init --suggest` for one-step onboarding, external-repo trial #2, CI on macOS/Linux/Windows, README + LICENSE + RELEASES.md catchup. After v0.8: the repo flips public.
+- **v0.8** — Public-launch readiness: `bosun doctor` system preflight, `init --suggest` for one-step onboarding, external-repo trial #2, README + LICENSE + RELEASES.md catchup.
+- **v0.9** — Agent-driven coordination: `bosun_spawn` MCP tool, spawn-tree data layer with hierarchical session labels (`session-1.auth`), tree-shaped `status` / `show` / `list`, `cleanup --tree` cascade, `merge --tree` post-order, PreToolUse hook for auto-claim.
+- **v0.10** — "Somewhat solid from day one." Phase 1 macOS reliability: detect + refuse iCloud-managed paths, recover from issue #15 admin-dir corruption via `bosun doctor --fix`. Phase 2A agent UX: `bosun_spawn` context-isolation pitch reframe, `bosun_check_tree` tool, structured `.bosun/audit/spawn.log`, v1.0 sub-task spec. Phase 3 first-5-minutes: `bosun tour` interactive walkthrough, `bosun new-brief --pattern` scaffolding, README quickstart, demo asset.
 
 ## License
 

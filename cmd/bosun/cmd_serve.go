@@ -1,15 +1,22 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/jasondillingham/bosun/internal/web"
 	"github.com/spf13/cobra"
 )
+
+// servePidfileRelative is the path (under the main worktree's repo root)
+// where `bosun serve` records its pid and bound address so `bosun events
+// --tail` can auto-detect a running dashboard without flag-juggling.
+const servePidfileRelative = ".bosun/serve.pid"
 
 func newServeCmd() *cobra.Command {
 	var (
@@ -74,9 +81,85 @@ func runServe(bind string, port int, interval time.Duration) error {
 	ctx, cancel := signal.NotifyContext(rc.ctx, os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
+	// Write the serve pidfile once the listener is up so `bosun events
+	// --tail` can find us. The pidfile lives at .bosun/serve.pid and is
+	// removed on shutdown — a stale file pointing at a dead pid is
+	// recoverable (the events client falls through to an error), but
+	// removing it eagerly keeps the happy path clean.
+	pidfileCtx, pidfileCancel := context.WithCancel(ctx)
+	defer pidfileCancel()
+	go writeServePidfileWhenReady(pidfileCtx, rc.repoRoot, srv)
+	defer removeServePidfile(rc.repoRoot)
+
 	if err := srv.Start(ctx); err != nil {
 		return internalErr("serve", err)
 	}
 	fmt.Fprintln(os.Stdout, "\nbosun serve: stopped")
 	return nil
+}
+
+// writeServePidfileWhenReady polls srv.Addr() until the listener has
+// bound (Addr() is "" until Start runs net.Listen), then writes the
+// pidfile. Runs as a goroutine because Start blocks for the lifetime of
+// the server. Cancellation (ctx Done) stops the wait without writing —
+// covers the early-shutdown case where Start fails before binding.
+func writeServePidfileWhenReady(ctx context.Context, repoRoot string, srv *web.Server) {
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if addr := srv.Addr(); addr != "" {
+			if err := writeServePidfile(repoRoot, os.Getpid(), addr); err != nil {
+				fmt.Fprintf(os.Stderr, "bosun serve: warning: write pidfile: %v\n", err)
+			}
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+// writeServePidfile records the dashboard's pid + bound address (host:port)
+// at .bosun/serve.pid so `bosun events --tail` can locate the running
+// instance without the user typing `--url`. Format mirrors the MCP
+// pidfile: `<pid>\n<addr>\n`.
+//
+// Writes atomically via temp + rename so a concurrent reader (a
+// fast-launched `bosun events --tail`) never observes a half-written
+// file.
+func writeServePidfile(repoRoot string, pid int, addr string) error {
+	final := filepath.Join(repoRoot, servePidfileRelative)
+	dir := filepath.Dir(final)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, filepath.Base(final)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("temp pidfile: %w", err)
+	}
+	tmpName := tmp.Name()
+	cleanup := func() { _ = os.Remove(tmpName) }
+	if _, err := tmp.Write([]byte(fmt.Sprintf("%d\n%s\n", pid, addr))); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return fmt.Errorf("write temp pidfile: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		cleanup()
+		return fmt.Errorf("close temp pidfile: %w", err)
+	}
+	if err := os.Rename(tmpName, final); err != nil {
+		cleanup()
+		return fmt.Errorf("rename pidfile: %w", err)
+	}
+	return nil
+}
+
+// removeServePidfile clears .bosun/serve.pid on shutdown. Best-effort:
+// a stale pidfile pointing at a dead pid is recoverable, so we don't
+// surface errors here.
+func removeServePidfile(repoRoot string) {
+	_ = os.Remove(filepath.Join(repoRoot, servePidfileRelative))
 }

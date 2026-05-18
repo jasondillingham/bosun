@@ -51,6 +51,7 @@ worktree, with one place to see what every session is doing.`,
 		newHookCmd(),
 		newTourCmd(),
 		newNewBriefCmd(),
+		newEventsCmd(),
 	)
 
 	return root

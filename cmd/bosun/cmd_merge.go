@@ -37,13 +37,14 @@ func newMergeCmd() *cobra.Command {
 		undoID        string
 		listUndo      bool
 		noLoadCheck   bool
+		tree          string
 	)
 
 	cmd := &cobra.Command{
 		Use:   "merge [<session>...]",
 		Short: "Squash-merge sessions back to the base branch",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runMerge(cmd, args, mergeOpts{
+			opts := mergeOpts{
 				all:           all,
 				noSquash:      noSquash,
 				dryRun:        dryRun,
@@ -52,7 +53,11 @@ func newMergeCmd() *cobra.Command {
 				undoID:        undoID,
 				listUndo:      listUndo,
 				noLoadCheck:   noLoadCheck,
-			})
+			}
+			if tree != "" {
+				return runMergeTree(cmd, tree, opts)
+			}
+			return runMerge(cmd, args, opts)
 		},
 	}
 
@@ -64,6 +69,7 @@ func newMergeCmd() *cobra.Command {
 	cmd.Flags().StringVar(&undoID, "undo", "", "undo a recent merge by session name or pre-SHA prefix")
 	cmd.Flags().BoolVar(&listUndo, "list-undo", false, "list recent merge log entries for inspection")
 	cmd.Flags().BoolVar(&noLoadCheck, "no-load-check", false, "skip the pre-flight 1-minute load average check")
+	cmd.Flags().StringVar(&tree, "tree", "", "cascade-merge a parent session and all its sub-sessions (children first, parent last)")
 
 	return cmd
 }
@@ -77,6 +83,10 @@ type mergeOpts struct {
 	undoID        string
 	listUndo      bool
 	noLoadCheck   bool
+	// skipSpawnTreeCheck is set by runMergeTree to suppress the
+	// "has unmerged sub-session(s)" refusal in mergeOne while the
+	// cascade is actively reaping subs in dep order. Not a CLI flag.
+	skipSpawnTreeCheck bool
 }
 
 func runMerge(cmd *cobra.Command, args []string, opts mergeOpts) error {
@@ -229,12 +239,17 @@ func mergeOne(rc *runCtx, s *session.Session, opts mergeOpts) (status, reason st
 	// merge once its sub-sessions have merged back to it (per the
 	// hierarchical branch model in docs/v0.9-spawn-spec.md).
 	// `bosun merge --tree <parent>` cascades subs-then-parent; this
-	// gate exists for the non-tree call shape.
-	children, _ := spawntree.NewStore(rc.repoRoot).ChildrenOf(s.Name)
-	if len(children) > 0 {
-		return mergeStatusSkipped, fmt.Sprintf(
-			"%d unmerged sub-session(s): %s — merge them first via `bosun merge --tree %s`",
-			len(children), strings.Join(children, ", "), s.Name), nil
+	// gate exists for the non-tree call shape. skipSpawnTreeCheck is
+	// set by runMergeTree itself once it's iterating the post-order
+	// walk — subs go first, parent last, and the refusal would
+	// otherwise prevent the cascade's last step.
+	if !opts.skipSpawnTreeCheck {
+		children, _ := spawntree.NewStore(rc.repoRoot).ChildrenOf(s.Name)
+		if len(children) > 0 {
+			return mergeStatusSkipped, fmt.Sprintf(
+				"%d unmerged sub-session(s): %s — merge them first via `bosun merge --tree %s`",
+				len(children), strings.Join(children, ", "), s.Name), nil
+		}
 	}
 
 	// Agent-liveness gate FIRST so the v0.6-designed refusal message
@@ -727,3 +742,95 @@ func shortSHA(sha string) string {
 	return sha
 }
 
+
+// runMergeTree cascades merges through a spawn-tree starting at
+// parentLabel. Walks in dependency order (post-order: descendants
+// first, parent last) so each merge sees its prerequisites already
+// on base.
+//
+// In the hierarchical branch model, sub-sessions branch from parent's
+// HEAD. When a sub squash-merges to base it brings BOTH the parent's
+// existing commits AND its own — the squash captures everything ahead
+// of base. By the time the cascade reaches the parent, parent's
+// branch is patch-id-equal to base (because subs already landed
+// parent's commits), and mergeOne's "already merged" detection
+// short-circuits cleanly.
+//
+// skipSpawnTreeCheck is set on each mergeOne call so the cascade's
+// own iteration doesn't trip the "has unmerged subs" refusal that
+// the non-tree merge path enforces.
+func runMergeTree(cmd *cobra.Command, parentLabel string, opts mergeOpts) error {
+	rc, err := loadCtx()
+	if err != nil {
+		return err
+	}
+
+	if currentBranch, err := rc.git.CurrentBranch(rc.ctx, rc.repoRoot); err != nil {
+		return gitErr("read current branch", err)
+	} else if currentBranch != rc.cfg.BaseBranch {
+		return userErr("merge --tree must run on base branch %q (HEAD is on %q)", rc.cfg.BaseBranch, currentBranch)
+	}
+	if !opts.noLoadCheck {
+		preflight.CheckLoad(os.Stdout, "merge --tree", preflight.DefaultLoadWarnThreshold, preflight.DefaultLoadAveragePauseDuration)
+	}
+
+	parsed, err := session.ParseLabel(parentLabel)
+	if err != nil {
+		return err
+	}
+	tree := spawntree.NewStore(rc.repoRoot)
+	order, err := postOrderSubtree(tree, parsed)
+	if err != nil {
+		return internalErr("walk spawn tree", err)
+	}
+	if len(order) == 0 {
+		return userErr("session %s is not in the spawn tree (no record); nothing to cascade", parsed)
+	}
+
+	sessions, err := session.Derive(rc.ctx, rc.git, rc.cfg, rc.repoRoot, rc.state, rc.claims)
+	if err != nil {
+		return gitErr("derive sessions", err)
+	}
+	byName := map[string]*session.Session{}
+	for i := range sessions {
+		byName[sessions[i].Name] = &sessions[i]
+	}
+
+	// Bypass the non-cascading spawn-tree refusal for every iteration
+	// of the cascade — we OWN the iteration order here.
+	subOpts := opts
+	subOpts.skipSpawnTreeCheck = true
+
+	var (
+		merged  []string
+		skipped []string
+	)
+	for _, label := range order {
+		s, ok := byName[label]
+		if !ok {
+			fmt.Fprintf(os.Stdout, "  ⏭ %s: not a live session (skipping)\n", label)
+			continue
+		}
+		status, reason, err := mergeOne(rc, s, subOpts)
+		if err != nil {
+			return fmt.Errorf("merge --tree aborted at %s: %w", label, err)
+		}
+		switch status {
+		case mergeStatusMerged:
+			fmt.Fprintf(os.Stdout, "  ✓ %s: %s\n", label, reason)
+			merged = append(merged, label)
+		case mergeStatusSkipped:
+			fmt.Fprintf(os.Stdout, "  ⏭ %s: %s\n", label, reason)
+			skipped = append(skipped, label)
+		case mergeStatusConflict:
+			fmt.Fprintf(os.Stderr, "  ✗ %s: %s\n", label, reason)
+			return userErr("merge --tree aborted at %s due to conflict; resolve manually and re-run with --tree to continue", label)
+		case mergeStatusWouldMerge:
+			fmt.Fprintf(os.Stdout, "  ▸ %s: would merge (%s)\n", label, reason)
+		}
+	}
+
+	fmt.Fprintf(os.Stdout, "tree merge for %s: %d merged, %d skipped\n",
+		parsed, len(merged), len(skipped))
+	return nil
+}

@@ -29,7 +29,14 @@ func newHookCmd() *cobra.Command {
 }
 
 func newHookInstallCmd() *cobra.Command {
-	return &cobra.Command{
+	// gitignore + noGitignore are a paired bool: --gitignore is the
+	// (redundant) explicit opt-in; --no-gitignore is the opt-out.
+	// Default behavior is to manage .gitignore so a fresh repo
+	// doesn't accumulate per-developer Claude Code state in
+	// untracked .claude/ paths that `git add .` would sweep in.
+	gitignore := true
+	var noGitignore bool
+	cmd := &cobra.Command{
 		Use:   "install",
 		Short: "Install the PreToolUse hook into <repo>/.claude/settings.json",
 		Args:  cobra.NoArgs,
@@ -38,7 +45,12 @@ func newHookInstallCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			res, err := claudehook.Install(rc.repoRoot)
+			if noGitignore {
+				gitignore = false
+			}
+			res, err := claudehook.Install(rc.repoRoot, claudehook.InstallOptions{
+				ManageGitignore: gitignore,
+			})
 			if err != nil {
 				return internalErr("install hook", err)
 			}
@@ -48,6 +60,9 @@ func newHookInstallCmd() *cobra.Command {
 				printf("       To uninstall: bosun hook uninstall\n")
 			} else {
 				printf("bosun: hook is already installed at %s (no changes).\n", res.SettingsPath)
+			}
+			if res.GitignoreChanged {
+				printf("bosun: updated %s — .claude/settings.json stays tracked; everything else under .claude/ is ignored.\n", res.GitignorePath)
 			}
 			if res.Gitignored {
 				// The hook config still applies locally — git just won't
@@ -60,6 +75,9 @@ func newHookInstallCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&gitignore, "gitignore", true, "manage <repo>/.gitignore so .claude/settings.json stays tracked while other .claude/ state is ignored")
+	cmd.Flags().BoolVar(&noGitignore, "no-gitignore", false, "leave <repo>/.gitignore untouched (opt out of the gitignore management step)")
+	return cmd
 }
 
 func newHookUninstallCmd() *cobra.Command {

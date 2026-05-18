@@ -97,7 +97,7 @@ func writeSpawnAuditLine(repoRoot string, entry spawnAuditEntry) error {
 		if err := rotateSpawnAuditIfNeeded(logPath, len(line)); err != nil {
 			return fmt.Errorf("rotate: %w", err)
 		}
-		f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 		if err != nil {
 			return fmt.Errorf("open log: %w", err)
 		}

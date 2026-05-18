@@ -424,7 +424,7 @@ func (s *Store) SyncWithGit(ctx context.Context, gc GitProbe, repoRoot string) (
 // writeLocked persists the tree to disk. Caller must hold the flock
 // — invoked only inside lockfile.WithLock callbacks above.
 func (s *Store) writeLocked(t *Tree) error {
-	if err := os.MkdirAll(filepath.Dir(s.path()), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(s.path()), 0o750); err != nil {
 		return fmt.Errorf("mkdir %s: %w", filepath.Dir(s.path()), err)
 	}
 	t.Version = schemaVersion

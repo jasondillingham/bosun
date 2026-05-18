@@ -158,12 +158,12 @@ func TestPhantomAdminBaseName(t *testing.T) {
 	cases := []struct {
 		in, want string
 	}{
-		{"repo-bosun-1", "repo-bosun-1"},        // not phantom
-		{"repo-bosun-1 2", "repo-bosun-1"},      // spotlight shape
-		{"repo-bosun-1 (1)", "repo-bosun-1"},    // icloud shape
-		{"a b c 42", "a b c"},                   // embedded spaces ok
-		{"plain", "plain"},                       // no suffix
-		{"trailing space ", "trailing space "},  // single trailing space, no digits — not phantom
+		{"repo-bosun-1", "repo-bosun-1"},       // not phantom
+		{"repo-bosun-1 2", "repo-bosun-1"},     // spotlight shape
+		{"repo-bosun-1 (1)", "repo-bosun-1"},   // icloud shape
+		{"a b c 42", "a b c"},                  // embedded spaces ok
+		{"plain", "plain"},                     // no suffix
+		{"trailing space ", "trailing space "}, // single trailing space, no digits — not phantom
 	}
 	for _, c := range cases {
 		got := PhantomAdminBaseName(c.in)

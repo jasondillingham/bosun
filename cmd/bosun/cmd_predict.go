@@ -20,9 +20,9 @@ import (
 // callers can deserialise into the same types they would import from
 // internal/predict.
 type predictReport struct {
-	Predictions []predict.Prediction       `json:"predictions"`
-	Overlaps    []predict.Overlap          `json:"overlaps"`
-	Coverage    []predict.CoverageFinding  `json:"coverage,omitempty"`
+	Predictions []predict.Prediction      `json:"predictions"`
+	Overlaps    []predict.Overlap         `json:"overlaps"`
+	Coverage    []predict.CoverageFinding `json:"coverage,omitempty"`
 }
 
 // predictDeps is the injection seam tests use to swap in a stub

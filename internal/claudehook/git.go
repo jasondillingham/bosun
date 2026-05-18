@@ -26,7 +26,7 @@ func gitRevParse(dir string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), gitRevParseTimeout)
 	defer cancel()
 	all := append([]string{"-C", dir, "rev-parse"}, args...)
-	cmd := exec.CommandContext(ctx, "git", all...)
+	cmd := exec.CommandContext(ctx, "git", all...) //nolint:gosec // G204: bosun's git invocation; argv composed from validated dir + hook-controlled args
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("git %s: %w", strings.Join(all, " "), err)

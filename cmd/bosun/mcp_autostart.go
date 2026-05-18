@@ -87,7 +87,7 @@ func spawnMcpDaemon(repoRoot string) (mcpServerInfo, error) {
 		return mcpServerInfo{}, fmt.Errorf("mkdir socket parent: %w", err)
 	}
 
-	cmd := exec.Command(self, "mcp", "--socket", socketPath)
+	cmd := exec.Command(self, "mcp", "--socket", socketPath) //nolint:gosec // G204: self-exec — `self` is os.Executable() of this binary
 	cmd.Dir = repoRoot
 	// Detach stdio — the daemon needs to survive bosun init's exit, so
 	// keeping the parent's tty hooked up would surface noise (and a

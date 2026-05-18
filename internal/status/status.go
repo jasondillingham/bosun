@@ -144,7 +144,7 @@ func writeSummary(w io.Writer, opts RenderOptions, useColor bool) {
 		n := len(opts.Overlaps)
 		line += " · " + fmt.Sprintf("%d %s", n, pluralize("overlap", n))
 	}
-	fmt.Fprintln(w, line)
+	_, _ = fmt.Fprintln(w, line)
 }
 
 // writeEvents prints one "Recent:" line per buffered announcement, newest
@@ -289,12 +289,12 @@ func formatLastCommit(s session.Session) string {
 }
 
 func writeOverlaps(w io.Writer, overlaps []claims.Overlap) {
-	fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w)
 	if len(overlaps) == 0 {
-		fmt.Fprintln(w, "Overlapping claims: none")
+		_, _ = fmt.Fprintln(w, "Overlapping claims: none")
 		return
 	}
-	fmt.Fprintln(w, "Overlapping claims:")
+	_, _ = fmt.Fprintln(w, "Overlapping claims:")
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	for _, o := range overlaps {
 		fmt.Fprintf(tw, "  %s\t%s\n", o.Path, strings.Join(o.Sessions, ", "))

@@ -752,7 +752,7 @@ func (c *Client) AppendWorktreeExclude(ctx context.Context, dir, line string) er
 	if !filepath.IsAbs(excludePath) {
 		excludePath = filepath.Join(dir, excludePath)
 	}
-	if err := os.MkdirAll(filepath.Dir(excludePath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(excludePath), 0o755); err != nil { //nolint:gosec // G301: matches git's own convention for .git/info/
 		return fmt.Errorf("mkdir exclude: %w", err)
 	}
 	f, err := os.OpenFile(excludePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644) //nolint:gosec // G302: matches git's own convention for .git/info/exclude

@@ -337,7 +337,7 @@ func ArchivePlan(repoRoot, planPath string) error {
 		return fmt.Errorf("read plan %s: %w", planPath, err)
 	}
 	dest := filepath.Join(repoRoot, archivedPlanRelative)
-	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(dest), 0o750); err != nil {
 		return fmt.Errorf("mkdir %s: %w", filepath.Dir(dest), err)
 	}
 	return os.WriteFile(dest, data, 0o644)

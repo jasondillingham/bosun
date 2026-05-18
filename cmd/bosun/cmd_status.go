@@ -295,7 +295,7 @@ func watchStatusLoop(ctx context.Context, w io.Writer, rc *runCtx, opts statusOp
 // of the loop so tests can verify a single frame's output without
 // driving the ticker.
 func renderWatchFrame(w io.Writer, rc *runCtx, opts statusOpts, interval time.Duration) error {
-	fmt.Fprint(w, ansiCursorHome+ansiClearDown)
+	_, _ = fmt.Fprint(w, ansiCursorHome+ansiClearDown)
 	if err := renderStatusOnce(w, rc, opts); err != nil {
 		return err
 	}

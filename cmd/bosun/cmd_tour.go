@@ -140,7 +140,7 @@ func runTour(w io.Writer, r io.Reader, opts tourOpts) error {
 			}
 			return nil
 		}
-		fmt.Fprint(w, "Press Enter to continue (Ctrl-C aborts)... ")
+		_, _ = fmt.Fprint(w, "Press Enter to continue (Ctrl-C aborts)... ")
 		if !scan.Scan() {
 			// EOF on stdin (piped run that closed) — treat as continue
 			// rather than fail; matches the BOSUN_TOUR_AUTO contract.

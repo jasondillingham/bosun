@@ -761,7 +761,6 @@ func shortSHA(sha string) string {
 	return sha
 }
 
-
 // runMergeTree cascades merges through a spawn-tree starting at
 // parentLabel. Walks in dependency order (post-order: descendants
 // first, parent last) so each merge sees its prerequisites already

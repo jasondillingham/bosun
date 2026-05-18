@@ -120,7 +120,7 @@ func HandlePreToolUse(r io.Reader, stderr io.Writer, opts HandleOptions) error {
 		// Best-effort: log but don't block. The most common cause is
 		// "cwd was removed between the agent reading it and the hook
 		// running" — out of our control.
-		fmt.Fprintf(stderr, "bosun: hook: resolve worktree: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "bosun: hook: resolve worktree: %v\n", err)
 		return nil
 	}
 	if mainRoot == "" {
@@ -129,13 +129,13 @@ func HandlePreToolUse(r io.Reader, stderr io.Writer, opts HandleOptions) error {
 
 	cfg, err := opts.LoadConfig(mainRoot)
 	if err != nil {
-		fmt.Fprintf(stderr, "bosun: hook: load config: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "bosun: hook: load config: %v\n", err)
 		return nil
 	}
 
 	label, err := LabelFromWorktreePath(mainRoot, worktreeRoot, cfg)
 	if err != nil {
-		fmt.Fprintf(stderr, "bosun: hook: couldn't resolve session label: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "bosun: hook: couldn't resolve session label: %v\n", err)
 		return nil
 	}
 	if label == "" {

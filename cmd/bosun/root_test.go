@@ -43,7 +43,39 @@ func TestRootCmdVersionFlag(t *testing.T) {
 		t.Fatalf("--version returned error: %v", err)
 	}
 	got := buf.String()
-	if !strings.Contains(got, version) {
-		t.Errorf("--version output %q does not contain version %q", got, version)
+	if !strings.Contains(got, resolvedVersion()) {
+		t.Errorf("--version output %q does not contain resolved version %q", got, resolvedVersion())
+	}
+}
+
+// TestResolvedVersion_LdflagsWins pins the priority order: when the
+// ldflags-injected `version` var is set to something other than "dev",
+// resolvedVersion returns it directly without consulting BuildInfo.
+// Closes #25: production binaries built by GoReleaser or `make build`
+// must report the injected version, not the module fallback.
+func TestResolvedVersion_LdflagsWins(t *testing.T) {
+	orig := version
+	defer func() { version = orig }()
+
+	version = "v9.9.9-test"
+	if got := resolvedVersion(); got != "v9.9.9-test" {
+		t.Errorf("resolvedVersion() = %q, want %q (ldflags should win)", got, "v9.9.9-test")
+	}
+}
+
+// TestResolvedVersion_FallsBackToDev pins the test-binary case:
+// runtime/debug.BuildInfo returns Main.Version="(devel)" for a binary
+// built without a module-tag pin, and resolvedVersion must filter
+// that out rather than reporting "(devel)" to the user. The test runs
+// against the actual go test binary, so this is the same context every
+// CI invocation hits.
+func TestResolvedVersion_FallsBackToDev(t *testing.T) {
+	// version is "dev" in the test binary (no ldflags). resolvedVersion
+	// should either land at "dev" (BuildInfo returned "(devel)") or
+	// emit a real module version if the test was somehow tagged. The
+	// failure shape we're guarding against is "(devel)" leaking through.
+	got := resolvedVersion()
+	if got == "(devel)" {
+		t.Errorf("resolvedVersion() leaked %q — BuildInfo's (devel) sentinel should be filtered to %q", got, "dev")
 	}
 }

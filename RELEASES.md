@@ -1,5 +1,43 @@
 # Releases
 
+## v0.10.2 — 2026-05-18 — backlog round 1
+
+Three lanes closing the smaller half of the v0.10 open issues.
+Round 2 (separate release) tackles #11 (lightweight sub-task agents)
+and #8 (UID-per-worktree implementation).
+
+- **`bosun attach` + external-liveness mode** (#19, closed).
+  External workers — Claude Code Agent sub-agents, CI agents,
+  manually-launched terminals — no longer false-positive CRASHED.
+  New cross-platform `proc.IsAlive` (alive_unix.go via `signal 0`;
+  alive_windows.go via `OpenProcess`). `bosun attach <session>
+  [--pid N]` writes `.bosun/state/<label>.attached-pid`; the
+  liveness gate prefers this over the proc-scan when present.
+  New `config.liveness_gate` field with `"auto"` (today) and
+  `"external"` (skip CRASHED auto-transitions entirely).
+- **`bosun predict --coverage`** (#20, closed). New scanner reports
+  files containing heuristic-flagged content (personal paths,
+  internal hostnames, token-shaped strings, TODO markers) that
+  no lane in the plan claims. Catches the gap that lets a
+  pre-public release ship with embarrassing strings in
+  un-scoped files (the architect-mcp dogfood's
+  `internal/screenshot/screenshot.go` "vault" reference was the
+  motivating case). Per-repo flag overrides via
+  `.bosun/predict-flags.toml`; schema documented at
+  `docs/predict-coverage-flags.md`.
+- **iCloud worktree-corruption incident protocol** (#15, **stays
+  open** as field-validation gate). New
+  `docs/incident-report-icloud.md` walks operators through the
+  recovery flow and provides a structured report template to
+  file back to issue #15 if they hit the corruption. The
+  doctor's FAIL message points at the new doc; macos-setup.md
+  cross-links it.
+
+Deferred to v0.11+: #11 (lightweight sub-task agents — full
+implementation; spec is at `docs/v1.0-sub-task-spec.md`) and #8
+(UID-per-worktree directory naming — implementation; design at
+`docs/uid-worktree-{design,impact,migration}.md`).
+
 ## v0.10.1 — 2026-05-18 — dogfood-frictions round
 
 Closes four frictions surfaced by the architect-mcp dogfood round

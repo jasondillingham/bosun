@@ -14,7 +14,14 @@ bosun tour
 
 `bosun tour` walks you through `init`, parallel edits, `predict`, `merge`, and `cleanup` on a throwaway repo — no setup, no agent launching, no Anthropic API key. About 5 minutes.
 
-[demo screencast →](TBD-asciinema-link)
+**Watch a recording** of the auto-driven tour (`BOSUN_TOUR_AUTO=1 bosun tour`):
+
+```sh
+# Local playback (asciinema 2.x or 3.x):
+asciinema play <(curl -fsSL https://raw.githubusercontent.com/jasondillingham/bosun/main/docs/assets/bosun-tour.cast)
+```
+
+Or download [docs/assets/bosun-tour.cast](docs/assets/bosun-tour.cast) and run `asciinema play bosun-tour.cast` locally. (A web-embedded player will replace this once the cast is hosted on asciinema.org.)
 
 ## What it does
 

@@ -102,6 +102,7 @@ func DefaultChecks() []Check {
 		CheckBosunDirWriteable,
 		CheckFileSync,
 		CheckOrphanWorktrees,
+		CheckWorktreeAdminCorruption,
 		CheckStaleInitLock,
 		CheckPhantomBranchRefs,
 		CheckMCPDaemonStartup,

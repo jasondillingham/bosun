@@ -20,7 +20,16 @@ trees as part of sync — exactly the wrong thing to do under a tool
 that asks `git` to memory-map dozens of small object files
 back-to-back. Symptoms range from random `signal: bus error` (SIGBUS)
 during `git worktree add` to phantom `file 2.go` duplicates appearing
-in your worktree.
+in your worktree, to (issue #15) iCloud silently stripping the
+top-level `HEAD` / `commondir` / `gitdir` files from your worktrees'
+git admin dirs — which makes the worktrees invisible to git and
+breaks every multi-worktree bosun command.
+
+Starting in v0.10, `bosun init` refuses to run under iCloud-managed
+paths by default. The error message will point you here. If you've
+already disabled iCloud sync for the dir (e.g. via "Optimize Mac
+Storage" or the Documents-folder sync toggle) but bosun's heuristic
+still trips, you can override with `bosun init --force-icloud`.
 
 **Use one of these instead:**
 
@@ -134,8 +143,8 @@ bosun doctor
 
 It checks: git version, git on PATH, repo + .bosun/ writability,
 iCloud-managed path detection, orphan worktree dirs from prior
-cleanups, stale `.bosun/init.lock`, phantom branch refs, Unix socket
-bind capability.
+cleanups, **worktree admin metadata integrity** (issue #15), stale
+`.bosun/init.lock`, phantom branch refs, Unix socket bind capability.
 
 Exit codes: `0` clean, `1` warnings, `2` failures.
 
@@ -145,10 +154,45 @@ For the safe-to-touch issues, `bosun doctor --fix` will:
 - Remove phantom branch refs under `.git/refs/heads/bosun/`.
 - Rename orphan `<repo>-bosun-*` directories to `_orphan-<name>` so
   they don't collide with future bosun init runs.
+- **Reap phantom and broken admin dirs under `.git/worktrees/`** (the
+  issue #15 corruption shape) and run `git worktree prune` afterward.
 
 It will **not** auto-fix the iCloud-path warning — that needs a real
 user decision (relocate the repo). Preview first with
 `bosun doctor --fix --dry-run`.
+
+---
+
+## Recovery: my worktrees are broken and `bosun status` shows nothing
+
+This is the issue #15 corruption shape — iCloud File Provider stripped
+your worktrees' git admin metadata. Symptoms:
+
+- `bosun status` returns "no sessions" or shows fewer than you created.
+- `git worktree list` only shows main (and maybe some of the sessions).
+- `cd <repo>-bosun-N && git status` fails with `fatal: not a git
+  repository: .../​.git/worktrees/<name>`.
+- `.git/worktrees/` contains directories named like `<repo>-bosun-1 2/`
+  or `<repo>-bosun-1 (1)/` — those are iCloud's reconciliation phantoms.
+
+Recovery in two commands:
+
+```sh
+bosun doctor           # confirms the worktree-admin-integrity check fails
+bosun doctor --fix     # reaps phantom + broken admin dirs, runs git worktree prune
+```
+
+The fix only touches `.git/worktrees/<name>/` admin dirs — your actual
+worktree directories (`<repo>-bosun-N/`) are not removed. Any
+uncommitted work in those directories survives. After the fix:
+
+```sh
+ls <repo>-bosun-1/     # work is still there
+```
+
+You can move the contents elsewhere if you want to keep them. Once
+recovery is clean, relocate the repo out of iCloud (see "Moving an
+existing repo out of iCloud" above) so it doesn't happen again.
 
 ---
 

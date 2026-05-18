@@ -13,6 +13,7 @@ import (
 
 	"github.com/jasondillingham/bosun/internal/brief"
 	"github.com/jasondillingham/bosun/internal/config"
+	"github.com/jasondillingham/bosun/internal/doctor"
 	"github.com/jasondillingham/bosun/internal/hooks"
 	initstate "github.com/jasondillingham/bosun/internal/init"
 	"github.com/jasondillingham/bosun/internal/launcher"
@@ -37,6 +38,7 @@ func newInitCmd() *cobra.Command {
 		noLoadCheck   bool
 		cleanPhantoms bool
 		resume        bool
+		forceICloud   bool
 	)
 
 	cmd := &cobra.Command{
@@ -63,6 +65,7 @@ Mixing integers with names in the same invocation is a usage error.`,
 				noLoadCheck:   noLoadCheck,
 				cleanPhantoms: cleanPhantoms,
 				resume:        resume,
+				forceICloud:   forceICloud,
 			})
 		},
 	}
@@ -77,6 +80,7 @@ Mixing integers with names in the same invocation is a usage error.`,
 	cmd.Flags().BoolVar(&noLoadCheck, "no-load-check", false, "skip the pre-flight 1-minute load average check")
 	cmd.Flags().BoolVar(&cleanPhantoms, "clean-phantoms", false, "auto-remove Finder/Spotlight phantom branch refs (off by default)")
 	cmd.Flags().BoolVar(&resume, "resume", false, "continue a previously-interrupted bosun init using .bosun/init.state")
+	cmd.Flags().BoolVar(&forceICloud, "force-icloud", false, "proceed even when the repo is under an iCloud-managed path (issue #15: File Provider can strip git worktree admin metadata under load)")
 
 	cmd.GroupID = "setup"
 	return cmd
@@ -93,6 +97,7 @@ type initOpts struct {
 	noLoadCheck   bool
 	cleanPhantoms bool
 	resume        bool
+	forceICloud   bool
 }
 
 func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
@@ -112,6 +117,26 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 		}
 		if opts.resume {
 			return userErr("--suggest cannot be combined with --resume; the prior init's plan path is recorded in init.state")
+		}
+	}
+
+	// iCloud refusal — issue #15. File Provider can strip git worktree
+	// admin metadata under load on iCloud-managed paths, leaving worktrees
+	// invisible to bosun and broken for the agents inside them. Refuse
+	// up front with a clear pointer to the recovery options. Opt-out via
+	// --force-icloud exists for operators who've disabled iCloud sync for
+	// the dir but the heuristic doesn't know it.
+	if !opts.forceICloud {
+		if managed, reason := doctor.IsICloudManagedPath(rc.repoRoot); managed {
+			return userErr(
+				"refusing to init under %s.\n"+
+					"  macOS iCloud File Provider strips git worktree admin metadata under load (issue #15).\n"+
+					"  options:\n"+
+					"    1. Move the repo to a non-iCloud path (e.g. ~/code/, ~/dev/, /tmp/).\n"+
+					"    2. Disable iCloud sync for this dir in System Settings then re-run with --force-icloud.\n"+
+					"    3. See docs/macos-setup.md for full recovery guidance.",
+				reason,
+			)
 		}
 	}
 

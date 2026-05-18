@@ -68,7 +68,7 @@ func (s *Store) file(session string) string {
 func (s *Store) Add(session string, paths []string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := os.MkdirAll(s.dir(), 0o755); err != nil {
+	if err := os.MkdirAll(s.dir(), 0o750); err != nil {
 		return fmt.Errorf("mkdir %s: %w", s.dir(), err)
 	}
 	return lockfile.WithLock(filepath.Join(s.dir(), ".lock"), func() error {
@@ -93,7 +93,7 @@ func (s *Store) Add(session string, paths []string) error {
 func (s *Store) Replace(session string, paths []string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := os.MkdirAll(s.dir(), 0o755); err != nil {
+	if err := os.MkdirAll(s.dir(), 0o750); err != nil {
 		return fmt.Errorf("mkdir %s: %w", s.dir(), err)
 	}
 	return lockfile.WithLock(filepath.Join(s.dir(), ".lock"), func() error {

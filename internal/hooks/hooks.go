@@ -116,7 +116,7 @@ func runOne(ctx context.Context, h Hook, env map[string]string) error {
 	runCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSeconds)*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(runCtx, "sh", "-c", h.Command)
+	cmd := exec.CommandContext(runCtx, "sh", "-c", h.Command) //nolint:gosec // G204: user-authored hook command from their own .bosun/config.json
 	cmd.Env = append(os.Environ(), envSlice(env)...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

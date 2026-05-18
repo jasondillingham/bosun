@@ -717,7 +717,7 @@ func writeConfigAtomic(repoRoot string, raw map[string]json.RawMessage) error {
 	tmpPath := tmp.Name()
 	cleanup := func() { _ = os.Remove(tmpPath) }
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		cleanup()
 		return err
 	}

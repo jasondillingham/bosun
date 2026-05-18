@@ -176,7 +176,7 @@ func launchTmux(opts Options) error {
 	if opts.InitialPrompt != "" {
 		args = append(args, opts.InitialPrompt)
 	}
-	return execRunFn(exec.Command("tmux", args...))
+	return execRunFn(exec.Command("tmux", args...)) //nolint:gosec // G204: bosun's tmux launcher with locally-built argv from validated SessionName/WorktreePath
 }
 
 // execRunFn invokes cmd.Run() in production. Tests substitute a fake
@@ -218,7 +218,7 @@ func launchTerminalGhostty(opts Options, bin string) error {
 	if runtime.GOOS == "darwin" {
 		waitForMacOSStagger()
 	}
-	return spawnFn(exec.Command(bin, ghosttyArgs(opts)...), opts.SessionName, opts.Out)
+	return spawnFn(exec.Command(bin, ghosttyArgs(opts)...), opts.SessionName, opts.Out) //nolint:gosec // G204: bosun's ghostty launcher; bin resolved via PATH, argv from validated opts
 }
 
 // ghosttyArgs builds the argv for the Ghostty CLI.
@@ -324,7 +324,7 @@ func launchTerminalDarwin(opts Options) error {
 	// osascript-1 still wiring up its window.
 	waitForMacOSStagger()
 	if hasITerm2() {
-		return spawnFn(exec.Command("osascript", "-e", iTerm2Script(opts)), opts.SessionName, opts.Out)
+		return spawnFn(exec.Command("osascript", "-e", iTerm2Script(opts)), opts.SessionName, opts.Out) //nolint:gosec // G204: bosun's iTerm2 launcher; argv assembled from shell-quoted validated opts
 	}
 	// Terminal.app: do script always opens a new window. There is no clean
 	// "open new tab in current window" primitive — the workaround keystrokes
@@ -336,7 +336,7 @@ func launchTerminalDarwin(opts Options) error {
 		`tell application "Terminal" to do script "cd %s && %s%s"`,
 		shellQuote(opts.WorktreePath), envPrefix, shellInvocation(opts),
 	)
-	return spawnFn(exec.Command("osascript", "-e", script), opts.SessionName, opts.Out)
+	return spawnFn(exec.Command("osascript", "-e", script), opts.SessionName, opts.Out) //nolint:gosec // G204: bosun's Terminal.app launcher; script assembled from shell-quoted validated opts
 }
 
 // iTerm2Script returns the AppleScript body that opens an iTerm2 window

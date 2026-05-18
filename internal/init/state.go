@@ -246,7 +246,7 @@ func clearFile(repoRoot string) error {
 // Caller must hold s.mu — the flock covers concurrent processes; the
 // mutex covers concurrent goroutines in this process.
 func (s *InitState) writeLocked(repoRoot string) error {
-	if err := os.MkdirAll(filepath.Join(repoRoot, dirRelative), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(repoRoot, dirRelative), 0o750); err != nil {
 		return fmt.Errorf("mkdir .bosun: %w", err)
 	}
 	return lockfile.WithLock(filepath.Join(repoRoot, lockRelative), func() error {

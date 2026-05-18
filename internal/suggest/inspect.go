@@ -213,7 +213,7 @@ func sampleFiles(files []string, n int, headSHA string) []string {
 		return out
 	}
 	seed := seedFromSHA(headSHA, len(files))
-	rng := rand.New(rand.NewSource(seed))
+	rng := rand.New(rand.NewSource(seed)) //nolint:gosec // G404: deterministic file sampling, not security-sensitive
 	// Shuffle indices, take the first n, re-sort so output order
 	// matches input order — keeps the sample readable.
 	idx := make([]int, len(files))
@@ -237,13 +237,13 @@ func sampleFiles(files []string, n int, headSHA string) []string {
 func seedFromSHA(sha string, fallback int) int64 {
 	if sha != "" {
 		if b, err := hex.DecodeString(sha); err == nil && len(b) >= 8 {
-			return int64(binary.BigEndian.Uint64(b[:8]))
+			return int64(binary.BigEndian.Uint64(b[:8])) //nolint:gosec // G115: intentional bit-pattern reuse as a PRNG seed
 		}
 	}
 	// fallback: hash the file count so the same empty-headed repo
 	// shape produces the same sample.
 	sum := sha256.Sum256([]byte(fmt.Sprintf("bosun-suggest-fallback-%d", fallback)))
-	return int64(binary.BigEndian.Uint64(sum[:8]))
+	return int64(binary.BigEndian.Uint64(sum[:8])) //nolint:gosec // G115: intentional bit-pattern reuse as a PRNG seed
 }
 
 // headRef returns the resolved HEAD SHA as a hex string, or "" if HEAD

@@ -99,7 +99,7 @@ func Archive(ctx context.Context, in ArchiveInput) (string, error) {
 
 	dirName := ts.Format(timestampLayout) + "-" + in.Label
 	archDir := filepath.Join(in.RepoRoot, dirRelative, dirName)
-	if err := os.MkdirAll(archDir, 0o755); err != nil {
+	if err := os.MkdirAll(archDir, 0o750); err != nil {
 		return "", fmt.Errorf("mkdir history dir: %w", err)
 	}
 
@@ -487,7 +487,7 @@ func grepRipgrep(ctx context.Context, root, pattern string) ([]GrepHit, error) {
 		"-e", pattern,
 		root,
 	}
-	cmd := exec.CommandContext(ctx, "rg", args...)
+	cmd := exec.CommandContext(ctx, "rg", args...) //nolint:gosec // G204: bosun searches user's own repo with a fixed binary and locally-derived args
 	out, err := cmd.Output()
 	if err != nil {
 		// rg exits 1 when there are no matches; that's not a real error.

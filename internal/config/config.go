@@ -36,7 +36,7 @@ const (
 	// package can both reference the same constants.
 	DefaultSuggestModel     = "claude-sonnet-4-6"
 	DefaultSuggestMaxTokens = 8000
-	DefaultSuggestAPIKeyEnv = "ANTHROPIC_API_KEY"
+	DefaultSuggestAPIKeyEnv = "ANTHROPIC_API_KEY" //nolint:gosec // G101: name of an env var holding a key, not the key itself
 
 	// Defaults for the v0.9 agent_spawn capability. See
 	// docs/v0.9-spawn-spec.md for the auth + quota model.

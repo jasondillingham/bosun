@@ -17,7 +17,7 @@ func WithLockResult[T any](lockPath string, fn func() (T, error)) (T, error) {
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
 		return zero, fmt.Errorf("mkdir lock parent: %w", err)
 	}
-	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return zero, fmt.Errorf("open lock %s: %w", lockPath, err)
 	}

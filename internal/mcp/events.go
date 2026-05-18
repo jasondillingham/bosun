@@ -108,7 +108,7 @@ func appendEventLine(path string, e Event) error {
 			return fmt.Errorf("mkdir events parent: %w", err)
 		}
 	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return fmt.Errorf("open events log: %w", err)
 	}

@@ -1,6 +1,7 @@
 package session
 
 import (
+	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -135,6 +136,101 @@ func TestValidateLabel(t *testing.T) {
 		if err := ValidateLabel(s); err == nil {
 			t.Errorf("ValidateLabel(%q) = nil, want error", s)
 		}
+	}
+}
+
+func TestLegacyWorktreePathForLabel(t *testing.T) {
+	root := filepath.Join(string(filepath.Separator)+"code", "myproj")
+	cases := []struct {
+		label string
+		want  string
+	}{
+		{"session-3", filepath.Join(string(filepath.Separator)+"code", "myproj-bosun-3")},
+		{"auth", filepath.Join(string(filepath.Separator)+"code", "myproj-bosun-auth")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.label, func(t *testing.T) {
+			if got := LegacyWorktreePathForLabel(root, tc.label); got != tc.want {
+				t.Fatalf("LegacyWorktreePathForLabel(%q) = %q, want %q", tc.label, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIsLegacyWorktreePath(t *testing.T) {
+	root := filepath.Join(string(filepath.Separator)+"code", "myproj")
+	cases := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{"legacy numeric", filepath.Join(string(filepath.Separator)+"code", "myproj-bosun-1"), true},
+		{"legacy named", filepath.Join(string(filepath.Separator)+"code", "myproj-bosun-auth"), true},
+		// New-shape `<timestamp>-<sub>` MUST NOT register as legacy — the
+		// digits-then-dash discriminator is what keeps `bosun migrate`
+		// idempotent (a second run finds nothing left to do).
+		{"new-shape numeric", filepath.Join(string(filepath.Separator)+"code", "myproj-bosun-20260518143025-1"), false},
+		{"new-shape named", filepath.Join(string(filepath.Separator)+"code", "myproj-bosun-20260518143025-auth"), false},
+		{"repo root itself", root, false},
+		{"unrelated sibling", filepath.Join(string(filepath.Separator)+"code", "myproj-other"), false},
+		{"different parent dir", filepath.Join(string(filepath.Separator)+"elsewhere", "myproj-bosun-1"), false},
+		{"empty suffix", filepath.Join(string(filepath.Separator)+"code", "myproj-bosun-"), false},
+		// Hyphenated label without a digits prefix is still legitimate
+		// (`http-storage` etc. — operator-chosen named session).
+		{"hyphenated named", filepath.Join(string(filepath.Separator)+"code", "myproj-bosun-http-storage"), true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsLegacyWorktreePath(root, tc.path); got != tc.want {
+				t.Fatalf("IsLegacyWorktreePath(%q) = %v, want %v", tc.path, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestResolveWorktreePath pins the read-only-compat contract: when the
+// canonical path doesn't exist on disk but the legacy shape does, the
+// resolver returns the legacy path. Once the naming-scheme lane lands
+// (and WorktreePathForLabel starts producing the new shape), this is
+// what keeps cmd_rescue/cmd_remove/etc. pointing at the right dir.
+func TestResolveWorktreePath(t *testing.T) {
+	dir := t.TempDir()
+	repo := filepath.Join(dir, "myproj")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Defaults()
+
+	// With nothing on disk, the resolver returns the canonical path so
+	// init can create at it.
+	got := ResolveWorktreePath(repo, cfg, "session-1")
+	if want := WorktreePathForLabel(repo, cfg, "session-1"); got != want {
+		t.Fatalf("nothing on disk: got %q, want canonical %q", got, want)
+	}
+
+	// Create the legacy path on disk. ResolveWorktreePath should return
+	// it when the canonical doesn't exist AND the legacy path differs
+	// from the canonical (today it doesn't differ, so this exercises the
+	// legacy-fallback branch by making the canonical absent).
+	legacy := LegacyWorktreePathForLabel(repo, "session-1")
+	canonical := WorktreePathForLabel(repo, cfg, "session-1")
+	if legacy != canonical {
+		if err := os.MkdirAll(legacy, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		got = ResolveWorktreePath(repo, cfg, "session-1")
+		if got != legacy {
+			t.Fatalf("legacy on disk: got %q, want legacy %q", got, legacy)
+		}
+	}
+
+	// When the canonical path exists, it wins regardless of legacy.
+	if err := os.MkdirAll(canonical, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got = ResolveWorktreePath(repo, cfg, "session-1")
+	if got != canonical {
+		t.Fatalf("canonical on disk: got %q, want canonical %q", got, canonical)
 	}
 }
 

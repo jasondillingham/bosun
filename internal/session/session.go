@@ -5,6 +5,7 @@ package session
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -392,4 +393,124 @@ func WorktreePathForLabel(repoRoot string, cfg config.Config, label string) stri
 	parent := filepath.Dir(repoRoot)
 	base := filepath.Base(repoRoot)
 	return filepath.Join(parent, base+cfg.WorktreeSuffixForLabel(label))
+}
+
+// LegacyWorktreePathForLabel returns the worktree path under the pre-v0.11
+// naming convention (`<repo>-bosun-<sub>`), regardless of what config
+// currently produces. Used by the migration path so the doctor check and
+// `bosun migrate` agree on what shapes count as "legacy" — without
+// referencing the live cfg.WorktreeSuffixPattern, which the naming-scheme
+// lane may rewrite to produce the new shape going forward.
+//
+// Example: LegacyWorktreePathForLabel("/code/myproj", "session-3")
+// =>      "/code/myproj-bosun-3"
+//
+// (Numeric labels strip the "session-" prefix to stay byte-identical with
+// what v0.10 and earlier wrote.)
+func LegacyWorktreePathForLabel(repoRoot, label string) string {
+	sub := label
+	if rest, ok := strings.CutPrefix(label, "session-"); ok {
+		sub = rest
+	}
+	parent := filepath.Dir(repoRoot)
+	base := filepath.Base(repoRoot)
+	return filepath.Join(parent, base+"-bosun-"+sub)
+}
+
+// ResolveWorktreePath returns the on-disk worktree path bosun should use
+// for label. Preference order:
+//
+//  1. The canonical path WorktreePathForLabel produces (post-naming-lane
+//     this is the new `<repo>-bosun-<timestamp>-<sub>` shape; today it's
+//     still the legacy shape).
+//  2. The legacy `<repo>-bosun-<sub>` shape, if it exists on disk and the
+//     canonical does not.
+//  3. The canonical path (used for new-creation by callers).
+//
+// This is the "read-only compatibility" hook described in
+// `docs/uid-worktree-migration.md` — once the naming lane lands and
+// `WorktreePathForLabel` starts returning new-shape paths, every existing
+// caller that stats the canonical path falls back to the legacy shape
+// instead of silently mis-resolving to a non-existent dir.
+func ResolveWorktreePath(repoRoot string, cfg config.Config, label string) string {
+	canonical := WorktreePathForLabel(repoRoot, cfg, label)
+	if _, err := os.Stat(canonical); err == nil {
+		return canonical
+	}
+	legacy := LegacyWorktreePathForLabel(repoRoot, label)
+	if legacy != canonical {
+		if _, err := os.Stat(legacy); err == nil {
+			return legacy
+		}
+	}
+	return canonical
+}
+
+// IsLegacyWorktreePath reports whether path matches the pre-v0.11
+// `<repo>-bosun-<sub>` shape for any plausible label, anchored to the
+// repo's parent directory.
+//
+// "Plausible label" means: the suffix after `-bosun-` decodes back to a
+// valid bosun label via ParseLabel (numeric "1" → "session-1" or a bare
+// label charset). Random non-bosun siblings whose names happen to start
+// with `<repo>-bosun-` but carry junk suffixes are NOT classified as
+// legacy worktrees — those are orphan-dir territory, handled separately.
+//
+// Parent-directory matching evaluates symlinks so macOS callers passing
+// a `/var/folders/...` tempdir don't trip on git's canonicalized
+// `/private/var/...` answer.
+func IsLegacyWorktreePath(repoRoot, path string) bool {
+	repoParent := resolveSymlinks(filepath.Dir(filepath.Clean(repoRoot)))
+	pathParent := resolveSymlinks(filepath.Dir(filepath.Clean(path)))
+	if repoParent != pathParent {
+		return false
+	}
+	base := filepath.Base(filepath.Clean(repoRoot))
+	prefix := base + "-bosun-"
+	name := filepath.Base(filepath.Clean(path))
+	rest, ok := strings.CutPrefix(name, prefix)
+	if !ok || rest == "" {
+		return false
+	}
+	// Reject anything that looks like the new <timestamp>-<sub> shape —
+	// a digits-only first segment followed by a dash means we're looking
+	// at a post-migration dir (e.g. `myproj-bosun-20260518143025-1`).
+	if idx := strings.IndexByte(rest, '-'); idx > 0 {
+		first := rest[:idx]
+		if isAllDigits(first) {
+			return false
+		}
+	}
+	if _, err := ParseLabel(rest); err != nil {
+		return false
+	}
+	return true
+}
+
+// resolveSymlinks is a best-effort wrapper around filepath.EvalSymlinks
+// that falls back to filepath.Clean when the path doesn't exist (or when
+// symlink resolution otherwise fails). The fallback matters during
+// classification of paths bosun is about to create or has just renamed
+// out from under itself.
+func resolveSymlinks(p string) string {
+	resolved, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		return filepath.Clean(p)
+	}
+	return resolved
+}
+
+// isAllDigits reports whether s is non-empty and consists entirely of
+// ASCII digits. Used by IsLegacyWorktreePath to discriminate new-shape
+// `<timestamp>-<sub>` suffixes from legacy bare-suffix forms.
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }

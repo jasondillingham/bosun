@@ -3,9 +3,36 @@
 **Lane:** session-3 (Migration + safety contract). Companion to the
 naming-scheme work happening in sessions 1 and 2.
 
-**Scope.** Narrative. No code lands from this doc. The deliverable is
-a shared decision record that the implementation lanes and the
-trial-#4 operator can both build on.
+**Status (post-v0.11):** the migration story is implemented. `bosun
+migrate` lands the rename via `git worktree move`, `bosun doctor`
+flags legacy-named worktrees with a WARN pointing at the new command,
+and `internal/session.ResolveWorktreePath` gives callers the read-only
+compat fallback documented in §1. The narrative below remains the
+authoritative decision record; the implementation references are added
+inline where they replace the original "TBD" pointers.
+
+**Implementation pointers:**
+
+- `cmd/bosun/cmd_migrate.go` — the `bosun migrate [--dry-run]`
+  command. Detects legacy worktrees, renames via `git worktree move`,
+  is safe to abort mid-run (next invocation picks up the remainder),
+  refuses with an actionable error when a conflict (legacy + new shape
+  both present for the same session) is detected.
+- `internal/doctor/checks_legacy_worktrees.go` — `CheckLegacyWorktrees`
+  registered in `DefaultChecks`. Read-only; does NOT auto-fix via
+  `--fix` because the rename is a real operation operators should opt
+  into deliberately.
+- `internal/session/session.go` — `LegacyWorktreePathForLabel`,
+  `IsLegacyWorktreePath`, and `ResolveWorktreePath` are the helpers
+  callers reach for when they need to handle both shapes.
+- The chosen timestamp shape is `YYYYMMDDHHMMSS` (14 digits, derived
+  from `.bosun/init.state` StartedAt when present; parent-dir mtime
+  otherwise). Filesystem-safe on every platform and lexicographically
+  sortable so cleanup output stays scannable.
+
+**Scope.** Narrative. The deliverable was a shared decision record
+that the implementation lanes and the trial-#4 operator can both
+build on; the code lives at the pointers above.
 
 **Assumption about the scheme.** Sessions 1 + 2 are picking the
 specific shape; this doc treats the UID portion as an opaque
@@ -62,13 +89,18 @@ Specifically:
   > `bosun: detected legacy-named worktrees (myproj-bosun-1, myproj-bosun-2).`
   > `Drain them via 'bosun merge && bosun cleanup', or run`
   > `'bosun migrate' to rename them in place.`
-- **`bosun migrate`** (new, narrow command) walks legacy worktree
-  dirs, runs `git worktree move <old> <new>` for each, and updates
-  any pinned paths in `.bosun/spawn-tree.json` or `.bosun/init.state`.
-  Branches are not renamed — they already live under `bosun/<session>`
-  which is naming-scheme-independent.
-- **`bosun doctor`** flags legacy worktrees as a Warn (not Fail) with
-  fix text pointing at `bosun migrate`.
+- **`bosun migrate`** (implemented in `cmd/bosun/cmd_migrate.go`) walks
+  legacy worktree dirs, runs `git worktree move <old> <new>` for each,
+  and is idempotent against partial-completion. Branches are not
+  renamed — they already live under `bosun/<session>` which is naming-
+  scheme-independent. The command surfaces a conflict (and refuses to
+  proceed) when both the legacy and new-shape paths exist for the same
+  session; that combination means a fresh init ran after the legacy
+  state was left behind and the operator has to decide which to keep.
+  `--dry-run` previews the rename plan without invoking git.
+- **`bosun doctor`** flags legacy worktrees as a WARN (not Fail) with
+  fix text pointing at `bosun migrate`. See
+  `internal/doctor/checks_legacy_worktrees.go`.
 
 **Why this and not A.** Permanently honoring both shapes means the
 orphan scanner, the phantom regex, the doctor checks, and the README

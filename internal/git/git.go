@@ -376,6 +376,20 @@ func (c *Client) RemoveWorktree(ctx context.Context, dir, path string, force boo
 	return err
 }
 
+// MoveWorktree renames a linked worktree's directory via
+// `git worktree move <old> <new>`. Differs from a raw filesystem rename
+// because git keeps admin metadata under `<main>/.git/worktrees/<name>`
+// pointing at the worktree's location — `mv` would orphan that metadata
+// and every subsequent git op against the worktree would fail.
+//
+// The new path must not exist; git enforces that itself. Callers that
+// want overwrite semantics should detect the collision up front and
+// surface a conflict rather than swallowing it.
+func (c *Client) MoveWorktree(ctx context.Context, dir, oldPath, newPath string) error {
+	_, err := c.run(ctx, dir, "worktree", "move", oldPath, newPath)
+	return err
+}
+
 // UnlockWorktree releases a `git worktree lock` on path. Used by the
 // init --resume path to recover a worktree left locked by a prior killed
 // init. Goes through c.run so the configured timeout applies — pre-v0.7+

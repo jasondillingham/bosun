@@ -1,5 +1,109 @@
 # Releases
 
+## v0.11.1 — 2026-05-18 — pre-launch gap analysis close-out
+
+After v0.11.0 the v1.0-track backlog was empty but a fresh review
+(`docs/pre-launch-gap-analysis.md`) surfaced three buckets of pre-
+launch gaps. All three shipped in one continuous push across ten
+bosun-on-bosun lanes.
+
+### Bucket A — spawn lifecycle bug remnants
+
+The two real bugs left in the v0.9 spawn surface (Bug A + Bug D
+from trial #3c). After this, the README's "Why bosun, not Agent"
+pitch is fully trial-validated and bug-clean.
+
+- **`spawntree.SyncWithGit()`** — prunes ghost entries from
+  `.bosun/spawn-tree.json` whose worktree AND branch are both
+  missing. Wired into `bosun status` (with `--no-sync` escape
+  hatch for debugging), `bosun cleanup --tree`, and `bosun merge
+  --tree`. Asymmetric divergence (worktree missing but branch
+  present, or vice versa) is surfaced as a warning rather than
+  silently pruned.
+- **Launcher rapid-fire fix** — root-caused the trial #3c silent
+  failure to macOS AppleScript throttling when multiple Ghostty
+  windows are spawned in quick succession. Fix: small stagger
+  delay between launches. Surfaces post-fork failures via
+  `opts.Out` so silent swallowing doesn't recur. `internal/launcher`
+  coverage went from 40.7% to 73.0% via the new `TestLauncher_RapidFire`
+  + `TestLauncher_SurfacesPostForkFailure` tests. Documented in
+  `docs/macos-setup.md`.
+
+### Bucket B — public-launch infra
+
+- **Community files** (`CONTRIBUTING.md`, `SECURITY.md`,
+  `CODE_OF_CONDUCT.md`, 3 issue templates, PR template). Fills
+  GitHub's community-health checklist. SECURITY.md names the
+  safety contract as the load-bearing trust signal and commits
+  to a 48h ack window for safety-contract violations. CoC
+  points at Contributor Covenant 2.1 by reference rather than
+  embedding the canonical text.
+- **GoReleaser + release workflow** — `.goreleaser.yaml` builds
+  darwin/linux/windows × amd64/arm64 archives with ldflags
+  version injection. `.github/workflows/release.yml` fires on
+  `v*` tag push. New `scripts/install.sh` + `scripts/install.ps1`
+  one-liners (curl-pipe-bash) at the README's top of the Install
+  section. `docs/installing.md` has the fuller install matrix.
+- **CI improvements** — `golangci-lint` gate via
+  `.golangci.yml` (`errcheck` / `staticcheck` / `gosec` /
+  `ineffassign` / `unused` / `govet`). Dependabot config covering
+  Go modules + GitHub Actions. Weekly cron workflows for
+  `make fuzz` (Sun 03:00 UTC) and `make stress` (Sat 03:00 UTC).
+  README gets a badges row (CI / license / Go version / latest
+  release).
+- **README polish** — Comparison section contrasting bosun vs
+  raw `git worktree` / Claude Code's `Agent` / other multi-agent
+  tools (honest about tradeoffs). FAQ with 7 entries (the
+  questions readers actually ask). "Used by" section reserved
+  for community usage; pre-launch it names the maintainer's
+  workflow + architect-mcp release prep. TUI subsection under
+  the demo with an ASCII placeholder (real PNG can drop in
+  later).
+
+### Bucket C — v1.0-shaping functional gaps
+
+- **`bosun status --watch`** — alt-screen ANSI refresh loop,
+  2s default cadence, `--interval N` override (1..60), Ctrl-C
+  cleanup, non-TTY refusal pointing at `--json`. Tests use
+  `bytes.Buffer` + cancelled context to avoid sleeps.
+- **`bosun events --tail`** — terminal-side consumer of
+  `bosun serve`'s SSE stream. Auto-detects the running server
+  via `.bosun/serve.pid`. Flags: `--filter <session>`, `--json`,
+  `--since N`, `--once`. Reconnects with exponential backoff
+  on server restart. Internal SSE client at
+  `internal/events/client.go` is reusable for future surfaces
+  (TUI overlays, status-bar widgets).
+- **`bosun debug`** — self-contained issue-report bundle.
+  Gathers version, doctor output, git status, worktree list,
+  redacted config, audit-log tails, spawn-tree, state +
+  claims summaries, last 50 merges, OS + git version. Trailing
+  operator-skim checklist. `--no-redact` opts out of secret
+  redaction; `--include audit` / `--include all` expand. Default
+  redacts anything matching `(?i)(api|secret|token|password|key)[_ -]*=`.
+- **Session history archive** — `.bosun/history/<utc-timestamp>-<label>/`
+  with `brief.md`, `claims.json`, `commits.log`, `merged.txt`,
+  `metadata.json`. Written by `cleanup` / `remove` / `merge`
+  before they wipe state — best-effort, never blocks the
+  load-bearing git side. New `bosun history list / show /
+  grep / prune`. `grep` shells out to ripgrep when available
+  with Go regexp fallback.
+
+### Merge mechanics
+
+Round 3 (Bucket C) hit two real conflicts on `cmd/bosun/root.go`
+(three lanes each adding one `AddCommand(...)` line) — hand-
+resolved as three sequential append lines. Bucket B hit one
+conflict on `CONTRIBUTING.md` (lane 1 + lane 2 both created it
+with different scopes) — resolved by adopting lane 1's
+owner-version and folding lane 2's release-dry-run section into
+it.
+
+### Backlog after this release
+
+Only #15 (iCloud field-validation gate) remains open. Not
+blocking — it's a tracking issue waiting for a real user's
+incident report to fire.
+
 ## v0.11.0 — 2026-05-18 — v1.0-track implementation (sub-tasks + UID-per-worktree)
 
 Closes #11 (lightweight sub-task agents) and #8 (UID-per-worktree

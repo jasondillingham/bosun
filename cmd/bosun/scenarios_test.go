@@ -2274,6 +2274,169 @@ func TestScenario_ConfigListShowsHooksCountWhenConfigured(t *testing.T) {
 	}
 }
 
+// --- agent_spawn.* dotted-key set/get/unset (closes trial #3a finding) ---
+//
+// Pre-fix, `bosun config set agent_spawn.enabled true` failed with
+// "unknown config key", forcing operators to hand-edit
+// .bosun/config.json — exactly the UX promise the config subcommand
+// makes ("typos in keys fail silently and revert to defaults" was the
+// problem it was built to solve). Trial #3a documented the gap; these
+// tests pin the round-trip through the three nested leaves.
+
+func TestScenario_ConfigSetAgentSpawnLeaves(t *testing.T) {
+	// Set each of the three leaves through the public command surface
+	// and round-trip via `config get` to confirm the bool / int types
+	// survive the JSON encode/decode cycle.
+	s := newScenario(t)
+
+	s.Bosun("config", "set", "agent_spawn.enabled", "true")
+	s.Bosun("config", "set", "agent_spawn.max_concurrent_sub_sessions", "2")
+	s.Bosun("config", "set", "agent_spawn.max_depth", "3")
+
+	if got := strings.TrimSpace(s.Bosun("config", "get", "agent_spawn.enabled")); got != "true" {
+		t.Errorf("agent_spawn.enabled = %q, want true", got)
+	}
+	if got := strings.TrimSpace(s.Bosun("config", "get", "agent_spawn.max_concurrent_sub_sessions")); got != "2" {
+		t.Errorf("agent_spawn.max_concurrent_sub_sessions = %q, want 2", got)
+	}
+	if got := strings.TrimSpace(s.Bosun("config", "get", "agent_spawn.max_depth")); got != "3" {
+		t.Errorf("agent_spawn.max_depth = %q, want 3", got)
+	}
+
+	// And the on-disk shape is the expected nested-object form, not three
+	// flat `"agent_spawn.enabled": true` top-level keys (which would make
+	// the file structurally wrong and silently bypass the real loader).
+	data, err := os.ReadFile(filepath.Join(s.repo, ".bosun", "config.json"))
+	if err != nil {
+		t.Fatalf("read config.json: %v", err)
+	}
+	if !strings.Contains(string(data), `"agent_spawn":`) {
+		t.Errorf("config.json missing nested agent_spawn object:\n%s", data)
+	}
+	if strings.Contains(string(data), `"agent_spawn.enabled":`) {
+		t.Errorf("config.json should not have a flat agent_spawn.enabled key:\n%s", data)
+	}
+}
+
+func TestScenario_ConfigSetAgentSpawnPreservesSiblingLeaves(t *testing.T) {
+	// Setting one leaf must not clobber a previously-set sibling. This is
+	// the bug shape we'd hit if setNestedConfigField re-marshaled the
+	// agent_spawn object from a fresh empty map instead of the existing one.
+	s := newScenario(t)
+
+	s.Bosun("config", "set", "agent_spawn.max_concurrent_sub_sessions", "5")
+	s.Bosun("config", "set", "agent_spawn.enabled", "true")
+
+	if got := strings.TrimSpace(s.Bosun("config", "get", "agent_spawn.max_concurrent_sub_sessions")); got != "5" {
+		t.Errorf("max_concurrent was clobbered: got %q, want 5", got)
+	}
+	if got := strings.TrimSpace(s.Bosun("config", "get", "agent_spawn.enabled")); got != "true" {
+		t.Errorf("enabled didn't stick: got %q, want true", got)
+	}
+}
+
+func TestScenario_ConfigUnsetAgentSpawnLeaf(t *testing.T) {
+	// Unsetting one leaf removes it but leaves siblings in place. When
+	// the last leaf is removed, the parent object is dropped entirely so
+	// the file doesn't accumulate `"agent_spawn": {}` husks.
+	s := newScenario(t)
+
+	s.Bosun("config", "set", "agent_spawn.enabled", "true")
+	s.Bosun("config", "set", "agent_spawn.max_depth", "2")
+
+	// Unset one — the other survives.
+	s.Bosun("config", "unset", "agent_spawn.enabled")
+	if got := strings.TrimSpace(s.Bosun("config", "get", "agent_spawn.enabled")); got != "false" {
+		t.Errorf("after unset, agent_spawn.enabled should fall back to default (false), got %q", got)
+	}
+	if got := strings.TrimSpace(s.Bosun("config", "get", "agent_spawn.max_depth")); got != "2" {
+		t.Errorf("max_depth was lost when sibling was unset: got %q, want 2", got)
+	}
+
+	// Unset the last surviving leaf — parent object should be gone too.
+	s.Bosun("config", "unset", "agent_spawn.max_depth")
+	data, err := os.ReadFile(filepath.Join(s.repo, ".bosun", "config.json"))
+	if err != nil {
+		t.Fatalf("read config.json: %v", err)
+	}
+	if strings.Contains(string(data), `"agent_spawn":`) {
+		t.Errorf("config.json should not contain agent_spawn after all leaves unset:\n%s", data)
+	}
+}
+
+func TestScenario_ConfigSetAgentSpawnRejectsBadType(t *testing.T) {
+	// Bool / int parsing errors must surface with a useful message and
+	// leave the file untouched — same contract as the scalar set path.
+	s := newScenario(t)
+
+	out, err := s.BosunErr("config", "set", "agent_spawn.enabled", "yeahprobably")
+	if err == nil {
+		t.Fatalf("set agent_spawn.enabled with non-bool should fail:\n%s", out)
+	}
+	if !strings.Contains(out, "true|false") {
+		t.Errorf("error should mention the expected type: %s", out)
+	}
+
+	out, err = s.BosunErr("config", "set", "agent_spawn.max_depth", "wide")
+	if err == nil {
+		t.Fatalf("set agent_spawn.max_depth with non-int should fail:\n%s", out)
+	}
+	if !strings.Contains(out, "must be an integer") {
+		t.Errorf("error should mention integer requirement: %s", out)
+	}
+}
+
+func TestScenario_ConfigListIncludesAgentSpawnLeaves(t *testing.T) {
+	// All three agent_spawn leaves must appear in `config list` with the
+	// (default) marker when absent, and lose the marker when set.
+	s := newScenario(t)
+
+	out := s.Bosun("config", "list")
+	for _, key := range []string{
+		"agent_spawn.enabled",
+		"agent_spawn.max_concurrent_sub_sessions",
+		"agent_spawn.max_depth",
+	} {
+		var line string
+		for _, l := range strings.Split(strings.TrimSpace(out), "\n") {
+			if strings.HasPrefix(l, key+":") {
+				line = l
+				break
+			}
+		}
+		if line == "" {
+			t.Errorf("config list missing key %q:\n%s", key, out)
+			continue
+		}
+		if !strings.Contains(line, "(default)") {
+			t.Errorf("line for %q should be (default) when unset: %q", key, line)
+		}
+	}
+
+	// Set one and confirm only that one loses the default marker. The
+	// other two leaves stay marked (default) — they remain at the
+	// loader-provided default values even though raw["agent_spawn"]
+	// is no longer absent.
+	s.Bosun("config", "set", "agent_spawn.enabled", "true")
+	out = s.Bosun("config", "list")
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		switch {
+		case strings.HasPrefix(line, "agent_spawn.enabled:"):
+			if strings.Contains(line, "(default)") {
+				t.Errorf("agent_spawn.enabled should drop (default) after set: %q", line)
+			}
+			if !strings.Contains(line, "true") {
+				t.Errorf("agent_spawn.enabled line missing new value: %q", line)
+			}
+		case strings.HasPrefix(line, "agent_spawn.max_concurrent_sub_sessions:"),
+			strings.HasPrefix(line, "agent_spawn.max_depth:"):
+			if !strings.Contains(line, "(default)") {
+				t.Errorf("untouched leaf lost its (default) marker: %q", line)
+			}
+		}
+	}
+}
+
 // --- suggest scenarios (v0.5 round-2) ---
 //
 // End-to-end coverage for `bosun suggest`. Each test spins up an

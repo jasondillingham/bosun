@@ -20,6 +20,10 @@ import (
 // configSetKeys is the ordered list of scalar keys `bosun config set` accepts.
 // The `hooks` field is intentionally excluded: it's a list of records, not a
 // scalar, so editing it through a single key=value CLI would be lossy.
+//
+// Dotted keys (e.g. `agent_spawn.enabled`) address leaf fields of nested
+// objects on disk; runConfigSet routes them through the nested-write path
+// in setNestedConfigField rather than the top-level raw[key] = value path.
 var configSetKeys = []string{
 	"base_branch",
 	"launcher",
@@ -28,6 +32,9 @@ var configSetKeys = []string{
 	"session_prefix",
 	"worktree_suffix_pattern",
 	"isolate_cache_default",
+	"agent_spawn.enabled",
+	"agent_spawn.max_concurrent_sub_sessions",
+	"agent_spawn.max_depth",
 }
 
 // configListKeys is the order `bosun config list` and `bosun config get` know
@@ -173,12 +180,36 @@ func runConfigList() error {
 	}
 	for _, key := range configListKeys {
 		marker := ""
-		if _, ok := raw[key]; !ok {
+		if !rawHasKey(raw, key) {
 			marker = " (default)"
 		}
 		printf("%s: %s%s\n", key, formatConfigValue(rc.cfg, key), marker)
 	}
 	return nil
+}
+
+// rawHasKey reports whether the on-disk file has an explicit entry for
+// `key`. For top-level keys it's a flat lookup; for dotted keys
+// ("agent_spawn.enabled") it descends into the parent object's leaf map
+// so the "(default)" marker correctly reflects "this leaf is present"
+// rather than "the parent object is present at all" (which would be a
+// false negative whenever any other leaf of the parent had been set).
+func rawHasKey(raw map[string]json.RawMessage, key string) bool {
+	parent, leaf, isNested := splitDottedKey(key)
+	if !isNested {
+		_, ok := raw[key]
+		return ok
+	}
+	parentRaw, ok := raw[parent]
+	if !ok {
+		return false
+	}
+	sub := map[string]json.RawMessage{}
+	if err := json.Unmarshal(parentRaw, &sub); err != nil {
+		return false
+	}
+	_, ok = sub[leaf]
+	return ok
 }
 
 func runConfigGet(key string) error {
@@ -214,7 +245,13 @@ func runConfigSet(key, value string) error {
 	if err != nil {
 		return userErr("%v", err)
 	}
-	raw[key] = encoded
+	if parent, leaf, ok := splitDottedKey(key); ok {
+		if err := setNestedConfigField(raw, parent, leaf, encoded); err != nil {
+			return userErr("%v", err)
+		}
+	} else {
+		raw[key] = encoded
+	}
 
 	merged, err := configFromRaw(raw)
 	if err != nil {
@@ -244,11 +281,22 @@ func runConfigUnset(key string) error {
 	if err != nil {
 		return userErr("read config file: %v", err)
 	}
-	if _, ok := raw[key]; !ok {
-		printf("bosun: %s already at default (no-op)\n", key)
-		return nil
+	if parent, leaf, ok := splitDottedKey(key); ok {
+		removed, err := unsetNestedConfigField(raw, parent, leaf)
+		if err != nil {
+			return userErr("%v", err)
+		}
+		if !removed {
+			printf("bosun: %s already at default (no-op)\n", key)
+			return nil
+		}
+	} else {
+		if _, ok := raw[key]; !ok {
+			printf("bosun: %s already at default (no-op)\n", key)
+			return nil
+		}
+		delete(raw, key)
 	}
-	delete(raw, key)
 
 	merged, err := configFromRaw(raw)
 	if err != nil {
@@ -384,6 +432,9 @@ func buildConfigExample(c config.Config) string {
 	b.WriteString("//                          Events: pre-init, post-init, post-done, pre-merge, post-merge,\n")
 	b.WriteString("//                          pre-cleanup, post-cleanup.\n")
 	b.WriteString("// suggest:                 brief-authoring assistant config (model, max_tokens, api_key_env).\n")
+	b.WriteString("// agent_spawn:             v0.9 bosun_spawn MCP tool config — disabled by default.\n")
+	b.WriteString("//                          .enabled (bool), .max_concurrent_sub_sessions (int),\n")
+	b.WriteString("//                          .max_depth (int, clamped to internal ceiling).\n")
 	b.WriteString("//\n")
 	b.Write(body)
 	b.WriteString("\n")
@@ -433,6 +484,77 @@ func isSettableConfigKey(key string) bool {
 	return false
 }
 
+// splitDottedKey decomposes a settable key like "agent_spawn.enabled"
+// into ("agent_spawn", "enabled", true). Flat keys ("base_branch")
+// return ("", "", false). Only a single dot is recognised — nested
+// objects two deep would need a separate path the v0.9 config doesn't
+// have yet.
+func splitDottedKey(key string) (parent, leaf string, ok bool) {
+	dot := strings.IndexByte(key, '.')
+	if dot < 0 {
+		return "", "", false
+	}
+	// Reject leading/trailing dots and double dots — those are user
+	// typos rather than supported addressing.
+	if dot == 0 || dot == len(key)-1 || strings.Count(key, ".") != 1 {
+		return "", "", false
+	}
+	return key[:dot], key[dot+1:], true
+}
+
+// setNestedConfigField writes a leaf value into the JSON object stored
+// at raw[parent], creating that object if missing. The leaf value is
+// already JSON-encoded by encodeConfigValue, so we just splice it into
+// the parent sub-map and marshal back. This preserves any sibling
+// leaves the operator hadn't touched (so setting agent_spawn.enabled
+// doesn't clobber an earlier-set agent_spawn.max_concurrent_sub_sessions).
+func setNestedConfigField(raw map[string]json.RawMessage, parent, leaf string, value json.RawMessage) error {
+	sub := map[string]json.RawMessage{}
+	if existing, ok := raw[parent]; ok {
+		if err := json.Unmarshal(existing, &sub); err != nil {
+			return fmt.Errorf("parse existing %s object: %w", parent, err)
+		}
+	}
+	sub[leaf] = value
+	encoded, err := json.Marshal(sub)
+	if err != nil {
+		return fmt.Errorf("re-encode %s object: %w", parent, err)
+	}
+	raw[parent] = encoded
+	return nil
+}
+
+// unsetNestedConfigField deletes a leaf from raw[parent]'s sub-object.
+// Returns (false, nil) when the leaf wasn't there — callers should
+// surface a "no-op" message in that case rather than writing the file.
+// When the last leaf is removed, the now-empty parent object is also
+// dropped so the on-disk file doesn't accumulate `"agent_spawn": {}`
+// husks.
+func unsetNestedConfigField(raw map[string]json.RawMessage, parent, leaf string) (bool, error) {
+	existing, ok := raw[parent]
+	if !ok {
+		return false, nil
+	}
+	sub := map[string]json.RawMessage{}
+	if err := json.Unmarshal(existing, &sub); err != nil {
+		return false, fmt.Errorf("parse existing %s object: %w", parent, err)
+	}
+	if _, ok := sub[leaf]; !ok {
+		return false, nil
+	}
+	delete(sub, leaf)
+	if len(sub) == 0 {
+		delete(raw, parent)
+		return true, nil
+	}
+	encoded, err := json.Marshal(sub)
+	if err != nil {
+		return false, fmt.Errorf("re-encode %s object: %w", parent, err)
+	}
+	raw[parent] = encoded
+	return true, nil
+}
+
 // formatConfigValue renders a single key's resolved value as a string. For
 // `hooks` it emits a count summary so list/get stay scalar even though the
 // underlying field is a list.
@@ -454,6 +576,12 @@ func formatConfigValue(cfg config.Config, key string) string {
 		return strconv.FormatBool(cfg.IsolateCacheDefault)
 	case "hooks":
 		return fmt.Sprintf("%d hook(s)", len(cfg.Hooks))
+	case "agent_spawn.enabled":
+		return strconv.FormatBool(cfg.AgentSpawn.Enabled)
+	case "agent_spawn.max_concurrent_sub_sessions":
+		return strconv.Itoa(cfg.AgentSpawn.MaxConcurrentSubSessions)
+	case "agent_spawn.max_depth":
+		return strconv.Itoa(cfg.AgentSpawn.MaxDepth)
 	}
 	return ""
 }
@@ -471,12 +599,18 @@ func encodeConfigValue(key, value string) (json.RawMessage, error) {
 			return nil, fmt.Errorf("%s must be an integer, got %q", key, value)
 		}
 		return json.Marshal(n)
-	case "isolate_cache_default":
+	case "isolate_cache_default", "agent_spawn.enabled":
 		b, err := strconv.ParseBool(value)
 		if err != nil {
 			return nil, fmt.Errorf("%s must be true|false, got %q", key, value)
 		}
 		return json.Marshal(b)
+	case "agent_spawn.max_concurrent_sub_sessions", "agent_spawn.max_depth":
+		n, err := strconv.Atoi(value)
+		if err != nil {
+			return nil, fmt.Errorf("%s must be an integer, got %q", key, value)
+		}
+		return json.Marshal(n)
 	}
 	return nil, fmt.Errorf("unknown config key %q", key)
 }
@@ -536,6 +670,19 @@ func configFromRaw(raw map[string]json.RawMessage) (config.Config, error) {
 	}
 	cfg.IsolateCacheDefault = overlay.IsolateCacheDefault
 	cfg.Hooks = overlay.Hooks
+	// Mirror config.Load's agent_spawn overlay so set/get echo the
+	// just-written values back accurately. Zero MaxConcurrent / MaxDepth
+	// fall back to the package defaults, same rule the real loader uses.
+	cfg.AgentSpawn.Enabled = overlay.AgentSpawn.Enabled
+	if overlay.AgentSpawn.MaxConcurrentSubSessions > 0 {
+		cfg.AgentSpawn.MaxConcurrentSubSessions = overlay.AgentSpawn.MaxConcurrentSubSessions
+	}
+	if overlay.AgentSpawn.MaxDepth > 0 {
+		cfg.AgentSpawn.MaxDepth = overlay.AgentSpawn.MaxDepth
+	}
+	if cfg.AgentSpawn.MaxDepth > config.MaxAgentSpawnDepthCeiling {
+		cfg.AgentSpawn.MaxDepth = config.MaxAgentSpawnDepthCeiling
+	}
 	return cfg, nil
 }
 

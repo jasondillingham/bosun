@@ -1,5 +1,89 @@
 # Releases
 
+## v0.10.0 — 2026-05-18 — "somewhat solid from day one"
+
+Three-phase push to close the foundational reliability + UX gaps
+surfaced by the v0.9 trials and the AI-engineer review. Bosun goes
+from "neat prototype" to "shippable to a stranger on macOS." All
+foundational work plus the agent-experience polish plus the
+first-five-minutes doorway.
+
+**Phase 1 — macOS reliability (closes issue #15):**
+
+Trial #3c and the v0.9 spawn bug hunt both surfaced the same
+corruption shape: iCloud File Provider stripping
+`.git/worktrees/<name>/{HEAD,commondir,gitdir}` files under load,
+making worktrees invisible to git and breaking every multi-worktree
+bosun command. Confirmed via the `/tmp/` repro experiment (clean for
+9+ minutes vs. ~5-minute corruption on iCloud-managed paths).
+
+- `internal/phantom/admin_scan.go` — new `ScanWorktreeAdmin` detects
+  both divergence shapes (iCloud `" N"`/`" (N)"` suffix phantom dirs
+  AND admin dirs missing top-level metadata). Read-only; powers the
+  doctor check and the recovery path.
+- `internal/doctor/checks_worktree_admin.go` — new
+  `CheckWorktreeAdminCorruption` doctor check returns FAIL with a
+  FixFn that reaps phantom + broken admin dirs (worktree dirs and
+  uncommitted work are NOT touched) and runs `git worktree prune`.
+- `bosun init` now refuses to run under iCloud-managed paths by
+  default (`~/Documents/`, `~/Desktop/`, `~/Library/Mobile Documents/`).
+  New `--force-icloud` opt-in for operators who've disabled iCloud
+  sync for the dir but the heuristic doesn't know it.
+- `docs/macos-setup.md` rewritten with refusal behavior, recovery
+  walkthrough, and the new doctor check.
+
+**Phase 2A — agent UX (closes issues #13 + #14):**
+
+- `bosun_spawn` MCP tool description reframed around **context
+  isolation** rather than raw parallelism. Trial #3b showed the old
+  "parallelize" pitch lost against the agent's solo-tractable
+  heuristic on small work; the new framing teaches the LLM to reach
+  for spawn only when the parent's context window is the real
+  constraint. Regression test pins the wording.
+- `bosun_check_tree` — new MCP tool returns per-child state
+  (`alive`/`dead`/`no-launch`/`done`) for a parent's spawn tree.
+  Closes the trial #3c Bug B (parent had no signal when subs
+  vanished). Same auth gate as `bosun_spawn`; only the parent's
+  own live agent can query.
+- `.bosun/audit/spawn.log` — new structured JSON log of every
+  `bosun_spawn` invocation, success and refused. 10MB / 5-file
+  rotation, flock-serialized, fail-open. Refusal gate vocabulary
+  stabilized as 7 named constants. `tool_spawn.go` refactored
+  through a `refuse(gate, err)` helper to keep logging DRY across
+  the 11 return sites.
+- `docs/v1.0-sub-task-spec.md` — design spec for the lightweight
+  `bosun_subtask` MCP tool (shared worktree, no merge cycle, per-
+  context isolation only). Pairs with `bosun_spawn` rather than
+  replacing it. v1.0 implementation work tracked under issue #11.
+
+**Phase 3 — first-five-minutes UX:**
+
+- `bosun tour` — interactive 5-step walkthrough on a throwaway
+  `/tmp` sandbox. Builds its own repo, runs through
+  init/edit/status/predict/merge/cleanup, removes the sandbox on
+  exit (or `--keep-sandbox` to preserve). `BOSUN_TOUR_AUTO=1`
+  drives the whole flow non-interactively for tests / recordings.
+- `bosun new-brief --pattern <name>` — scaffold generator emitting
+  ready-to-fill briefs for four common patterns: `recipe` (spawn-
+  warranted, from `docs/brief-recipe-template.md`), `review`
+  (multi-lane code review), `audit` (multi-lane bug hunt), and
+  `cleanup` (multi-lane refactor). Patterns ship embedded via
+  `//go:embed`; each one parses cleanly through `brief.ParseString`
+  and is end-to-end tested through `bosun init`.
+- README "Try this in 5 minutes" quickstart — three-command
+  doorway at the top of the README (clone, build, `bosun tour`).
+  Demo asset (asciinema/GIF) follows as a separate operator-driven
+  recording per the launch checklist.
+
+**Stats:** 4 GitHub issues closed (#13, #14, plus #15's
+foundational fixes — issue remains open until field-validated),
+~2,800 LOC of code + tests across `internal/phantom/`,
+`internal/doctor/`, `internal/mcp/`, `internal/briefscaffold/`,
+`cmd/bosun/`, plus docs. Three bosun-on-bosun rounds (Phase 1 was
+direct-driven for tight coupling; Phases 2A + 3 ran as 4-lane and
+3-lane parallel rounds respectively, both on `/tmp/bosun-work/`
+to dodge the iCloud trigger).
+
 ## v0.7 — 2026-05-17 (private; v0.8 will be the first public tag)
 
 Polish round + bug-hunt + refactor + future-bug-hunting test suite, all landed locally. Not yet tagged or pushed publicly — `CLAUDE.md`'s release stance gates the public visibility flip on v0.8's launch checklist.

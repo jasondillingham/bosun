@@ -760,7 +760,6 @@ func sameLabels(a, b []string) bool {
 	return true
 }
 
-
 // resolveInitLabels classifies the positional args into either numbered or
 // named mode and returns the canonical label list bosun init should create.
 //

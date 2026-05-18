@@ -246,9 +246,11 @@ func TestRunMigrate_MovesGitRegistry(t *testing.T) {
 	if strings.Contains(listing, oldPath+"\n") {
 		t.Errorf("git still tracks legacy path %q:\n%s", oldPath, listing)
 	}
-	// Confirm the new-shape path appears.
-	if !strings.Contains(listing, "-bosun-") || !strings.HasSuffix(strings.TrimSpace(listing), "refs/heads/bosun/session-1") {
-		// Trim is best-effort — just check the new-shape token is present.
+	// Confirm the new-shape path appears — every migrated worktree
+	// path now carries a `-bosun-` segment after the parent-repo
+	// disambiguation prefix.
+	if !strings.Contains(listing, "-bosun-") {
+		t.Errorf("expected migrated worktree path with '-bosun-' segment, got:\n%s", listing)
 	}
 	if _, err := os.Stat(oldPath); err == nil {
 		t.Errorf("legacy dir %q still exists after migrate", oldPath)

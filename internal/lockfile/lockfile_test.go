@@ -5,7 +5,6 @@ package lockfile
 import (
 	"errors"
 	"path/filepath"
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -56,9 +55,6 @@ func TestWithLockResult_ReturnsPayload(t *testing.T) {
 // previously lived in mcp_autostart_test.go for the withMcpSpawnLock
 // helper this package replaced.
 func TestWithLock_Serializes(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("WithLock is a no-op on Windows builds")
-	}
 	dir := t.TempDir()
 	lockPath := filepath.Join(dir, "test.lock")
 

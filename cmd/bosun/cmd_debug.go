@@ -29,9 +29,9 @@ var debugIncludeKnown = map[string]bool{
 
 func newDebugCmd() *cobra.Command {
 	var (
-		outPath   string
-		noRedact  bool
-		includes  []string
+		outPath  string
+		noRedact bool
+		includes []string
 	)
 	cmd := &cobra.Command{
 		Use:   "debug",

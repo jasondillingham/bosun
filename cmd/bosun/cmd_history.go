@@ -233,4 +233,3 @@ func padLabel(s string, n int) string {
 	}
 	return s + strings.Repeat(" ", n-len(s))
 }
-

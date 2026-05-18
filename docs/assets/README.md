@@ -43,8 +43,22 @@ asciinema upload docs/assets/bosun-tour.cast
 ```
 
 The upload returns a new URL with a fresh short code. Update the
-README's `https://asciinema.org/a/<code>` reference (both the
-`.svg` thumbnail and the click target) to the new code.
+README's asciinema link reference to the new code.
+
+## Regenerating demo.gif from the cast
+
+`demo.gif` lives in the repo root because GitHub renders inline
+GIFs in README.md but doesn't embed asciinema players. Convert the
+cast to GIF with `agg`:
+
+```sh
+brew install agg              # one-time install
+agg docs/assets/bosun-tour.cast demo.gif
+```
+
+Default theme/dimensions are reasonable for a README hero. If you
+want a smaller file, pass `--cols 80 --rows 24` or `--fps-cap 8`
+to drop the rendering rate.
 
 ## Why a tracked cast file
 

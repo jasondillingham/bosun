@@ -54,6 +54,7 @@ Exit code is 0 when no overlaps are predicted, 1 when any are flagged
 
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit machine-readable JSON ({predictions, overlaps})")
 
+	cmd.GroupID = "wiring"
 	return cmd
 }
 

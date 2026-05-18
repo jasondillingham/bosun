@@ -56,5 +56,6 @@ concurrent cleanup via the lockfile.`,
 			return nil
 		},
 	}
+	cmd.GroupID = "finishing"
 	return cmd
 }

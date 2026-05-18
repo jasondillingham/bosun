@@ -35,6 +35,7 @@ source of truth; sessions that don't connect to MCP keep working as before.`,
 	}
 
 	cmd.Flags().StringVar(&socketPath, "socket", "", "Unix socket path (default: <repo>/.bosun/mcp.sock)")
+	cmd.GroupID = "wiring"
 	return cmd
 }
 

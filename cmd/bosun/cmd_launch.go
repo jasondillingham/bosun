@@ -50,6 +50,7 @@ does not create worktrees, branches, or briefs. Use ` + "`bosun init`" + ` for t
 	cmd.Flags().BoolVar(&openAsTab, "tab", false, "open as a tab in an existing window (terminal-dependent)")
 	cmd.Flags().StringVar(&command, "command", "claude", "command to run in the launched window")
 
+	cmd.GroupID = "wiring"
 	return cmd
 }
 

@@ -28,6 +28,7 @@ func newDoneCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&force, "force", false, "mark done even if dirty or no commits ahead")
 	cmd.Flags().BoolVar(&stuck, "stuck", false, "mark STUCK instead of DONE")
 
+	cmd.GroupID = "during"
 	return cmd
 }
 

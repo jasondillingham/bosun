@@ -74,6 +74,7 @@ and writes the file atomically.`,
 		newConfigValidateCmd(),
 		newConfigInitCmd(),
 	)
+	cmd.GroupID = "wiring"
 	return cmd
 }
 

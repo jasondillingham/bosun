@@ -71,6 +71,7 @@ func newMergeCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&noLoadCheck, "no-load-check", false, "skip the pre-flight 1-minute load average check")
 	cmd.Flags().StringVar(&tree, "tree", "", "cascade-merge a parent session and all its sub-sessions (children first, parent last)")
 
+	cmd.GroupID = "finishing"
 	return cmd
 }
 

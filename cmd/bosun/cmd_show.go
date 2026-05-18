@@ -62,6 +62,7 @@ func newShowCmd() *cobra.Command {
 
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit machine-readable JSON")
 
+	cmd.GroupID = "during"
 	return cmd
 }
 

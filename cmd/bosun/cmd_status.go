@@ -69,6 +69,7 @@ func newStatusCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&summaryOnly, "summary-only", false, "print just the one-line summary (no table, events, or overlaps)")
 	cmd.Flags().BoolVar(&noTree, "no-tree", false, "force the flat table even when spawn trees exist (for scripts that parse the output)")
 
+	cmd.GroupID = "during"
 	return cmd
 }
 

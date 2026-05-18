@@ -50,6 +50,7 @@ launcher, use ` + "`bosun launch`" + ` instead.`,
 
 	cmd.Flags().BoolVar(&launch, "launch", false, "open a terminal in the worktree instead of snapshotting")
 
+	cmd.GroupID = "finishing"
 	return cmd
 }
 

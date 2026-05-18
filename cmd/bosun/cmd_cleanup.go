@@ -75,6 +75,7 @@ session number).`,
 	// default. The string form is what cobra requires here.
 	cmd.Flags().Lookup("orphans").NoOptDefVal = "0"
 
+	cmd.GroupID = "finishing"
 	return cmd
 }
 

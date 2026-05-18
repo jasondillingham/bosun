@@ -104,6 +104,7 @@ passed as a single quoted string.`,
 	cmd.Flags().IntVar(&opts.maxTokens, "max-tokens", 0, "max tokens in the Claude response (overrides config.suggest.max_tokens)")
 	cmd.Flags().BoolVar(&opts.allowOverlaps, "allow-overlaps", false, "surface validator overlap/cycle errors as warnings and write the plan anyway")
 
+	cmd.GroupID = "setup"
 	return cmd
 }
 

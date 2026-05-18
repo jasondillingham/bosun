@@ -58,6 +58,7 @@ func newListCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit machine-readable JSON")
 	cmd.Flags().BoolVar(&tree, "tree", false, "indent sub-sessions under their parent (default: flat for script consumption)")
 
+	cmd.GroupID = "during"
 	return cmd
 }
 

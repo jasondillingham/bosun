@@ -78,6 +78,7 @@ Mixing integers with names in the same invocation is a usage error.`,
 	cmd.Flags().BoolVar(&cleanPhantoms, "clean-phantoms", false, "auto-remove Finder/Spotlight phantom branch refs (off by default)")
 	cmd.Flags().BoolVar(&resume, "resume", false, "continue a previously-interrupted bosun init using .bosun/init.state")
 
+	cmd.GroupID = "setup"
 	return cmd
 }
 

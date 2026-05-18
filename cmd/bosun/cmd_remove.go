@@ -41,6 +41,7 @@ func newRemoveCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&force, "force", false, "remove even if dirty or unmerged")
 	cmd.Flags().BoolVar(&ignoreRunning, "ignore-running", false, "bypass the live-agent safety gate (discards uncommitted work the agent is editing)")
 
+	cmd.GroupID = "finishing"
 	return cmd
 }
 

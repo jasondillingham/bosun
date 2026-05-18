@@ -47,6 +47,7 @@ your own risk.`,
 	cmd.Flags().StringVar(&bind, "bind", "127.0.0.1", "address to bind (non-loopback exposes the dashboard with no auth)")
 	cmd.Flags().IntVar(&interval, "interval", 2, "seconds between /api/status recomputes")
 
+	cmd.GroupID = "wiring"
 	return cmd
 }
 

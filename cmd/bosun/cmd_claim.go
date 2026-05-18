@@ -14,6 +14,7 @@ func newClaimCmd() *cobra.Command {
 			return runClaim(cmd, args[0], args[1:])
 		},
 	}
+	cmd.GroupID = "during"
 	return cmd
 }
 

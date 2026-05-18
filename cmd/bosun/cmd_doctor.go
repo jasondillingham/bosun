@@ -94,5 +94,6 @@ anything; useful before running --fix unsupervised.`,
 	}
 	cmd.Flags().BoolVar(&fix, "fix", false, "auto-remediate the safe-to-touch issues (stale init.lock, phantom refs, orphan worktree dirs)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "with --fix: print what would be fixed, don't apply")
+	cmd.GroupID = "setup"
 	return cmd
 }

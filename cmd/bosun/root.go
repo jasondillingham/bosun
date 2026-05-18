@@ -14,6 +14,13 @@ worktree, with one place to see what every session is doing.`,
 		SilenceErrors: false,
 	}
 
+	root.AddGroup(
+		&cobra.Group{ID: "setup", Title: "Setup:"},
+		&cobra.Group{ID: "during", Title: "During a round:"},
+		&cobra.Group{ID: "finishing", Title: "Finishing a round:"},
+		&cobra.Group{ID: "wiring", Title: "Wiring + advanced:"},
+	)
+
 	root.AddCommand(
 		newInitCmd(),
 		newLaunchCmd(),

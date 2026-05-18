@@ -36,6 +36,7 @@ R manual refresh · q / Ctrl-C quit.`,
 
 	cmd.Flags().BoolVar(&noColor, "no-color", false, "disable color even on a TTY")
 
+	cmd.GroupID = "wiring"
 	return cmd
 }
 

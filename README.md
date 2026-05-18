@@ -16,12 +16,13 @@ bosun tour
 
 **Watch a recording** of the auto-driven tour (`BOSUN_TOUR_AUTO=1 bosun tour`):
 
-```sh
-# Local playback (asciinema 2.x or 3.x):
-asciinema play <(curl -fsSL https://raw.githubusercontent.com/jasondillingham/bosun/main/docs/assets/bosun-tour.cast)
-```
+[![asciicast](https://asciinema.org/a/IqJE7iqKf0KdUdf2.svg)](https://asciinema.org/a/IqJE7iqKf0KdUdf2)
 
-Or download [docs/assets/bosun-tour.cast](docs/assets/bosun-tour.cast) and run `asciinema play bosun-tour.cast` locally. (A web-embedded player will replace this once the cast is hosted on asciinema.org.)
+Or run it locally — the cast file ships in the repo at [`docs/assets/bosun-tour.cast`](docs/assets/bosun-tour.cast):
+
+```sh
+asciinema play docs/assets/bosun-tour.cast
+```
 
 ## What it does
 

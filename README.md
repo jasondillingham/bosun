@@ -4,6 +4,18 @@
 
 Coordinate parallel Claude Code (or any) sessions on isolated git worktrees, with one place to see what's happening and clean merge-back when work is done.
 
+## Try this in 5 minutes
+
+```sh
+git clone https://github.com/jasondillingham/bosun.git ~/bosun-demo
+cd ~/bosun-demo && go build -o ~/bin/bosun ./cmd/bosun
+bosun tour
+```
+
+`bosun tour` walks you through `init`, parallel edits, `predict`, `merge`, and `cleanup` on a throwaway repo — no setup, no agent launching, no Anthropic API key. About 5 minutes.
+
+[demo screencast →](TBD-asciinema-link)
+
 ## What it does
 
 ```

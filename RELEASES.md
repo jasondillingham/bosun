@@ -1,5 +1,40 @@
 # Releases
 
+## v0.10.1 — 2026-05-18 — dogfood-frictions round
+
+Closes four frictions surfaced by the architect-mcp dogfood round
+(see `docs/dogfood-architect-mcp.md`). All four shipped in a single
+4-lane bosun-on-bosun round on `/tmp/bosun-work/` (the safe path
+per issue #15's iCloud findings).
+
+- **`bosun --version`** (#16, closed). Cobra Version field on the
+  root command with build-time ldflags injection from
+  `git describe --tags --always --dirty`. `make build` and the
+  cross-compile targets both produce binaries that report the
+  derived version. Plain `go build ./...` (no Makefile) still works
+  and reports `bosun version dev` for sandbox builds. CI workflow
+  also receives the injection.
+- **`bosun predict` distinguishes claims from prose mentions**
+  (#17, closed). Code-fenced and backtick-quoted paths are claims
+  that feed the overlap calculation; plain prose mentions
+  ("`Do NOT modify internal/config/**`") are informational and
+  dropped from the overlap calc. Pinned by
+  `TestPredict_ArchitectMCPRegression` which holds the dogfood
+  regression case (17+ overlaps → ≤3).
+- **#18 verify_cmd substitution** — already fixed in `7a54b1f`
+  (2026-05-15). Closed as already-resolved; the dogfood doc ran
+  against a stale binary that predated the fix.
+- **`bosun hook install` manages .gitignore** (#12, closed). The
+  install path now appends `.claude/*` + `!.claude/settings.json`
+  with a bosun-named leading comment, so per-developer Claude
+  Code state doesn't accumulate in untracked paths a careless
+  `git add .` would sweep in. Idempotent across re-runs;
+  `--no-gitignore` opts out.
+
+Deferred to a later round: #19 (off-tree worker false-CRASHED,
+needs `bosun attach` design) and #20 (predictor coverage
+analysis, v1.x territory).
+
 ## v0.10.0 — 2026-05-18 — "somewhat solid from day one"
 
 Three-phase push to close the foundational reliability + UX gaps

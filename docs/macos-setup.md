@@ -165,6 +165,12 @@ user decision (relocate the repo). Preview first with
 
 ## Recovery: my worktrees are broken and `bosun status` shows nothing
 
+**If it already happened to you:** see
+[`incident-report-icloud.md`](./incident-report-icloud.md) for the
+operator-facing recovery flow and a report template to file your
+case on [issue #15](https://github.com/jasondillingham/bosun/issues/15).
+The short version is below.
+
 This is the issue #15 corruption shape — iCloud File Provider stripped
 your worktrees' git admin metadata. Symptoms:
 

@@ -90,7 +90,7 @@ func CheckWorktreeAdminCorruption(_ context.Context, repoRoot string) Result {
 		Name:    "worktree-admin-integrity",
 		Status:  Fail,
 		Message: msg,
-		Fix:     "remove the offending dirs under .git/worktrees/ (operator: inspect <repo>-bosun-*/ for uncommitted work first), or `bosun doctor --fix` to reap them",
+		Fix:     "run `bosun doctor --fix` to reap them (worktree content under <repo>-bosun-*/ is preserved); see docs/incident-report-icloud.md for the full recovery flow and a report template",
 		FixFn:   fix,
 		FixDescription: fmt.Sprintf(
 			"reaped %d phantom + %d broken admin dir(s) and pruned git's worktree list",

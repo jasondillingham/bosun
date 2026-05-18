@@ -2,6 +2,13 @@
 
 > *"The bosun runs the work crew on deck while the captain charts the course."*
 
+[![CI](https://github.com/jasondillingham/bosun/actions/workflows/ci.yml/badge.svg)](https://github.com/jasondillingham/bosun/actions/workflows/ci.yml)
+[![Fuzz](https://github.com/jasondillingham/bosun/actions/workflows/fuzz.yml/badge.svg)](https://github.com/jasondillingham/bosun/actions/workflows/fuzz.yml)
+[![Stress](https://github.com/jasondillingham/bosun/actions/workflows/stress.yml/badge.svg)](https://github.com/jasondillingham/bosun/actions/workflows/stress.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Go version](https://img.shields.io/github/go-mod/go-version/jasondillingham/bosun)](go.mod)
+[![Latest release](https://img.shields.io/github/v/release/jasondillingham/bosun)](https://github.com/jasondillingham/bosun/releases)
+
 Coordinate parallel Claude Code (or any) sessions on isolated git worktrees, with one place to see what's happening and clean merge-back when work is done.
 
 ## Try this in 5 minutes

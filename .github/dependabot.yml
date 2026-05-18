@@ -1,0 +1,62 @@
+# Dependabot configuration for bosun.
+#
+# Two ecosystems are tracked: Go modules (gomod) and GitHub Actions
+# pinned in workflow files. Security advisories from GitHub's database
+# open PRs automatically regardless of the schedule below — the
+# schedule only controls version-update sweeps.
+#
+# Patch and minor updates are grouped to keep the noise low; a single
+# weekly PR collects them. Major updates open separately so the
+# maintainer can review breaking changes one-at-a-time. Nothing
+# auto-merges — every PR waits for human review.
+
+version: 2
+
+updates:
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    groups:
+      go-modules:
+        applies-to: version-updates
+        update-types:
+          - "patch"
+          - "minor"
+      go-modules-security:
+        applies-to: security-updates
+        update-types:
+          - "patch"
+          - "minor"
+          - "major"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    groups:
+      github-actions:
+        applies-to: version-updates
+        update-types:
+          - "patch"
+          - "minor"
+      github-actions-security:
+        applies-to: security-updates
+        update-types:
+          - "patch"
+          - "minor"
+          - "major"

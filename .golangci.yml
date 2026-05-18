@@ -1,0 +1,71 @@
+# golangci-lint configuration for bosun.
+#
+# This is the initial gate, not a fully-cleaned codebase. Bosun pre-dates
+# lint pressure, so the enabled linter set is intentionally conservative:
+# six high-signal checks (errcheck, staticcheck, gosec, ineffassign,
+# unused, govet) and a couple of category-level exclusions for findings
+# the team has explicitly accepted (see below).
+#
+# Cleaning up the remaining findings is future-round work. The point of
+# this config is to surface real issues going forward and block any new
+# regressions in PR. To add findings to the suppress list, prefer
+# narrow `// nolint:<linter> // <reason>` directives on individual lines
+# over broadening the rules here.
+
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    - errcheck      # unchecked errors
+    - govet         # standard go vet checks (matches what `make vet` runs)
+    - ineffassign   # ineffectual assignments
+    - staticcheck   # SA*/QF*/ST*/S1* checks rolled into one analyzer
+    - unused        # dead code (functions, vars, consts, types, fields)
+    - gosec         # security-flavored heuristics
+
+  settings:
+    errcheck:
+      # Idiomatic Go defers a Close() without checking its return; bosun
+      # follows that pattern throughout (see internal/state/, internal/
+      # lockfile/, etc). Suppress the noisy class entirely; if a specific
+      # Close failure ever matters, the call site can check explicitly.
+      exclude-functions:
+        - (io.Closer).Close
+        - (*os.File).Close
+        - (*database/sql.DB).Close
+        - (*database/sql.Rows).Close
+        - (*database/sql.Stmt).Close
+
+    gosec:
+      excludes:
+        # G306: bosun writes config + state files with 0o644/0o755 on
+        # purpose — coordination state needs to be readable by sibling
+        # tools (e.g. the operator's editor). G306's default-strict
+        # thresholds flag every such write, drowning the real findings.
+        - G306
+        # G304: bosun reads file paths constructed from worktree roots,
+        # session names, and user-provided briefs — all already validated
+        # by the caller. The taint-tracking flags every os.ReadFile that
+        # isn't a literal, which is most of them.
+        - G304
+
+  exclusions:
+    # Lint findings inside _test.go files are lower priority than findings
+    # in production code; a couple of categories produce noise in tests
+    # specifically (e.g. tests intentionally use weak randomness, deferred
+    # writers without check, etc.). Excluding here keeps the signal-to-
+    # noise ratio high for the production-code findings the gate is
+    # really meant to catch.
+    rules:
+      - path: _test\.go
+        linters:
+          - gosec
+          - errcheck
+
+formatters:
+  enable:
+    - gofmt

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -118,9 +119,24 @@ func runTour(w io.Writer, r io.Reader, opts tourOpts) error {
 	}()
 
 	scan := bufio.NewScanner(r)
+	// autoStepPause controls how long auto-mode lingers between steps. Zero
+	// (the default for tests) blasts through with no delay; recordings can
+	// set BOSUN_TOUR_AUTO_PAUSE to e.g. "2s" so an asciinema viewer has time
+	// to read each step before the next one paints.
+	autoStepPause := time.Duration(0)
+	if auto {
+		if raw := os.Getenv("BOSUN_TOUR_AUTO_PAUSE"); raw != "" {
+			if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+				autoStepPause = d
+			}
+		}
+	}
 	waitForKey := func() error {
 		if auto {
 			fmt.Fprintln(w, "[BOSUN_TOUR_AUTO=1: continuing]")
+			if autoStepPause > 0 {
+				time.Sleep(autoStepPause)
+			}
 			return nil
 		}
 		fmt.Fprint(w, "Press Enter to continue (Ctrl-C aborts)... ")
@@ -162,17 +178,21 @@ func runTour(w io.Writer, r io.Reader, opts tourOpts) error {
 
 	// ---- Step 3 ----
 	fmt.Fprintln(w, "\n── Step 3/5 ──────────────────────────────────────────────")
-	fmt.Fprintln(w, "Simulating edits in each session worktree...")
+	fmt.Fprintln(w, "Simulating each session's work + committing on its branch...")
 	if err := simulateTourEdits(sandbox); err != nil {
 		return internalErr("simulate session edits", err)
+	}
+	if err := commitTourEdits(sandbox); err != nil {
+		return internalErr("commit session work", err)
 	}
 	fmt.Fprintln(w, "Running `bosun status`:")
 	if err := runTourBosun(w, sandbox, bin, "status"); err != nil {
 		return err
 	}
-	fmt.Fprintln(w, "\nBosun saw both sessions making changes. In a real run, agents")
-	fmt.Fprintln(w, "would be doing this work in parallel — and `bosun predict` would")
-	fmt.Fprintln(w, "warn if they were about to step on each other.")
+	fmt.Fprintln(w, "\nEach session committed its change to its own branch.")
+	fmt.Fprintln(w, "Main is untouched. In a real run, agents would be doing")
+	fmt.Fprintln(w, "this work in parallel; bosun would track per-session state")
+	fmt.Fprintln(w, "(WORKING / DIRTY / DONE) live as agents wrote files.")
 	if err := waitForKey(); err != nil {
 		return err
 	}
@@ -194,10 +214,7 @@ func runTour(w io.Writer, r io.Reader, opts tourOpts) error {
 
 	// ---- Step 5 ----
 	fmt.Fprintln(w, "\n── Step 5/5 ──────────────────────────────────────────────")
-	fmt.Fprintln(w, "Committing each session's work, marking done, merging, cleaning up...")
-	if err := commitTourEdits(sandbox); err != nil {
-		return internalErr("commit session work", err)
-	}
+	fmt.Fprintln(w, "Marking each session done, merging, cleaning up...")
 	if err := runTourBosun(w, sandbox, bin, "done", "session-1", "-m", "tour session-1 ready"); err != nil {
 		return err
 	}

@@ -16,7 +16,7 @@ bosun tour
 
 **Watch a recording** of the auto-driven tour (`BOSUN_TOUR_AUTO=1 bosun tour`):
 
-[![asciicast](https://asciinema.org/a/IqJE7iqKf0KdUdf2.svg)](https://asciinema.org/a/IqJE7iqKf0KdUdf2)
+[![asciicast](https://asciinema.org/a/aPMDJsNbseBdi307.svg)](https://asciinema.org/a/aPMDJsNbseBdi307)
 
 Or run it locally — the cast file ships in the repo at [`docs/assets/bosun-tour.cast`](docs/assets/bosun-tour.cast):
 

@@ -9,7 +9,7 @@ headless mode (no TTY needed; the auto-mode env var skips the
 keypress waits). End-to-end: sandbox setup → init → simulated
 edits → status → predict → merge × 2 → cleanup → teardown.
 
-**Hosted player:** https://asciinema.org/a/IqJE7iqKf0KdUdf2
+**Hosted player:** https://asciinema.org/a/aPMDJsNbseBdi307
 
 **Local playback:**
 

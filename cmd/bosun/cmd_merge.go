@@ -205,9 +205,10 @@ func runMerge(cmd *cobra.Command, args []string, opts mergeOpts) error {
 			continue
 		}
 		mark := "✓"
-		if r.status == mergeStatusSkipped {
+		switch r.status {
+		case mergeStatusSkipped:
 			mark = "⏭"
-		} else if r.status == mergeStatusConflict {
+		case mergeStatusConflict:
 			mark = "✗"
 		}
 		printf("  %s %s: %s — %s\n", mark, r.name, r.status, r.reason)

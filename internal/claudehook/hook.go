@@ -217,10 +217,7 @@ func hasBosunAncestor(cwd string) bool {
 			return true
 		}
 		if info, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
-			if !info.IsDir() {
-				return true
-			}
-			return false
+			return !info.IsDir()
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {

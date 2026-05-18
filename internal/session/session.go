@@ -308,9 +308,7 @@ func Derive(ctx context.Context, c *git.Client, cfg config.Config, repoRoot stri
 // Returns an error on anything else — named labels go through ParseLabel.
 func ParseName(s string) (int, error) {
 	s = strings.TrimSpace(s)
-	if strings.HasPrefix(s, "session-") {
-		s = strings.TrimPrefix(s, "session-")
-	}
+	s = strings.TrimPrefix(s, "session-")
 	n, err := strconv.Atoi(s)
 	if err != nil || n < 1 {
 		return 0, fmt.Errorf("invalid session reference %q (want N or session-N)", s)

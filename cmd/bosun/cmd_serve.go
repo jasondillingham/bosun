@@ -141,7 +141,7 @@ func writeServePidfile(repoRoot string, pid int, addr string) error {
 	}
 	tmpName := tmp.Name()
 	cleanup := func() { _ = os.Remove(tmpName) }
-	if _, err := tmp.Write([]byte(fmt.Sprintf("%d\n%s\n", pid, addr))); err != nil {
+	if _, err := fmt.Fprintf(tmp, "%d\n%s\n", pid, addr); err != nil {
 		_ = tmp.Close()
 		cleanup()
 		return fmt.Errorf("write temp pidfile: %w", err)

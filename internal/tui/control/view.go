@@ -138,9 +138,10 @@ func (m *Model) renderTable() string {
 	var b strings.Builder
 	for ri, row := range rows {
 		line := joinCols(row, colW, 2)
-		if ri == m.selected+1 { // +1 to skip header row
+		switch ri {
+		case m.selected + 1: // +1 to skip header row
 			line = m.style(selectedRowStyle).Render(line)
-		} else if ri == 0 {
+		case 0:
 			line = m.style(headerRowStyle).Render(line)
 		}
 		b.WriteString(line)

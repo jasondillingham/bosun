@@ -259,7 +259,7 @@ func TestRenderText_EventsSection(t *testing.T) {
 	// table header so readers see the alerts before scanning the grid.
 	idxSummary := strings.Index(out, "3 sessions")
 	idxHeader := strings.Index(out, "SESSION")
-	if !(idxSummary < idxProgress && idxProgress < idxHeader) {
+	if idxSummary >= idxProgress || idxProgress >= idxHeader {
 		t.Errorf("events should sit between summary and header (summary=%d, event=%d, header=%d)", idxSummary, idxProgress, idxHeader)
 	}
 }
@@ -405,7 +405,7 @@ func TestRenderText_TreeOrderingIndentsSubsUnderParents(t *testing.T) {
 	la := lineOf("└─ session-1.auth") // sub
 	lh := lineOf("└─ session-1.http") // sub
 	l2 := lineOf("session-2 ")        // top-level session-2
-	if !(l1 < la && la < lh && lh < l2) {
+	if l1 >= la || la >= lh || lh >= l2 {
 		t.Errorf("tree order wrong: session-1=%d auth=%d http=%d session-2=%d\n--- output ---\n%s",
 			l1, la, lh, l2, out)
 	}

@@ -57,7 +57,7 @@ anything; useful before running --fix unsupervised.`,
 			if fix {
 				outcomes := doctor.ApplyFixes(rc.repoRoot, results, dryRun)
 				if len(outcomes) > 0 {
-					os.Stdout.WriteString("\n")
+					_, _ = os.Stdout.WriteString("\n")
 					doctor.WriteFixReport(os.Stdout, outcomes)
 				}
 				// Exit non-zero if any fix errored, regardless of unfixable

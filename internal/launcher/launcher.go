@@ -65,7 +65,7 @@ func Launch(opts Options) (Strategy, error) {
 	case StrategyTerminal:
 		if err := launchTerminal(opts); err != nil {
 			// On failure, fall back to print rather than erroring out the whole init.
-			fmt.Fprintf(opts.Out, "bosun: terminal launch failed for %s: %v — falling back to print\n", opts.SessionName, err)
+			_, _ = fmt.Fprintf(opts.Out, "bosun: terminal launch failed for %s: %v — falling back to print\n", opts.SessionName, err)
 			printFallback(opts)
 			return StrategyPrint, nil
 		}
@@ -273,9 +273,9 @@ func spawnDetached(cmd *exec.Cmd, sessionName string, outWriter io.Writer) error
 		if err != nil && outWriter != nil {
 			msg := strings.TrimSpace(stderr.String())
 			if msg != "" {
-				fmt.Fprintf(outWriter, "bosun: launcher (%s) child exited %v: %s\n", sessionName, err, msg)
+				_, _ = fmt.Fprintf(outWriter, "bosun: launcher (%s) child exited %v: %s\n", sessionName, err, msg)
 			} else {
-				fmt.Fprintf(outWriter, "bosun: launcher (%s) child exited %v\n", sessionName, err)
+				_, _ = fmt.Fprintf(outWriter, "bosun: launcher (%s) child exited %v\n", sessionName, err)
 			}
 		}
 	}()

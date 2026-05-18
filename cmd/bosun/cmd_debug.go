@@ -111,7 +111,7 @@ func (o debugOptions) includeClaims() bool { return o.includes["all"] }
 // the maintainer still gets the parts that did work.
 func writeDebugBundle(w io.Writer, rc *runCtx, opts debugOptions, now time.Time) {
 	bw := bufio.NewWriter(w)
-	defer bw.Flush()
+	defer func() { _ = bw.Flush() }()
 
 	writeBanner(bw, fmt.Sprintf("BOSUN DEBUG REPORT — %s", now.Format("2006-01-02 15:04:05 UTC")))
 	fmt.Fprintf(bw, "repo: %s\n", rc.repoRoot)
@@ -205,7 +205,7 @@ func writeGitOutput(w io.Writer, ctx context.Context, dir string, args ...string
 		fmt.Fprintln(w, "(empty)")
 		return
 	}
-	w.Write(out)
+	_, _ = w.Write(out)
 	if out[len(out)-1] != '\n' {
 		fmt.Fprintln(w)
 	}
@@ -245,7 +245,7 @@ func writeConfigSection(w io.Writer, repoRoot string, redact bool) {
 	if redact {
 		body = debug.Redact(body)
 	}
-	fmt.Fprint(w, body)
+	_, _ = fmt.Fprint(w, body)
 	if !strings.HasSuffix(body, "\n") {
 		fmt.Fprintln(w)
 	}
@@ -313,7 +313,7 @@ func writeFileSectionWithRedact(w io.Writer, path string, redact bool) {
 		fmt.Fprintln(w, "(empty)")
 		return
 	}
-	fmt.Fprint(w, body)
+	_, _ = fmt.Fprint(w, body)
 	if !strings.HasSuffix(body, "\n") {
 		fmt.Fprintln(w)
 	}

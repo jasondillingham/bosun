@@ -144,14 +144,14 @@ func WriteReport(w io.Writer, repoRoot string, results []Result) {
 			fmt.Fprintf(w, "      fix: %s\n", r.Fix)
 		}
 	}
-	fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w)
 	switch {
 	case fails > 0:
 		fmt.Fprintf(w, "%d failure(s), %d warning(s) — bosun may not work cleanly until these are addressed.\n", fails, warns)
 	case warns > 0:
 		fmt.Fprintf(w, "%d warning(s) — bosun should work but the operator should be aware.\n", warns)
 	default:
-		fmt.Fprintln(w, "All checks passed.")
+		_, _ = fmt.Fprintln(w, "All checks passed.")
 	}
 }
 
@@ -201,9 +201,9 @@ func WriteFixReport(w io.Writer, outcomes []FixOutcome) {
 		return
 	}
 	if outcomes[0].DryRun {
-		fmt.Fprintln(w, "Auto-fixes (dry-run; nothing applied):")
+		_, _ = fmt.Fprintln(w, "Auto-fixes (dry-run; nothing applied):")
 	} else {
-		fmt.Fprintln(w, "Auto-fixes:")
+		_, _ = fmt.Fprintln(w, "Auto-fixes:")
 	}
 	var applied, failed int
 	for _, oc := range outcomes {

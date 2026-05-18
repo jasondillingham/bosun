@@ -73,7 +73,7 @@ func CheckLoad(out io.Writer, op string, threshold float64, pause time.Duration)
 	if load <= threshold {
 		return false
 	}
-	fmt.Fprintf(out, "system load is %.2f; %s may be slow (--no-load-check to skip)\n", load, op)
+	_, _ = fmt.Fprintf(out, "system load is %.2f; %s may be slow (--no-load-check to skip)\n", load, op)
 	if pause > 0 {
 		time.Sleep(pause)
 	}

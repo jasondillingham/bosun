@@ -44,7 +44,7 @@ func checkDirWriteable(dir, name, description string) Result {
 			Fix:     fmt.Sprintf("verify ownership and permissions on %s", dir),
 		}
 	}
-	defer os.Remove(sentinel)
+	defer func() { _ = os.Remove(sentinel) }()
 	if _, err := os.ReadFile(sentinel); err != nil {
 		return Result{
 			Name:    name,

@@ -53,7 +53,7 @@ func CheckMCPDaemonStartup(_ context.Context, repoRoot string) Result {
 	// inside the bind path still cleans up.
 	probePath := sock + ".doctor-probe-" + strconv.Itoa(os.Getpid())
 	_ = os.Remove(probePath)
-	defer os.Remove(probePath)
+	defer func() { _ = os.Remove(probePath) }()
 
 	ln, err := net.Listen("unix", probePath)
 	if err != nil {

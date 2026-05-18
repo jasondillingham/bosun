@@ -263,7 +263,7 @@ func (s *Server) Stop() error {
 // the SDK's server is concurrency-safe (the HTTP example does the same).
 func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 	defer s.connWG.Done()
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	transport := &connTransport{conn: conn}
 	// Run blocks until the connection closes or the context is cancelled.

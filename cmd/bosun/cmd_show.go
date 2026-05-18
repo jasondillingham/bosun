@@ -168,7 +168,7 @@ func renderShowText(rc *runCtx, s *session.Session) error {
 		return internalErr("read brief", err)
 	} else if briefBody != "" {
 		fmt.Fprintln(os.Stdout, "\n--- BOSUN_BRIEF.md ---")
-		fmt.Fprint(os.Stdout, briefBody)
+		_, _ = fmt.Fprint(os.Stdout, briefBody)
 		if !strings.HasSuffix(briefBody, "\n") {
 			fmt.Fprintln(os.Stdout)
 		}

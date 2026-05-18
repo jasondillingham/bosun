@@ -71,7 +71,7 @@ func (s *Server) toolPredict(_ context.Context, _ *mcp.CallToolRequest, args Pre
 		return nil, PredictResult{}, fmt.Errorf("temp plan: %w", err)
 	}
 	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
+	defer func() { _ = os.Remove(tmpPath) }()
 	if _, err := tmp.WriteString(args.Plan); err != nil {
 		_ = tmp.Close()
 		return nil, PredictResult{}, fmt.Errorf("write temp plan: %w", err)

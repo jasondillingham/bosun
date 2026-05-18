@@ -26,7 +26,7 @@ func TestLoad_MissingReturnsNotExist(t *testing.T) {
 
 func TestSaveLoad_RoundTrip(t *testing.T) {
 	dir := t.TempDir()
-	s := New([]string{"session-1", "session-2", "session-3"}, "plan.md")
+	s := New([]string{"session-1", "session-2", "session-3"}, "plan.md", "")
 	s.CurrentSession = "session-2"
 	s.CurrentStep = StepGitWorktreeAdd
 	s.CompletedSessions = []string{"session-1"}
@@ -64,7 +64,7 @@ func TestExists(t *testing.T) {
 	if Exists(dir) {
 		t.Fatal("Exists(empty) = true, want false")
 	}
-	if err := New([]string{"session-1"}, "").Save(dir); err != nil {
+	if err := New([]string{"session-1"}, "", "").Save(dir); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 	if !Exists(dir) {
@@ -74,7 +74,7 @@ func TestExists(t *testing.T) {
 
 func TestMarkComplete_PersistsAcrossReload(t *testing.T) {
 	dir := t.TempDir()
-	s := New([]string{"session-1", "session-2"}, "")
+	s := New([]string{"session-1", "session-2"}, "", "")
 	if err := s.SetCurrent(dir, "session-1", StepBranchCreate); err != nil {
 		t.Fatalf("SetCurrent: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestMarkComplete_PersistsAcrossReload(t *testing.T) {
 
 func TestMarkComplete_Idempotent(t *testing.T) {
 	dir := t.TempDir()
-	s := New([]string{"session-1", "session-2"}, "")
+	s := New([]string{"session-1", "session-2"}, "", "")
 	if err := s.MarkComplete(dir, "session-1"); err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestMarkComplete_Idempotent(t *testing.T) {
 
 func TestClear_RemovesFile(t *testing.T) {
 	dir := t.TempDir()
-	s := New([]string{"session-1"}, "")
+	s := New([]string{"session-1"}, "", "")
 	if err := s.Save(dir); err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +144,7 @@ func TestSave_AtomicWriteLeavesNoTmp(t *testing.T) {
 	// linger on disk. A leaked .tmp would confuse operator inspection
 	// and risk being mistaken for the real state file.
 	dir := t.TempDir()
-	s := New([]string{"session-1", "session-2"}, "plan.md")
+	s := New([]string{"session-1", "session-2"}, "plan.md", "")
 	if err := s.Save(dir); err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +161,7 @@ func TestSave_AtomicWriteLeavesNoTmp(t *testing.T) {
 
 func TestSave_ProducesValidJSON(t *testing.T) {
 	dir := t.TempDir()
-	s := New([]string{"session-1", "session-2"}, "plan.md")
+	s := New([]string{"session-1", "session-2"}, "plan.md", "")
 	s.CompletedSessions = []string{"session-1"}
 	s.CurrentSession = "session-2"
 	s.CurrentStep = StepGitWorktreeAdd
@@ -183,11 +183,33 @@ func TestSave_ProducesValidJSON(t *testing.T) {
 	}
 }
 
+// TestRoundTimestamp_RoundTripsForResume locks in the contract that lets
+// `bosun init --resume` reproduce the same on-disk worktree paths:
+// the UTC timestamp captured at init invocation must survive Save/Load.
+// A new timestamp generated at resume time would create a fresh second
+// worktree alongside the half-finished one — the bug this field was
+// added to prevent (see docs/uid-worktree-design.md scheme C).
+func TestRoundTimestamp_RoundTripsForResume(t *testing.T) {
+	dir := t.TempDir()
+	const ts = "20260518-115400"
+	s := New([]string{"session-1", "session-2"}, "plan.md", ts)
+	if err := s.Save(dir); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.RoundTimestamp != ts {
+		t.Errorf("RoundTimestamp = %q, want %q", got.RoundTimestamp, ts)
+	}
+}
+
 func TestSessionLabels_StoresExplicitLabels(t *testing.T) {
 	// Named-session init must preserve the operator's label list so
 	// `bosun init --resume` with no args can still re-derive auth/http/storage
 	// rather than fabricating session-1..session-N.
-	s := New([]string{"auth", "http", "storage"}, "plan.md")
+	s := New([]string{"auth", "http", "storage"}, "plan.md", "")
 	got := s.SessionLabels()
 	want := []string{"auth", "http", "storage"}
 	if len(got) != len(want) {
@@ -222,7 +244,7 @@ func TestSessionLabels_PersistsAcrossReload(t *testing.T) {
 	// After Save/Load, the labels list must survive intact — that's what
 	// `bosun init --resume` with no args reads to derive the label set.
 	dir := t.TempDir()
-	s := New([]string{"auth", "http"}, "")
+	s := New([]string{"auth", "http"}, "", "")
 	if err := s.Save(dir); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -258,7 +280,7 @@ func TestConcurrentWritesDoNotTear(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		s := New([]string{"session-1", "session-2", "session-3"}, "plan.md")
+		s := New([]string{"session-1", "session-2", "session-3"}, "plan.md", "")
 		for i := 0; i < iters; i++ {
 			s.CurrentSession = "session-A"
 			if err := s.Save(dir); err != nil {
@@ -269,7 +291,7 @@ func TestConcurrentWritesDoNotTear(t *testing.T) {
 	}()
 	go func() {
 		defer wg.Done()
-		s := New([]string{"session-1", "session-2", "session-3"}, "plan.md")
+		s := New([]string{"session-1", "session-2", "session-3"}, "plan.md", "")
 		for i := 0; i < iters; i++ {
 			s.CurrentSession = "session-B"
 			if err := s.Save(dir); err != nil {

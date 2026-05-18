@@ -127,7 +127,7 @@ func TestCheckTree_FourStates(t *testing.T) {
 
 	// Build a running-paths set the fake runningFn will check against.
 	// Always include the parent so the auth gate passes.
-	parentWT := session.WorktreePathForLabel(tmp, cfg, parent)
+	parentWT := session.WorktreePathForLabel(tmp, cfg, parent, "")
 	if err := os.MkdirAll(parentWT, 0o755); err != nil {
 		t.Fatalf("mkdir parent worktree: %v", err)
 	}
@@ -137,7 +137,7 @@ func TestCheckTree_FourStates(t *testing.T) {
 		if err := srv.spawnTree.AddChild(parent, tc.label); err != nil {
 			t.Fatalf("add child %s: %v", tc.label, err)
 		}
-		wtPath := session.WorktreePathForLabel(tmp, cfg, tc.label)
+		wtPath := session.WorktreePathForLabel(tmp, cfg, tc.label, "")
 		if tc.needsWT {
 			if err := os.MkdirAll(wtPath, 0o755); err != nil {
 				t.Fatalf("mkdir %s worktree: %v", tc.label, err)
@@ -178,7 +178,7 @@ func TestCheckTree_FourStates(t *testing.T) {
 	if err := srv.spawnTree.AddChild(parent, brokenLabel); err != nil {
 		t.Fatalf("add corrupt child: %v", err)
 	}
-	brokenWT := session.WorktreePathForLabel(tmp, cfg, brokenLabel)
+	brokenWT := session.WorktreePathForLabel(tmp, cfg, brokenLabel, "")
 	if err := os.MkdirAll(brokenWT, 0o755); err != nil {
 		t.Fatalf("mkdir corrupt worktree: %v", err)
 	}
@@ -262,7 +262,7 @@ func TestCheckTree_EmptyTreeReturnsEmptyChildren(t *testing.T) {
 	if err := srv.spawnTree.AddTopLevel(parent); err != nil {
 		t.Fatalf("seed parent: %v", err)
 	}
-	parentWT := session.WorktreePathForLabel(tmp, *srv.cfg, parent)
+	parentWT := session.WorktreePathForLabel(tmp, *srv.cfg, parent, "")
 	if err := os.MkdirAll(parentWT, 0o755); err != nil {
 		t.Fatalf("mkdir parent worktree: %v", err)
 	}

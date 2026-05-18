@@ -96,7 +96,7 @@ func TestServer_Show_Present(t *testing.T) {
 	if err != nil {
 		t.Fatalf("config.Load: %v", err)
 	}
-	wt := filepath.Join(filepath.Dir(repo), filepath.Base(repo)+cfg.WorktreeSuffixForLabel("session-1"))
+	wt := filepath.Join(filepath.Dir(repo), filepath.Base(repo)+cfg.WorktreeSuffixForLabel("session-1", ""))
 	briefBody := "# Bosun brief — session-1\n\n## Your assignment\n\nDo the thing.\n"
 	if err := os.WriteFile(filepath.Join(wt, "BOSUN_BRIEF.md"), []byte(briefBody), 0o644); err != nil {
 		t.Fatalf("write brief: %v", err)
@@ -165,7 +165,7 @@ func TestSchema_ShowAPIJSON_LockedKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("config.Load: %v", err)
 	}
-	wt := filepath.Join(filepath.Dir(repo), filepath.Base(repo)+cfg.WorktreeSuffixForLabel("session-1"))
+	wt := filepath.Join(filepath.Dir(repo), filepath.Base(repo)+cfg.WorktreeSuffixForLabel("session-1", ""))
 	if err := os.WriteFile(filepath.Join(wt, "BOSUN_BRIEF.md"), []byte("# brief\n"), 0o644); err != nil {
 		t.Fatalf("write brief: %v", err)
 	}
@@ -331,7 +331,7 @@ func addBosunSession(t *testing.T, repo, label string) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git branch %s: %v\n%s", branch, err, out)
 	}
-	worktreePath := filepath.Join(filepath.Dir(repo), filepath.Base(repo)+cfg.WorktreeSuffixForLabel(label))
+	worktreePath := filepath.Join(filepath.Dir(repo), filepath.Base(repo)+cfg.WorktreeSuffixForLabel(label, ""))
 	cmd = exec.Command("git", "worktree", "add", worktreePath, branch)
 	cmd.Dir = repo
 	if out, err := cmd.CombinedOutput(); err != nil {

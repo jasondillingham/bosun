@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -334,12 +335,61 @@ func commitTourEdits(sandboxRoot string) error {
 	return nil
 }
 
-// tourWorktreePath mirrors bosun's default worktree-suffix pattern
-// (<basename>-bosun-N alongside the main worktree).
+// tourWorktreePath finds session N's worktree dir alongside the sandbox.
+// Since v0.10's UID-per-worktree change (docs/uid-worktree-design.md),
+// `bosun init` stamps each round's dirs with a UTC timestamp, so the
+// on-disk name is `<basename>-bosun-<YYYYMMDD-HHMMSS>-N`. We scan the
+// parent for that shape and fall back to the legacy `<basename>-bosun-N`
+// form when nothing matches — keeps the tour working for both the new
+// naming and any operator who ran a pre-v0.10 bosun against the sandbox.
 func tourWorktreePath(sandboxRoot string, n int) string {
 	parent := filepath.Dir(sandboxRoot)
 	name := filepath.Base(sandboxRoot)
-	return filepath.Join(parent, fmt.Sprintf("%s-bosun-%d", name, n))
+	prefix := name + "-bosun-"
+	sub := strconv.Itoa(n)
+	legacy := filepath.Join(parent, prefix+sub)
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		return legacy
+	}
+	wantSuffix := "-" + sub
+	for _, e := range entries {
+		base := e.Name()
+		if !strings.HasPrefix(base, prefix) {
+			continue
+		}
+		tail := strings.TrimPrefix(base, prefix)
+		if tail == sub {
+			return filepath.Join(parent, base)
+		}
+		if strings.HasSuffix(tail, wantSuffix) {
+			head := strings.TrimSuffix(tail, wantSuffix)
+			if looksLikeTourRoundTimestamp(head) {
+				return filepath.Join(parent, base)
+			}
+		}
+	}
+	return legacy
+}
+
+// looksLikeTourRoundTimestamp matches the UTC `YYYYMMDD-HHMMSS` token
+// cmd_init bakes into worktree dir names. Kept colocated with
+// tourWorktreePath so the tour's path lookup doesn't reach into another
+// package's internals.
+func looksLikeTourRoundTimestamp(s string) bool {
+	if len(s) != 15 || s[8] != '-' {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if i == 8 {
+			continue
+		}
+		ch := s[i]
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // runTourBosun shells out to the bosun binary `bin` inside `dir` and

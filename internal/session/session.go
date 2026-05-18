@@ -380,19 +380,24 @@ func IsNumericLabel(label string) bool {
 
 // WorktreePath returns the canonical worktree path for numeric session N
 // relative to the repo's parent dir.
-// Example: WorktreePath("/code/myproj", cfg, 3) => "/code/myproj-bosun-3".
-func WorktreePath(repoRoot string, cfg config.Config, n int) string {
-	return WorktreePathForLabel(repoRoot, cfg, cfg.SessionName(n))
+// Example: WorktreePath("/code/myproj", cfg, 3, "") => "/code/myproj-bosun-3".
+// A non-empty roundTimestamp produces the scheme-C UID-per-worktree form
+// (see docs/uid-worktree-design.md).
+func WorktreePath(repoRoot string, cfg config.Config, n int, roundTimestamp string) string {
+	return WorktreePathForLabel(repoRoot, cfg, cfg.SessionName(n), roundTimestamp)
 }
 
 // WorktreePathForLabel returns the canonical worktree path for a session
 // label. Numeric ("session-3") and named ("auth") labels share the same
 // computation — only the suffix differs.
-// Example: WorktreePathForLabel("/code/myproj", cfg, "auth") => "/code/myproj-bosun-auth".
-func WorktreePathForLabel(repoRoot string, cfg config.Config, label string) string {
+// Example: WorktreePathForLabel("/code/myproj", cfg, "auth", "") => "/code/myproj-bosun-auth".
+// Non-empty roundTimestamp ("20260518-115400") yields
+// "/code/myproj-bosun-20260518-115400-auth" per scheme C
+// (docs/uid-worktree-design.md).
+func WorktreePathForLabel(repoRoot string, cfg config.Config, label, roundTimestamp string) string {
 	parent := filepath.Dir(repoRoot)
 	base := filepath.Base(repoRoot)
-	return filepath.Join(parent, base+cfg.WorktreeSuffixForLabel(label))
+	return filepath.Join(parent, base+cfg.WorktreeSuffixForLabel(label, roundTimestamp))
 }
 
 // LegacyWorktreePathForLabel returns the worktree path under the pre-v0.11

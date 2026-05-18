@@ -73,7 +73,7 @@ func (s *Server) toolCheckTree(_ context.Context, _ *mcp.CallToolRequest, args C
 	}
 
 	repoRoot := s.state.RepoRoot()
-	parentWorktree := session.WorktreePathForLabel(repoRoot, *s.cfg, parent)
+	parentWorktree := session.WorktreePathForLabel(repoRoot, *s.cfg, parent, "")
 	if _, running := s.runningFn(parentWorktree); !running {
 		return errResult(fmt.Errorf("no live agent detected in %s's worktree; bosun_check_tree requires the caller to be running inside the named parent", parent)), CheckTreeResult{}, nil
 	}
@@ -127,7 +127,7 @@ func (s *Server) evaluateChild(repoRoot, label string, brokenAdmins map[string]s
 		return CheckTreeChildResult{Label: label, State: CheckTreeStateDone}
 	}
 
-	worktreePath := session.WorktreePathForLabel(repoRoot, *s.cfg, label)
+	worktreePath := session.WorktreePathForLabel(repoRoot, *s.cfg, label, "")
 	if _, err := os.Stat(worktreePath); err != nil {
 		if os.IsNotExist(err) {
 			return CheckTreeChildResult{

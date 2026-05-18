@@ -349,9 +349,11 @@ func (c Config) Validate() error {
 }
 
 // WorktreeSuffix substitutes the session number into the configured pattern.
-// Example: WorktreeSuffix(3) => "-bosun-3" with the default pattern.
-func (c Config) WorktreeSuffix(n int) string {
-	return c.WorktreeSuffixForLabel(fmt.Sprintf("%d", n))
+// Example: WorktreeSuffix(3, "") => "-bosun-3" with the default pattern.
+// A non-empty roundTimestamp produces `-bosun-<ts>-3` per the scheme-C
+// UID-per-worktree design (see docs/uid-worktree-design.md).
+func (c Config) WorktreeSuffix(n int, roundTimestamp string) string {
+	return c.WorktreeSuffixForLabel(fmt.Sprintf("%d", n), roundTimestamp)
 }
 
 // WorktreeSuffixForLabel substitutes a session label into the configured
@@ -359,13 +361,24 @@ func (c Config) WorktreeSuffix(n int) string {
 // directly; a "session-N" label substitutes just the integer to stay
 // byte-identical with the v0.1 numeric form; any other label substitutes
 // the whole label (e.g. "auth" → "-bosun-auth").
-func (c Config) WorktreeSuffixForLabel(label string) string {
+//
+// When roundTimestamp is non-empty, the composite value `<timestamp>-<sub>`
+// is substituted instead (scheme C from docs/uid-worktree-design.md): a
+// "session-3" label with timestamp "20260518-115400" yields
+// "-bosun-20260518-115400-3". Empty roundTimestamp preserves the v0.1
+// byte-identical numeric form for legacy callers — only init.go's per-
+// round invocation passes a non-empty timestamp today; other callers will
+// migrate in lane 4 (UID worktree migration).
+func (c Config) WorktreeSuffixForLabel(label, roundTimestamp string) string {
 	sub := label
 	if rest, ok := strings.CutPrefix(label, "session-"); ok {
 		// Strip the "session-" prefix so a "session-3" label still
 		// produces "-bosun-3" rather than "-bosun-session-3" — keeping
 		// numeric-mode paths byte-identical with v0.1.
 		sub = rest
+	}
+	if roundTimestamp != "" {
+		sub = roundTimestamp + "-" + sub
 	}
 	return strings.ReplaceAll(c.WorktreeSuffixPattern, "{N}", sub)
 }

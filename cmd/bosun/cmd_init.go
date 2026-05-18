@@ -100,6 +100,16 @@ type initOpts struct {
 	forceICloud   bool
 }
 
+// initRoundTimestampFmt is the canonical layout for the per-round UTC
+// timestamp baked into each worktree directory name (scheme C from
+// docs/uid-worktree-design.md). Example: "20260518-115400".
+const initRoundTimestampFmt = "20060102-150405"
+
+// initNowFn is the clock used to capture the per-round timestamp. Tests
+// override it to exercise the same-second-collision case under
+// deterministic time without racing the wall clock.
+var initNowFn = time.Now
+
 func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 	rc, err := loadCtx()
 	if err != nil {
@@ -177,6 +187,24 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 		)
 	}
 
+	// Capture the per-round UTC timestamp once, before any worktree path
+	// is computed. For fresh inits, this becomes part of each session's
+	// directory name (scheme C in docs/uid-worktree-design.md) so
+	// round-over-round dirs never collide. For --resume, the timestamp is
+	// read back from init.state so the resumed run reproduces the same
+	// paths it would have created on the first attempt — re-deriving
+	// from time.Now() at resume time would create a fresh second worktree
+	// alongside the half-finished one.
+	var roundTimestamp string
+	if opts.resume {
+		// Older bosun versions wrote state files without RoundTimestamp;
+		// an empty value here keeps the resume on the legacy
+		// `-bosun-N` paths the prior run actually produced.
+		roundTimestamp = istate.RoundTimestamp
+	} else {
+		roundTimestamp = initNowFn().UTC().Format(initRoundTimestampFmt)
+	}
+
 	// Resolve the label set. --resume drives it entirely off init.state so
 	// argless invocation works; any positional args supplied alongside
 	// --resume are advisory (warning + ignored) rather than a hard mismatch.
@@ -215,7 +243,7 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 		if err != nil {
 			return err
 		}
-		istate = initstate.New(labels, opts.brief)
+		istate = initstate.New(labels, opts.brief, roundTimestamp)
 	}
 
 	// --suggest: generate a brief via `bosun suggest` and use it as if
@@ -231,7 +259,7 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 		fmt.Fprintf(os.Stdout, "Generated brief from --suggest: %s\n", path)
 		// init.state was just created without a plan path; update it so
 		// --resume after a failed init points at the suggested brief.
-		istate = initstate.New(labels, opts.brief)
+		istate = initstate.New(labels, opts.brief, roundTimestamp)
 	}
 
 	// Pre-flight #1: phantom-branch detection. Cheap directory scan that
@@ -320,7 +348,7 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 	// AddWorktree that succeeded enough to register the worktree but
 	// failed (or was killed) before bosun could mark it complete.
 	for _, label := range labels {
-		path := session.WorktreePathForLabel(rc.repoRoot, rc.cfg, label)
+		path := session.WorktreePathForLabel(rc.repoRoot, rc.cfg, label, roundTimestamp)
 		if _, err := os.Stat(path); err != nil {
 			continue
 		}
@@ -343,7 +371,7 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 	if opts.force {
 		for _, label := range labels {
 			branch := rc.cfg.BranchForLabel(label)
-			path := session.WorktreePathForLabel(rc.repoRoot, rc.cfg, label)
+			path := session.WorktreePathForLabel(rc.repoRoot, rc.cfg, label, roundTimestamp)
 			for _, wt := range existingWorktrees {
 				if wt.Branch == "refs/heads/"+branch || wt.Path == path {
 					fmt.Fprintf(os.Stdout, "bosun: --force: removing worktree %s...\n", wt.Path)
@@ -390,7 +418,7 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 			known[wt.Path] = true
 		}
 		for _, label := range istate.CompletedSessions {
-			path := session.WorktreePathForLabel(rc.repoRoot, rc.cfg, label)
+			path := session.WorktreePathForLabel(rc.repoRoot, rc.cfg, label, roundTimestamp)
 			if _, statErr := os.Stat(path); statErr != nil {
 				return userErr(
 					"resume: completed session %s is missing its worktree at %s.\n"+
@@ -414,7 +442,7 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 
 	for i, label := range labels {
 		branch := rc.cfg.BranchForLabel(label)
-		path := session.WorktreePathForLabel(rc.repoRoot, rc.cfg, label)
+		path := session.WorktreePathForLabel(rc.repoRoot, rc.cfg, label, roundTimestamp)
 
 		// Resume short-circuit: already-completed sessions are skipped wholesale.
 		if opts.resume && istate.IsCompleted(label) {

@@ -39,24 +39,34 @@ func TestParseName(t *testing.T) {
 func TestWorktreePath(t *testing.T) {
 	cfg := config.Defaults()
 	root := filepath.Join(string(filepath.Separator)+"code", "myproj")
-	got := WorktreePath(root, cfg, 3)
+	got := WorktreePath(root, cfg, 3, "")
 	want := filepath.Join(string(filepath.Separator)+"code", "myproj-bosun-3")
 	if got != want {
 		t.Fatalf("WorktreePath = %q, want %q (runtime=%s)", got, want, runtime.GOOS)
+	}
+	// Non-empty round timestamp produces the scheme-C UID-per-worktree form.
+	gotTS := WorktreePath(root, cfg, 3, "20260518-115400")
+	wantTS := filepath.Join(string(filepath.Separator)+"code", "myproj-bosun-20260518-115400-3")
+	if gotTS != wantTS {
+		t.Fatalf("WorktreePath(ts) = %q, want %q", gotTS, wantTS)
 	}
 }
 
 func TestWorktreePathForLabel(t *testing.T) {
 	cfg := config.Defaults()
 	root := filepath.Join(string(filepath.Separator)+"code", "myproj")
-	got := WorktreePathForLabel(root, cfg, "auth")
+	got := WorktreePathForLabel(root, cfg, "auth", "")
 	want := filepath.Join(string(filepath.Separator)+"code", "myproj-bosun-auth")
 	if got != want {
 		t.Fatalf("WorktreePathForLabel(auth) = %q, want %q", got, want)
 	}
 	// Numeric and label form must agree for "session-N".
-	if WorktreePath(root, cfg, 3) != WorktreePathForLabel(root, cfg, "session-3") {
+	if WorktreePath(root, cfg, 3, "") != WorktreePathForLabel(root, cfg, "session-3", "") {
 		t.Errorf("WorktreePath wrapper drifted from WorktreePathForLabel")
+	}
+	// Same wrapper contract under a non-empty round timestamp.
+	if WorktreePath(root, cfg, 3, "20260518-115400") != WorktreePathForLabel(root, cfg, "session-3", "20260518-115400") {
+		t.Errorf("WorktreePath wrapper drifted from WorktreePathForLabel (with timestamp)")
 	}
 }
 

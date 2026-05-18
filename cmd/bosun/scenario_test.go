@@ -226,15 +226,119 @@ func (s *scenario) bosunRaw(dir string, args ...string) (string, error) {
 
 // --- path helpers ---
 
-// WorktreePath returns the canonical worktree path for session N.
+// WorktreePath returns the worktree path for session N. Real `bosun init`
+// stamps each round's dirs with a UTC timestamp (scheme C in
+// docs/uid-worktree-design.md), so the on-disk name is
+// `<repo>-bosun-<YYYYMMDD-HHMMSS>-<N>`. The helper discovers that name by
+// scanning the parent dir, falling back to the legacy `-bosun-<N>` form
+// when nothing matches — that fallback is what `AssertWorktreeMissing`
+// and pre-init seed steps depend on.
 func (s *scenario) WorktreePath(n int) string {
-	return filepath.Join(s.parent, fmt.Sprintf("%s-bosun-%d", s.name, n))
+	return s.WorktreePathLabel(fmt.Sprintf("session-%d", n))
 }
 
-// WorktreePathLabel returns the canonical worktree path for a named
-// session label. Used by named-session scenarios.
+// WorktreePathLabel is the named-session analogue of WorktreePath. The
+// "session-N" prefix is stripped from a numeric label so callers can
+// share the discovery logic for both forms.
 func (s *scenario) WorktreePathLabel(label string) string {
-	return filepath.Join(s.parent, fmt.Sprintf("%s-bosun-%s", s.name, label))
+	sub := label
+	if rest, ok := strings.CutPrefix(label, "session-"); ok {
+		sub = rest
+	}
+	prefix := s.name + "-bosun-"
+	legacy := filepath.Join(s.parent, prefix+sub)
+
+	entries, err := os.ReadDir(s.parent)
+	if err != nil {
+		// Parent missing / unreadable — fall back to the legacy form so
+		// AssertWorktreeMissing and pre-init seeding can still spell the
+		// expected path. The test will fail elsewhere if the dir was
+		// supposed to exist.
+		return legacy
+	}
+	wantSuffix := "-" + sub
+	var matches []string
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		tail := strings.TrimPrefix(name, prefix)
+		// Legacy form: `<prefix><sub>` — exact tail match.
+		if tail == sub {
+			matches = append(matches, name)
+			continue
+		}
+		// Scheme-C form: `<prefix><YYYYMMDD-HHMMSS>-<sub>`. The tail must
+		// end with the desired suffix and the part before it must look
+		// like the canonical UTC timestamp the format string in cmd_init
+		// produces. Stricter than `strings.HasSuffix` so a sibling lane
+		// like `session-12` never matches a query for `session-2`.
+		if strings.HasSuffix(tail, wantSuffix) {
+			head := strings.TrimSuffix(tail, wantSuffix)
+			if looksLikeRoundTimestamp(head) {
+				matches = append(matches, name)
+			}
+		}
+	}
+	switch len(matches) {
+	case 0:
+		return legacy
+	case 1:
+		return filepath.Join(s.parent, matches[0])
+	default:
+		s.t.Fatalf("scenario.WorktreePathLabel(%q): multiple dirs match: %v", label, matches)
+		return ""
+	}
+}
+
+// RoundTimestamp returns the `YYYYMMDD-HHMMSS` token bosun baked into
+// the worktree dir names for this round, or "" if no such dir exists
+// yet (e.g. before `bosun init`). Resume tests that hand-seed
+// `.bosun/init.state` need this so the seeded `round_timestamp` matches
+// the actual worktrees on disk; otherwise resume looks for legacy paths
+// and refuses on missing completed-session worktrees.
+func (s *scenario) RoundTimestamp() string {
+	entries, err := os.ReadDir(s.parent)
+	if err != nil {
+		return ""
+	}
+	prefix := s.name + "-bosun-"
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		tail := strings.TrimPrefix(name, prefix)
+		// Expect "<TS>-<sub>" where TS is exactly 15 chars
+		// (YYYYMMDD-HHMMSS). Any sibling matching this prefix shape
+		// is the freshest round; tests run in fresh tmpdirs so a single
+		// match is the rule.
+		if len(tail) >= 16 && tail[8] == '-' && tail[15] == '-' && looksLikeRoundTimestamp(tail[:15]) {
+			return tail[:15]
+		}
+	}
+	return ""
+}
+
+// looksLikeRoundTimestamp reports whether s has the shape produced by
+// cmd_init's `initRoundTimestampFmt` (UTC `YYYYMMDD-HHMMSS`). Keeps the
+// path-glob in WorktreePathLabel from confusing a sibling label whose
+// own value happens to end in `-<sub>`.
+func looksLikeRoundTimestamp(s string) bool {
+	if len(s) != 15 || s[8] != '-' {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if i == 8 {
+			continue
+		}
+		ch := s[i]
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // --- assertions ---

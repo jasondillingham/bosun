@@ -414,11 +414,14 @@ func TestIntegrationScenario_HooksFireInSequence(t *testing.T) {
 	doneFile := filepath.Join(s.parent, "post-done.env")
 	worktreeProbe := filepath.Join(s.parent, "pre-init-saw-worktree.txt")
 
-	wt1 := s.WorktreePath(1)
+	// Probe whether any bosun worktree exists alongside the repo. Since
+	// v0.10's UID-per-worktree naming the on-disk dir carries a timestamp
+	// suffix that's not predictable before init runs, so we glob the parent
+	// rather than spell the path.
 	preCmd := fmt.Sprintf(
 		`env | grep -E '^BOSUN_(REPO_ROOT|SESSION_COUNT|BASE_BRANCH)=' | sort > %s; `+
-			`[ -d %s ] && echo yes > %s || echo no > %s`,
-		shQuote(preFile), shQuote(wt1), shQuote(worktreeProbe), shQuote(worktreeProbe),
+			`if ls -d %s/myproj-bosun-* >/dev/null 2>&1; then echo yes > %s; else echo no > %s; fi`,
+		shQuote(preFile), shQuote(s.parent), shQuote(worktreeProbe), shQuote(worktreeProbe),
 	)
 	postCmd := fmt.Sprintf(
 		`env | grep -E '^BOSUN_(REPO_ROOT|SESSION_COUNT|BASE_BRANCH)=' | sort > %s`,
@@ -469,7 +472,11 @@ func TestIntegrationScenario_HooksFireInSequence(t *testing.T) {
 		t.Errorf("post-init env missing BOSUN_REPO_ROOT=%s:\n%s", wantRoot, postEnv)
 	}
 
-	// Drive the done flow so post-done can fire.
+	// Drive the done flow so post-done can fire. Look up the worktree
+	// path now (post-init) so we get the actual timestamped dir bosun
+	// created rather than the legacy fallback the helper would have
+	// returned pre-init.
+	wt1 := s.WorktreePath(1)
 	s.WriteFileIn(wt1, "thing.txt", "x\n")
 	s.CommitIn(wt1, "session-1 work")
 	s.Bosun("done", "session-1", "--message", "ready for review")

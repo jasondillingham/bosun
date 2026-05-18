@@ -101,7 +101,7 @@ func Run(ctx context.Context, client *git.Client, tree *spawntree.Store, req Req
 		}
 
 		branch := req.Cfg.SessionPrefix + "/" + full
-		path := session.WorktreePathForLabel(req.RepoRoot, req.Cfg, full)
+		path := session.WorktreePathForLabel(req.RepoRoot, req.Cfg, full, "")
 
 		// Branch from parent's branch — hierarchical model per the
 		// v0.9 spec. The parent's HEAD is the base for the sub so the

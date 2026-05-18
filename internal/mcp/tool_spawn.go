@@ -122,7 +122,7 @@ func (s *Server) toolSpawn(_ context.Context, _ *mcp.CallToolRequest, args Spawn
 	// per-instance indirection over proc.Running so tests can mock the
 	// liveness check without touching real processes; the production
 	// wiring (NewServer) defaults to proc.Running.
-	worktreePath := session.WorktreePathForLabel(repoRoot, *s.cfg, parent)
+	worktreePath := session.WorktreePathForLabel(repoRoot, *s.cfg, parent, "")
 	if _, running := s.runningFn(worktreePath); !running {
 		return refuse(spawnGateParentLiveness, fmt.Errorf("no live agent detected in %s's worktree; bosun_spawn requires the caller to be running inside the named parent", parent))
 	}

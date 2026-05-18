@@ -57,14 +57,23 @@ const (
 // Field ordering matches the human-readable JSON we want operators to be
 // able to skim: when something is, what's done, what's next.
 type InitState struct {
-	Version           string    `json:"version"`
-	StartedAt         time.Time `json:"started_at"`
-	PlanPath          string    `json:"plan_path,omitempty"`
-	TotalSessions     int       `json:"total_sessions"`
-	Labels            []string  `json:"labels,omitempty"`
-	CompletedSessions []string  `json:"completed_sessions"`
-	CurrentSession    string    `json:"current_session,omitempty"`
-	CurrentStep       string    `json:"current_step,omitempty"`
+	Version   string    `json:"version"`
+	StartedAt time.Time `json:"started_at"`
+	// RoundTimestamp is the UTC `YYYYMMDD-HHMMSS` token captured at init
+	// invocation. It's substituted into the worktree suffix pattern so
+	// each round's on-disk dirs are unique (scheme C from
+	// docs/uid-worktree-design.md). Persisted here so `--resume` after a
+	// partial init reproduces the exact same paths — re-deriving from
+	// time.Now() on resume would create a fresh second worktree alongside
+	// the half-finished one. Empty for state files written by pre-UID
+	// versions of bosun (legacy paths still resolve fine in that case).
+	RoundTimestamp    string   `json:"round_timestamp,omitempty"`
+	PlanPath          string   `json:"plan_path,omitempty"`
+	TotalSessions     int      `json:"total_sessions"`
+	Labels            []string `json:"labels,omitempty"`
+	CompletedSessions []string `json:"completed_sessions"`
+	CurrentSession    string   `json:"current_session,omitempty"`
+	CurrentStep       string   `json:"current_step,omitempty"`
 
 	// mu protects in-process concurrent mutations. Cross-process serialization
 	// is via the flock in writeLocked — the two cover different races.
@@ -73,11 +82,18 @@ type InitState struct {
 
 // New returns a freshly-stamped InitState ready to be Save'd. It does not
 // touch the filesystem; the caller decides when to persist.
-func New(labels []string, planPath string) *InitState {
+//
+// roundTimestamp is the `YYYYMMDD-HHMMSS` UTC token the caller captured
+// at init invocation; persisting it here is what lets `--resume`
+// reproduce the exact same on-disk worktree paths. Empty roundTimestamp
+// is accepted for callers that don't yet thread the value (tests, older
+// code paths) — those produce legacy paths.
+func New(labels []string, planPath, roundTimestamp string) *InitState {
 	stored := append([]string(nil), labels...)
 	return &InitState{
 		Version:           stateVersion,
 		StartedAt:         time.Now().UTC(),
+		RoundTimestamp:    roundTimestamp,
 		PlanPath:          planPath,
 		TotalSessions:     len(labels),
 		Labels:            stored,

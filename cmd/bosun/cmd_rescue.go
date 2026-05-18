@@ -73,9 +73,11 @@ func runRescue(sessionArg string, opts rescueOpts) error {
 	// case every subsequent git op (including the Derive below) fails
 	// with "not a git repository" mid-snapshot. Detect that up front so
 	// the operator sees an actionable recovery hint instead of a confusing
-	// git error from inside Derive.
-	worktreePath := session.WorktreePathForLabel(rc.repoRoot, rc.cfg, label)
-	if _, statErr := os.Stat(worktreePath); statErr == nil {
+	// git error from inside Derive. The path comes from `git worktree
+	// list` rather than reconstructed via the suffix pattern so both
+	// legacy `-bosun-N` dirs and the v0.10 UID-per-worktree
+	// `-bosun-<ts>-N` form resolve correctly.
+	if worktreePath, ok := lookupWorktreePathByLabel(rc, label); ok {
 		if cerr := git.WorktreeGitdirCorruption(rc.repoRoot, worktreePath); cerr != nil {
 			return userErr(
 				"%s's worktree gitdir is corrupted (%v).\n"+

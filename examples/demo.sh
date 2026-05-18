@@ -121,13 +121,27 @@ cmd "$BOSUN status"
 pause
 
 say "Step 4 — simulate work across the sessions"
-note "Each session worktree is at \$PROJ-bosun-N. We'll cd into each and commit."
+note "Each session worktree is at \$PROJ-bosun-<timestamp>-N. We'll cd into each and commit."
 
 PARENT="$(dirname "$PROJ")"
 BASENAME="$(basename "$PROJ")"
 
+# Resolve session N's worktree dir by globbing the parent for the v0.10
+# UID-per-worktree naming (<basename>-bosun-<YYYYMMDD-HHMMSS>-N).
+# Falls back to the legacy `<basename>-bosun-N` form so old environments
+# keep working.
+resolve_wt() {
+  local n="$1"
+  local match
+  match=$(ls -d "$PARENT/$BASENAME-bosun-"*"-$n" 2>/dev/null | head -n1)
+  if [ -z "$match" ]; then
+    match="$PARENT/$BASENAME-bosun-$n"
+  fi
+  printf '%s\n' "$match"
+}
+
 for i in 1 2 3 4; do
-  WT="$PARENT/$BASENAME-bosun-$i"
+  WT="$(resolve_wt "$i")"
   case $i in
     1)
       note "session-1: edit auth handler + claim two paths"

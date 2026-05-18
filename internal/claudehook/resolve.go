@@ -50,6 +50,16 @@ func LabelFromWorktreePath(repoRoot, worktreePath string, cfg config.Config) (st
 	if sub == "" {
 		return "", nil
 	}
+	// Scheme-C UID-per-worktree form (docs/uid-worktree-design.md): the
+	// substituted value is `<YYYYMMDD-HHMMSS>-<label_or_N>`. Strip the
+	// timestamp prefix so the remainder is the legacy session/label
+	// substring the rest of this function already handles.
+	if tail, ok := stripRoundTimestampPrefix(sub); ok {
+		sub = tail
+	}
+	if sub == "" {
+		return "", nil
+	}
 	// Bare-integer substitution is the canonical numeric form: a
 	// "-bosun-3" suffix means session-3, matching cfg.SessionName(N).
 	if n, err := strconv.Atoi(sub); err == nil {
@@ -62,4 +72,25 @@ func LabelFromWorktreePath(repoRoot, worktreePath string, cfg config.Config) (st
 		return "", nil
 	}
 	return sub, nil
+}
+
+// stripRoundTimestampPrefix returns the substring after a leading
+// `YYYYMMDD-HHMMSS-` token, plus true when the prefix was found.
+// The format matches what cmd_init.go's initRoundTimestampFmt produces.
+// A non-matching input is returned unchanged with false.
+func stripRoundTimestampPrefix(s string) (string, bool) {
+	// Need at least "YYYYMMDD-HHMMSS-" (16 chars) plus at least 1 char of tail.
+	if len(s) < 17 || s[8] != '-' || s[15] != '-' {
+		return s, false
+	}
+	for i := 0; i < 15; i++ {
+		if i == 8 {
+			continue
+		}
+		ch := s[i]
+		if ch < '0' || ch > '9' {
+			return s, false
+		}
+	}
+	return s[16:], true
 }

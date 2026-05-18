@@ -3137,9 +3137,11 @@ func TestScenario_PreRemoveHookSeesBosunEnv(t *testing.T) {
 	got := string(data)
 	// Worktree path: tolerate macOS /var ↔ /private/var symlink resolution
 	// in either direction — git may report the registered or canonical form.
-	wantSuffix := fmt.Sprintf("%s-bosun-1\n", s.name)
-	if !strings.Contains(got, "BOSUN_WORKTREE_PATH=") || !strings.Contains(got, wantSuffix) {
-		t.Errorf("hook env missing BOSUN_WORKTREE_PATH ending in %q; got:\n%s", wantSuffix, got)
+	// Since v0.10's UID-per-worktree naming the basename ends in `-N` after
+	// an optional `<YYYYMMDD-HHMMSS>` segment, so check the trailing `-1`
+	// piece rather than the full legacy suffix.
+	if !strings.Contains(got, "BOSUN_WORKTREE_PATH=") || !strings.Contains(got, "-1\n") {
+		t.Errorf("hook env missing BOSUN_WORKTREE_PATH ending in `-1`; got:\n%s", got)
 	}
 	checks := []string{
 		"BOSUN_SESSION=session-1\n",
@@ -4326,11 +4328,15 @@ func TestScenario_InitResumeReconcilesLockedRegisteredWorktree(t *testing.T) {
 
 	// Simulate the trial wedge: write a state file that says session-1
 	// completed, session-2 in StepGitWorktreeAdd, then lock session-2's
-	// worktree as if a prior kill froze it.
+	// worktree as if a prior kill froze it. The seeded state must include
+	// the same round_timestamp the real `bosun init 2` just used so
+	// resume reconstructs the same on-disk paths (scheme C in
+	// docs/uid-worktree-design.md).
 	statePath := filepath.Join(s.repo, ".bosun", "init.state")
-	stateJSON := `{
+	stateJSON := fmt.Sprintf(`{
   "version": "v0.6",
   "started_at": "2026-01-01T00:00:00Z",
+  "round_timestamp": %q,
   "plan_path": "plan.md",
   "total_sessions": 2,
   "labels": ["session-1", "session-2"],
@@ -4338,7 +4344,7 @@ func TestScenario_InitResumeReconcilesLockedRegisteredWorktree(t *testing.T) {
   "current_session": "session-2",
   "current_step": "git_worktree_add"
 }
-`
+`, s.RoundTimestamp())
 	if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
 		t.Fatalf("mkdir .bosun: %v", err)
 	}

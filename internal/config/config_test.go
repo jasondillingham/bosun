@@ -326,8 +326,8 @@ func TestLoad_RejectsUnknownHookEvent(t *testing.T) {
 
 func TestSuffixAndBranch(t *testing.T) {
 	c := Defaults()
-	if got := c.WorktreeSuffix(3); got != "-bosun-3" {
-		t.Errorf("WorktreeSuffix(3) = %q, want -bosun-3", got)
+	if got := c.WorktreeSuffix(3, ""); got != "-bosun-3" {
+		t.Errorf("WorktreeSuffix(3, \"\") = %q, want -bosun-3", got)
 	}
 	if got := c.BranchFor(7); got != "bosun/session-7" {
 		t.Errorf("BranchFor(7) = %q", got)
@@ -353,16 +353,29 @@ func TestBranchForLabel(t *testing.T) {
 
 func TestWorktreeSuffixForLabel(t *testing.T) {
 	c := Defaults()
-	cases := map[string]string{
-		"auth":      "-bosun-auth",
-		"3":         "-bosun-3",
-		"http":      "-bosun-http",
-		"session-3": "-bosun-3", // "session-N" labels collapse to N for byte-identical numeric paths
-		"session-1": "-bosun-1",
+	// Empty round timestamp keeps the v0.1 legacy substitution. Non-empty
+	// timestamp triggers the scheme-C UID-per-worktree form: the value
+	// substituted for {N} becomes `<timestamp>-<sub>`.
+	cases := []struct {
+		label     string
+		timestamp string
+		want      string
+	}{
+		// Legacy form: empty timestamp.
+		{"auth", "", "-bosun-auth"},
+		{"3", "", "-bosun-3"},
+		{"http", "", "-bosun-http"},
+		{"session-3", "", "-bosun-3"}, // "session-N" labels collapse to N for byte-identical numeric paths
+		{"session-1", "", "-bosun-1"},
+		// UID-per-worktree form: non-empty timestamp.
+		{"3", "20260518-115400", "-bosun-20260518-115400-3"},
+		{"session-3", "20260518-115400", "-bosun-20260518-115400-3"},
+		{"auth", "20260518-115400", "-bosun-20260518-115400-auth"},
+		{"session-1", "20260101-000000", "-bosun-20260101-000000-1"},
 	}
-	for label, want := range cases {
-		if got := c.WorktreeSuffixForLabel(label); got != want {
-			t.Errorf("WorktreeSuffixForLabel(%q) = %q, want %q", label, got, want)
+	for _, tc := range cases {
+		if got := c.WorktreeSuffixForLabel(tc.label, tc.timestamp); got != tc.want {
+			t.Errorf("WorktreeSuffixForLabel(%q, %q) = %q, want %q", tc.label, tc.timestamp, got, tc.want)
 		}
 	}
 	// BranchFor(n) must equal BranchForLabel(SessionName(n)) — the wrapper
@@ -372,10 +385,15 @@ func TestWorktreeSuffixForLabel(t *testing.T) {
 	}
 	// Both forms must produce the same suffix for numeric sessions so
 	// existing worktrees on disk keep their paths after the refactor.
-	if c.WorktreeSuffix(4) != c.WorktreeSuffixForLabel("session-4") {
+	if c.WorktreeSuffix(4, "") != c.WorktreeSuffixForLabel("session-4", "") {
 		t.Errorf("WorktreeSuffix wrapper drifted from WorktreeSuffixForLabel(session-N)")
 	}
-	if c.WorktreeSuffix(4) != c.WorktreeSuffixForLabel("4") {
+	if c.WorktreeSuffix(4, "") != c.WorktreeSuffixForLabel("4", "") {
 		t.Errorf("WorktreeSuffix wrapper drifted from WorktreeSuffixForLabel(N)")
+	}
+	// Wrapper contract holds under a non-empty round timestamp too.
+	ts := "20260518-115400"
+	if c.WorktreeSuffix(4, ts) != c.WorktreeSuffixForLabel("session-4", ts) {
+		t.Errorf("WorktreeSuffix(n, ts) wrapper drifted from WorktreeSuffixForLabel(session-N, ts)")
 	}
 }

@@ -59,9 +59,10 @@ func runRemove(cmd *cobra.Command, sessionArg string, force, ignoreRunning bool)
 	// up front: in that state Derive and `git worktree remove` both fail
 	// mid-flight. With --force we salvage anything left on disk first, then
 	// fall back to an `rm -rf` + prune. Without --force we surface the
-	// same recovery hint as `bosun rescue`.
-	worktreePath := session.WorktreePathForLabel(rc.repoRoot, rc.cfg, label)
-	if _, statErr := os.Stat(worktreePath); statErr == nil {
+	// same recovery hint as `bosun rescue`. The path comes from `git
+	// worktree list` so legacy `-bosun-N` and v0.10 UID-per-worktree
+	// `-bosun-<ts>-N` shapes both resolve.
+	if worktreePath, ok := lookupWorktreePathByLabel(rc, label); ok {
 		if cerr := git.WorktreeGitdirCorruption(rc.repoRoot, worktreePath); cerr != nil {
 			if !force {
 				return userErr(

@@ -164,6 +164,36 @@ bosun cleanup        # reap merged sessions
 
 If anything looks off, `bosun doctor` is the first thing to try.
 
+### Alternative agents (Ollama, Docker, …)
+
+Bosun's default agent is Claude Code (`claude`), but the agent
+command is per-repo and per-session configurable. Point it at a
+wrapper script — for example, one that hands the session off to a
+local Ollama server or runs Claude inside a Docker container — and
+bosun launches that instead.
+
+```sh
+# Repo-wide default
+bosun config set agent_command examples/agent-wrappers/ollama-aider.sh
+
+# Per-session override via the brief
+cat > plan.md <<'EOF'
+## session-1 (command: examples/agent-wrappers/ollama-aider.sh)
+Routine refactor — cheap local model is fine.
+
+## session-2
+Architecture work — falls back to the config default (claude).
+EOF
+bosun init 2 --brief plan.md
+```
+
+Starter wrapper scripts live in [`examples/agent-wrappers/`](examples/agent-wrappers/);
+read the [README there](examples/agent-wrappers/README.md) for the
+contract and known limitations. The design that motivates the
+feature is [`docs/agent-command-design.md`](docs/agent-command-design.md);
+sandboxed launchers (Docker, SSH) get their own design treatment in
+[`docs/sandbox-launcher-design.md`](docs/sandbox-launcher-design.md).
+
 ## Commands
 
 ```

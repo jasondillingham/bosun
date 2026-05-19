@@ -28,6 +28,7 @@ var showJSON_TopLevelKeys = []string{
 	"claimed_paths",
 	"recent_commits",
 	"brief",
+	"agent_command",
 }
 
 func TestSchema_ShowJSON_LockedKeys(t *testing.T) {

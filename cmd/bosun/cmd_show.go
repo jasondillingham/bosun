@@ -46,6 +46,14 @@ type showJSON struct {
 	ClaimedPaths  []string `json:"claimed_paths"`
 	RecentCommits string   `json:"recent_commits"`
 	Brief         string   `json:"brief"`
+	// AgentCommand is the resolved agent for this session — the
+	// per-session override from the brief / init --command flag, or
+	// the empty string when the session uses config.AgentCommand.
+	// Tooling that wants the effective command can OR with the
+	// config default (also exposed in `bosun config get
+	// agent_command`). Always present (per docs/json-schema.md F5,
+	// matching brief / state_msg / recent_commits).
+	AgentCommand string `json:"agent_command"`
 }
 
 func newShowCmd() *cobra.Command {
@@ -101,6 +109,7 @@ func renderShowJSON(rc *runCtx, s *session.Session) error {
 		Ahead:        s.Ahead,
 		Dirty:        s.Dirty,
 		ClaimedPaths: []string{},
+		AgentCommand: s.AgentCommand,
 	}
 
 	c, err := rc.claims.Read(s.Name)
@@ -142,6 +151,13 @@ func renderShowText(rc *runCtx, s *session.Session) error {
 	_, _ = fmt.Fprintln(os.Stdout)
 	_, _ = fmt.Fprintf(os.Stdout, "Ahead:    %d\n", s.Ahead)
 	_, _ = fmt.Fprintf(os.Stdout, "Dirty:    %d\n", s.Dirty)
+
+	// Per-session agent override surfaces only when set. The vanilla
+	// claude default stays out of the output so it doesn't add noise
+	// for the common case.
+	if s.AgentCommand != "" {
+		_, _ = fmt.Fprintf(os.Stdout, "Agent:    %s\n", s.AgentCommand)
+	}
 
 	// v0.9 spawn-tree info, if this session is part of one.
 	if tree := spawntree.NewStore(rc.repoRoot); tree != nil {

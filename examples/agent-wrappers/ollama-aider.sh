@@ -59,6 +59,23 @@ if ! command -v aider >/dev/null 2>&1; then
     exit 127
 fi
 
+# Pre-flight: verify the Ollama server is reachable AND has the
+# requested model loaded. Fast-fails the wrapper before opening a
+# launcher window with an agent that's about to error opaquely on
+# its first turn.
+if ! command -v curl >/dev/null 2>&1; then
+    echo "bosun: curl not on PATH; skipping Ollama pre-flight checks." >&2
+elif ! tags_json="$(curl -sS --connect-timeout 5 "$OLLAMA_HOST/api/tags" 2>&1)"; then
+    echo "bosun: Ollama server unreachable at $OLLAMA_HOST" >&2
+    echo "       Set OLLAMA_HOST to your Ollama server (e.g. http://thor.local:11434)." >&2
+    exit 1
+elif ! printf '%s' "$tags_json" | grep -qF "\"$OLLAMA_MODEL\""; then
+    echo "bosun: model '$OLLAMA_MODEL' not found on $OLLAMA_HOST." >&2
+    echo "       Pull it on the Ollama host:  ollama pull $OLLAMA_MODEL" >&2
+    echo "       Or pick one already loaded:  curl $OLLAMA_HOST/api/tags" >&2
+    exit 1
+fi
+
 prompt="${1:-}"
 args=(--model "ollama_chat/$OLLAMA_MODEL" --yes-always)
 

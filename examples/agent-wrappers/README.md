@@ -40,12 +40,26 @@ Env vars (defaults in parens):
 | Var | Default | Notes |
 |---|---|---|
 | `OLLAMA_HOST` | `http://localhost:11434` | Set this to your Ollama server's URL. Example: `http://thor.local:11434` or `http://10.66.0.45:11434`. |
-| `OLLAMA_MODEL` | `llama3.1:8b` | Any tag your server serves. Tool-use-capable models (Llama 3.1+, Qwen 2.5 Coder, etc.) get the best results. |
+| `OLLAMA_MODEL` | `llama3.1:8b` | Any tag your server serves. **Strongly recommend `qwen2.5-coder:14b`** for actual code work — it's tool-use-capable, code-trained, and punches above its weight at 14B. Llama 3.1 8B works as a generic fallback but produces more "rewrite the file" patterns than targeted edits. |
 
 Requirements:
 
-- `aider-chat` Python package (`pip install aider-chat`).
-- An Ollama server reachable at `$OLLAMA_HOST` with `$OLLAMA_MODEL` pulled.
+- `aider-chat` Python package (`pip install aider-chat` or
+  `pipx install aider-chat` for an isolated install).
+- An Ollama server reachable at `$OLLAMA_HOST` with `$OLLAMA_MODEL`
+  pulled. The wrapper pre-flights both before launching aider —
+  unreachable host or missing model fails fast with a clear error
+  instead of leaving you staring at an opaque aider crash.
+
+Setup check (no aider needed):
+
+```sh
+# Confirm thor (or your Ollama host) is up:
+curl http://YOUR_OLLAMA_HOST:11434/api/tags
+
+# Pull the recommended model if not already there:
+ollama pull qwen2.5-coder:14b   # on the Ollama host
+```
 
 Known limitations:
 

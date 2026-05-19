@@ -540,6 +540,43 @@ func (c *Client) TreeEqualsBase(ctx context.Context, dir, base, branch string) (
 	return false, fmt.Errorf("git diff --quiet %s..%s: %w: %s", base, branch, err, strings.TrimSpace(errOut))
 }
 
+// MergeYieldsBase reports whether merging branch into base would produce
+// a tree identical to base's current tip tree — i.e. the merge is a
+// no-op because branch's content is already represented in base, possibly
+// via differently-shaped commits.
+//
+// This is the third-stage check that catches the manual-conflict-resolve
+// case: TreeEqualsBase only fires when the tip trees are identical, which
+// fails if base has unrelated commits past the resolution. `git merge-tree
+// --write-tree` performs the 3-way merge against the merge base and
+// reports the resulting tree OID; if that equals base's tip tree, the
+// session contributes nothing new and removing it loses nothing.
+//
+// Returns (false, nil) on a conflicting merge — exit 1 from `merge-tree`.
+// A conflicting merge is by definition not a no-op, so the discard check
+// stays on the safe side. Requires git 2.38+; bosun's doctor floor is
+// 2.40 so this is always available.
+func (c *Client) MergeYieldsBase(ctx context.Context, dir, base, branch string) (bool, error) {
+	out, errOut, err := c.Runner.Run(ctx, dir, "merge-tree", "--write-tree", base, branch)
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			// Conflict — merge wouldn't be clean. Not a no-op.
+			return false, nil
+		}
+		return false, fmt.Errorf("git merge-tree %s %s: %w: %s", base, branch, err, strings.TrimSpace(errOut))
+	}
+	mergeTreeOID := strings.TrimSpace(out)
+	if mergeTreeOID == "" {
+		return false, nil
+	}
+	baseTreeOID, err := c.run(ctx, dir, "rev-parse", base+"^{tree}")
+	if err != nil {
+		return false, fmt.Errorf("rev-parse %s^{tree}: %w", base, err)
+	}
+	return strings.TrimSpace(baseTreeOID) == mergeTreeOID, nil
+}
+
 // PruneWorktrees runs `git worktree prune` to drop admin metadata for
 // worktrees whose directories have disappeared on disk. Safe to call
 // even when there's nothing to prune.

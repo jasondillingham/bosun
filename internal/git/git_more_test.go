@@ -491,6 +491,88 @@ func TestPruneWorktrees(t *testing.T) {
 	}
 }
 
+// TestMergeYieldsBase_NoOp pins the manual-conflict-resolve case: a
+// 3-way merge that produces base's tip tree means the session
+// contributes nothing new — safe to drop even when patch-ids and tip
+// trees both say "different."
+func TestMergeYieldsBase_NoOp(t *testing.T) {
+	const tree = "1111111111111111111111111111111111111111"
+	c, _ := newFakeClient(t,
+		runMatcher{
+			args:   []string{"merge-tree", "--write-tree", "main", "bosun/session-1"},
+			stdout: tree + "\n",
+		},
+		runMatcher{
+			args:   []string{"rev-parse", "main^{tree}"},
+			stdout: tree + "\n",
+		},
+	)
+	got, err := c.MergeYieldsBase(context.Background(), "/repo", "main", "bosun/session-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got {
+		t.Fatalf("MergeYieldsBase = false, want true (merge tree == base tree)")
+	}
+}
+
+// TestMergeYieldsBase_BringsChanges asserts the inverse: when the
+// merge-tree result differs from base, the session still has work
+// that would land on base.
+func TestMergeYieldsBase_BringsChanges(t *testing.T) {
+	c, _ := newFakeClient(t,
+		runMatcher{
+			args:   []string{"merge-tree", "--write-tree", "main", "bosun/session-1"},
+			stdout: "1111111111111111111111111111111111111111\n",
+		},
+		runMatcher{
+			args:   []string{"rev-parse", "main^{tree}"},
+			stdout: "2222222222222222222222222222222222222222\n",
+		},
+	)
+	got, err := c.MergeYieldsBase(context.Background(), "/repo", "main", "bosun/session-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got {
+		t.Fatalf("MergeYieldsBase = true, want false (trees differ)")
+	}
+}
+
+// TestMergeYieldsBase_Conflict treats a conflicting merge (exit 1)
+// as definitely-not-a-no-op. The whole point of the check is to be
+// conservative on the discard path; a conflict means we can't
+// guarantee the content is on base.
+func TestMergeYieldsBase_Conflict(t *testing.T) {
+	c, _ := newFakeClient(t, runMatcher{
+		args:   []string{"merge-tree", "--write-tree", "main", "bosun/session-1"},
+		stdout: "3333333333333333333333333333333333333333\n",
+		stderr: "CONFLICT (content): Merge conflict in foo.txt\n",
+		err:    makeExitError(t, 1),
+	})
+	got, err := c.MergeYieldsBase(context.Background(), "/repo", "main", "bosun/session-1")
+	if err != nil {
+		t.Fatalf("expected nil error on exit-1 conflict, got %v", err)
+	}
+	if got {
+		t.Fatalf("MergeYieldsBase = true on conflict, want false")
+	}
+}
+
+// TestMergeYieldsBase_OtherError surfaces non-conflict failures (bad
+// ref, etc.) as real errors so callers don't silently treat them as
+// "not a no-op."
+func TestMergeYieldsBase_OtherError(t *testing.T) {
+	c, _ := newFakeClient(t, runMatcher{
+		args:   []string{"merge-tree", "--write-tree", "main", "bosun/missing"},
+		stderr: "fatal: not a valid object name\n",
+		err:    makeExitError(t, 128),
+	})
+	if _, err := c.MergeYieldsBase(context.Background(), "/repo", "main", "bosun/missing"); err == nil {
+		t.Fatalf("MergeYieldsBase exit 128 returned nil error")
+	}
+}
+
 // TestScanOrphanDirs covers the happy path: a parent directory holding a
 // repo plus several sibling dirs, only some of which match the configured
 // worktree suffix pattern. The scanner should return exactly the matching

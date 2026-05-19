@@ -677,6 +677,59 @@ func TestScenario_CleanupDryRunChangesNothing(t *testing.T) {
 	s.AssertWorktreeExists(2)
 }
 
+// TestScenario_CleanupReapsManuallyResolvedSession exercises the
+// third-stage discard check (MergeYieldsBase). When `bosun merge`
+// would conflict and the operator hand-resolves on main with
+// semantically-equivalent but textually-different commits, the
+// session's content is on base but neither git cherry's patch-ids
+// nor TreeEqualsBase's tip-tree compare catch it. The merge-tree
+// no-op check is what unblocks `bosun cleanup` so the operator
+// doesn't have to reach for --purge — which is the loud "discard
+// committed work" flag.
+func TestScenario_CleanupReapsManuallyResolvedSession(t *testing.T) {
+	s := newScenario(t)
+	s.Bosun("init", "1")
+
+	// session-1: one commit adds feature.txt with "X\nY\n" in a single
+	// step. This is the work the agent did.
+	wt1 := s.WorktreePath(1)
+	s.WriteFileIn(wt1, "feature.txt", "X\nY\n")
+	s.CommitIn(wt1, "session-1: add feature")
+
+	// main: two commits that achieve the same final state via a
+	// different commit shape — first an unrelated file (so tip trees
+	// won't match), then a piecemeal add-then-append of feature.txt
+	// matching session-1's content. This is the manual-resolve
+	// scenario: operator hit a merge conflict, reconciled by hand on
+	// main, and committed the result in pieces.
+	s.WriteFileIn(s.repo, "unrelated.txt", "z\n")
+	s.CommitIn(s.repo, "main: unrelated work")
+	s.WriteFileIn(s.repo, "feature.txt", "X\n")
+	s.CommitIn(s.repo, "main: feature (part 1)")
+	s.WriteFileIn(s.repo, "feature.txt", "X\nY\n")
+	s.CommitIn(s.repo, "main: feature (part 2)")
+
+	// Sanity-check the trap: if the existing checks could already
+	// reap this, the test would prove nothing. Confirm the
+	// pre-condition by examining git directly. session-1 should
+	// still report as ahead of main.
+	cherryOut := s.GitIn(s.repo, "cherry", "main", "bosun/session-1")
+	if !strings.HasPrefix(strings.TrimSpace(cherryOut), "+ ") {
+		t.Fatalf("test pre-condition: expected `git cherry` to report `+` (patch-ids differ), got:\n%s", cherryOut)
+	}
+
+	s.Bosun("done", "session-1")
+
+	// The actual contract: cleanup reaps the session WITHOUT --purge.
+	// Before the merge-tree check, this would have been:
+	//   "session-1: skipped — would discard 1 ahead — run `bosun merge
+	//   session-1` first, or pass --purge to drop it"
+	out := s.Bosun("cleanup")
+	s.AssertContainsAll(out, "session-1: removed", "already on base")
+	s.AssertWorktreeMissing(1)
+	s.AssertBranchMissing("bosun/session-1")
+}
+
 func TestScenario_CleanupAfterMergeRemovesSquashed(t *testing.T) {
 	// Regression: after `bosun merge` squash-merges a session, the branch
 	// still reports `ahead=1` because the squashed commit is patch-id-

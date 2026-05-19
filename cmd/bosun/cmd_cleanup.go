@@ -169,9 +169,14 @@ func planCleanup(sessions []session.Session, opts cleanupOpts, isSquashed squash
 		// can't lose anything on removal — skip the git calls entirely.
 		// For the rest: patch-id check first (cheap, also gives us the
 		// "squash-merged" label), then a tree compare (catches manual
-		// conflict resolution after a botched squash).
+		// conflict resolution after a botched squash). When the tree
+		// compare fails but discard returns false, the third-stage
+		// merge-tree check inside wouldDiscardCommits already fired —
+		// the session's content is on base via a non-patch-id-equivalent
+		// commit shape ("already on base").
 		squashed := false
 		discard := false
+		alreadyOnBase := false
 		if s.Ahead > 0 {
 			sq, err := isSquashed(s.Branch)
 			if err != nil {
@@ -184,6 +189,10 @@ func planCleanup(sessions []session.Session, opts cleanupOpts, isSquashed squash
 					return nil, fmt.Errorf("check tree divergence for %s: %w", s.Branch, err)
 				}
 				discard = d
+				// !discard with Ahead > 0 means one of the no-op signals
+				// fired (TreeEqualsBase or MergeYieldsBase). Carry the
+				// distinction forward so reasons surface it.
+				alreadyOnBase = !d
 			}
 		}
 
@@ -202,10 +211,13 @@ func planCleanup(sessions []session.Session, opts cleanupOpts, isSquashed squash
 		switch {
 		case s.State == session.StateDone:
 			reason := "DONE"
-			if discard && opts.purge {
+			switch {
+			case discard && opts.purge:
 				reason = "DONE, --purge discards " + describeWork(s)
-			} else if squashed {
+			case squashed:
 				reason = "DONE, squash-merged"
+			case alreadyOnBase:
+				reason = "DONE, already on base"
 			}
 			plans = append(plans, cleanupPlan{s: s, action: cleanupRemove, reason: reason})
 		case s.State == session.StateWorking && s.Ahead == 0 && s.Dirty == 0:
@@ -380,7 +392,21 @@ func buildCleanupChecks(rc *runCtx) (squashCheck, discardCheck) {
 		if err != nil {
 			return false, err
 		}
-		return !treeEqual, nil
+		if treeEqual {
+			return false, nil
+		}
+		// Third-stage check for the manual-conflict-resolve case: the
+		// patch-ids no longer match (unmerged > 0) AND the tip trees
+		// diverge (because base has unrelated commits past the
+		// resolution), but a 3-way merge would still be a no-op. Use
+		// `git merge-tree` to ask "would merging session add anything
+		// to base?" — if no, the session's content is effectively on
+		// base and removing it loses nothing.
+		mergeNoOp, err := rc.git.MergeYieldsBase(rc.ctx, rc.repoRoot, rc.cfg.BaseBranch, branch)
+		if err != nil {
+			return false, err
+		}
+		return !mergeNoOp, nil
 	}
 	return isSquashed, wouldDiscard
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/jasondillingham/bosun/internal/git"
 	"github.com/jasondillingham/bosun/internal/history"
 	"github.com/jasondillingham/bosun/internal/hooks"
+	"github.com/jasondillingham/bosun/internal/launcher"
 	"github.com/jasondillingham/bosun/internal/proc"
 	"github.com/jasondillingham/bosun/internal/session"
 	"github.com/jasondillingham/bosun/internal/spawntree"
@@ -221,6 +222,12 @@ func runRemove(cmd *cobra.Command, sessionArg string, force, ignoreRunning bool)
 		} else {
 			printf("bosun: terminated agent (pid %d) in %s\n", s.RunningPID, label)
 		}
+	}
+
+	// Close the tmux window opened by launchTmux, if any. Same
+	// log-and-continue contract as the cleanup path.
+	if err := launcher.CloseTmuxWindow(label); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "bosun: warning: close tmux window %s: %v\n", label, err)
 	}
 
 	if err := rc.git.RemoveWorktree(rc.ctx, rc.repoRoot, s.Path, destructive); err != nil {

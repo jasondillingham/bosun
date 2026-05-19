@@ -10,6 +10,7 @@ import (
 	"github.com/jasondillingham/bosun/internal/git"
 	"github.com/jasondillingham/bosun/internal/history"
 	"github.com/jasondillingham/bosun/internal/hooks"
+	"github.com/jasondillingham/bosun/internal/launcher"
 	"github.com/jasondillingham/bosun/internal/proc"
 	"github.com/jasondillingham/bosun/internal/session"
 	"github.com/jasondillingham/bosun/internal/spawntree"
@@ -337,6 +338,15 @@ func executeCleanupOne(rc *runCtx, p cleanupPlan) error {
 		} else {
 			printf("  terminated agent (pid %d) in %s\n", p.s.RunningPID, p.s.Name)
 		}
+	}
+
+	// Close the tmux window opened for this session by launchTmux, if
+	// any. No-ops when the operator isn't inside tmux (TMUX env
+	// unset); errors are non-fatal because the window may have been
+	// closed manually, never opened (different launcher used), or
+	// already gone with the agent process we just terminated.
+	if err := launcher.CloseTmuxWindow(p.s.Name); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "bosun: warning: close tmux window %s: %v\n", p.s.Name, err)
 	}
 
 	forceWT := true

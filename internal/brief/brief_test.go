@@ -279,6 +279,65 @@ func TestParse_DependsClause(t *testing.T) {
 	}
 }
 
+// TestParse_CommandClause pins the per-session agent-command override
+// (Phase 1 of the agent-command design). Each row exercises a different
+// clause shape; the parser is intentionally lenient — anything between
+// the colon and the closing paren is treated as the command, so
+// operators can point at wrapper scripts with spaces, paths, args, etc.
+func TestParse_CommandClause(t *testing.T) {
+	cases := []struct {
+		name        string
+		heading     string
+		wantCommand string
+		wantDeps    []string
+	}{
+		{"no clauses", "## session-1", "", nil},
+		{"command only", "## session-1 (command: ollama-llama.sh)", "ollama-llama.sh", nil},
+		{"command with path", "## session-1 (command: ./scripts/wrap.sh)", "./scripts/wrap.sh", nil},
+		{"command with args", "## session-1 (command: claude --model opus-4)", "claude --model opus-4", nil},
+		{"depends + command", "## session-2 (depends: session-1) (command: my-agent)", "my-agent", []string{"session-1"}},
+		{"command + depends (order flipped)", "## session-2 (command: my-agent) (depends: session-1)", "my-agent", []string{"session-1"}},
+		{"extra whitespace tolerated", "## session-1 (command:    ollama.sh   )", "ollama.sh", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			briefs := parseContent(tc.heading + "\nbody\n")
+			if len(briefs) != 1 {
+				t.Fatalf("expected 1 brief, got %d", len(briefs))
+			}
+			if briefs[0].Command != tc.wantCommand {
+				t.Errorf("Command = %q, want %q", briefs[0].Command, tc.wantCommand)
+			}
+			gotDeps := briefs[0].Depends
+			if len(gotDeps) != len(tc.wantDeps) {
+				t.Fatalf("Depends = %v, want %v", gotDeps, tc.wantDeps)
+			}
+			for i, d := range tc.wantDeps {
+				if gotDeps[i] != d {
+					t.Errorf("Depends[%d] = %q, want %q", i, gotDeps[i], d)
+				}
+			}
+		})
+	}
+}
+
+// TestParse_UnknownClauseIgnored guards the lenient-parser contract:
+// future clause additions like `(model: opus-4.7)` from Phase 2 of the
+// agent-command design should not break older briefs OR break parsing
+// of the clauses we DO understand.
+func TestParse_UnknownClauseIgnored(t *testing.T) {
+	briefs := parseContent("## session-1 (depends: session-2) (model: future-stuff) (command: now-stuff)\nbody\n")
+	if len(briefs) != 1 {
+		t.Fatalf("expected 1 brief, got %d", len(briefs))
+	}
+	if briefs[0].Command != "now-stuff" {
+		t.Errorf("Command = %q, want %q (unknown clause shouldn't shadow known ones)", briefs[0].Command, "now-stuff")
+	}
+	if len(briefs[0].Depends) != 1 || briefs[0].Depends[0] != "session-2" {
+		t.Errorf("Depends = %v, want [session-2]", briefs[0].Depends)
+	}
+}
+
 func TestWriteToWorktree_IncludesDependsBlock(t *testing.T) {
 	wt := t.TempDir()
 	b := Brief{Session: 3, Label: "session-3", Body: "the assignment", Depends: []string{"session-1", "session-2"}}

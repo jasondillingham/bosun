@@ -90,6 +90,11 @@ type Session struct {
 	// spawn-tree pattern — Derive stays independent of the subtasks
 	// package). Zero for sessions that have never run a sub-task.
 	Subtasks int
+	// AgentCommand is the per-session override persisted at init time
+	// via the brief's `(command: ...)` clause or `bosun init --command`.
+	// Empty when no override was set — callers fall back to
+	// config.AgentCommand. Phase 1 of docs/agent-command-design.md.
+	AgentCommand string
 }
 
 // GetLabel + SetTreeInfo satisfy spawntree.SessionLike so a
@@ -127,6 +132,13 @@ type StateReader interface {
 	// terminals whose basename isn't `claude`) can register themselves
 	// without proc-scan false-CRASHED churn.
 	Attached(repoRoot, sessionName string) (pid int, ok bool, err error)
+	// ReadAgentCommand returns the agent command persisted for
+	// sessionName at init time. `ok` is false when no override is set
+	// and the caller should fall back to config.AgentCommand. The Phase
+	// 1 agent-command design (docs/agent-command-design.md) records
+	// this on every init so launcher, status, and proc.Running can all
+	// reach the right binary without re-resolving config + brief.
+	ReadAgentCommand(repoRoot, sessionName string) (command string, ok bool, err error)
 }
 
 type ClaimsReader interface {
@@ -206,6 +218,14 @@ func Derive(ctx context.Context, c *git.Client, cfg config.Config, repoRoot stri
 		// stale flag.
 		hbAt, hbExists, _ := sr.Heartbeat(repoRoot, name)
 
+		// Persisted agent command (Phase 1 of agent-command design).
+		// Best-effort: a missing/unreadable file means "no override" —
+		// callers fall back to cfg.AgentCommand. We deliberately don't
+		// surface a read failure as a Derive error because status
+		// rendering shouldn't break when the operator hand-edited the
+		// state dir.
+		agentCmd, _, _ := sr.ReadAgentCommand(repoRoot, name)
+
 		// Liveness gate: in "external" mode the operator has declared
 		// they're driving workers from outside the proc-scan's view
 		// (Claude Code Task sub-agents, CI agents, …). Skip the entire
@@ -234,10 +254,17 @@ func Derive(ctx context.Context, c *git.Client, cfg config.Config, repoRoot stri
 					attachedDead = true
 				}
 			} else {
-				// proc.Running is best-effort: a permission error or
-				// transient failure shouldn't keep `bosun status` from
-				// rendering. Worst case: a false negative on RUNNING.
-				runPID, running, _ = proc.Running(wt.Path)
+				// proc.RunningForCommand is best-effort: a permission
+				// error or transient failure shouldn't keep `bosun
+				// status` from rendering. Worst case: a false negative
+				// on RUNNING. Per-session command override (Phase 1 of
+				// agent-command design) extends the basename allowlist
+				// so wrapper-script sessions still register.
+				effectiveCmd := agentCmd
+				if effectiveCmd == "" {
+					effectiveCmd = cfg.AgentCommand
+				}
+				runPID, running, _ = proc.RunningForCommand(wt.Path, effectiveCmd)
 			}
 		}
 
@@ -284,6 +311,7 @@ func Derive(ctx context.Context, c *git.Client, cfg config.Config, repoRoot stri
 			RunningExternal: runningExternal,
 			Stale:           stale,
 			HeartbeatAt:     hbAt,
+			AgentCommand:    agentCmd,
 		})
 	}
 

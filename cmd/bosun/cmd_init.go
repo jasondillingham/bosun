@@ -39,6 +39,7 @@ func newInitCmd() *cobra.Command {
 		cleanPhantoms bool
 		resume        bool
 		forceICloud   bool
+		command       string
 	)
 
 	cmd := &cobra.Command{
@@ -66,6 +67,7 @@ Mixing integers with names in the same invocation is a usage error.`,
 				cleanPhantoms: cleanPhantoms,
 				resume:        resume,
 				forceICloud:   forceICloud,
+				command:       command,
 			})
 		},
 	}
@@ -81,6 +83,7 @@ Mixing integers with names in the same invocation is a usage error.`,
 	cmd.Flags().BoolVar(&cleanPhantoms, "clean-phantoms", false, "auto-remove Finder/Spotlight phantom branch refs (off by default)")
 	cmd.Flags().BoolVar(&resume, "resume", false, "continue a previously-interrupted bosun init using .bosun/init.state")
 	cmd.Flags().BoolVar(&forceICloud, "force-icloud", false, "proceed even when the repo is under an iCloud-managed path (issue #15: File Provider can strip git worktree admin metadata under load)")
+	cmd.Flags().StringVar(&command, "command", "", "agent command for every session in this round (overrides config.agent_command; per-session brief clause `(command: ...)` overrides this)")
 
 	cmd.GroupID = "setup"
 	return cmd
@@ -98,6 +101,7 @@ type initOpts struct {
 	cleanPhantoms bool
 	resume        bool
 	forceICloud   bool
+	command       string
 }
 
 // initRoundTimestampFmt is the canonical layout for the per-round UTC
@@ -447,11 +451,26 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 
 	// Create branches + worktrees.
 	type created struct {
-		label  string
-		branch string
-		path   string
+		label   string
+		branch  string
+		path    string
+		command string // agent command resolved for this session (Phase 1 of agent-command design)
 	}
 	var made []created
+
+	// resolveAgentCommand applies the documented precedence:
+	// brief clause > init --command flag > config.AgentCommand default.
+	// The result is non-empty by construction (config default is
+	// "claude" when unset).
+	resolveAgentCommand := func(label string) string {
+		if b := brief.LookupBriefByLabel(briefs, label); b != nil && b.Command != "" {
+			return b.Command
+		}
+		if opts.command != "" {
+			return opts.command
+		}
+		return rc.cfg.AgentCommand
+	}
 
 	for i, label := range labels {
 		branch := rc.cfg.BranchForLabel(label)
@@ -460,7 +479,7 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 		// Resume short-circuit: already-completed sessions are skipped wholesale.
 		if opts.resume && istate.IsCompleted(label) {
 			_, _ = fmt.Fprintf(os.Stdout, "Skipping %s (already completed in prior run).\n", label)
-			made = append(made, created{label: label, branch: branch, path: path})
+			made = append(made, created{label: label, branch: branch, path: path, command: resolveAgentCommand(label)})
 			continue
 		}
 
@@ -549,7 +568,21 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 			}
 		}
 
-		made = append(made, created{label: label, branch: branch, path: path})
+		agentCmd := resolveAgentCommand(label)
+		made = append(made, created{label: label, branch: branch, path: path, command: agentCmd})
+
+		// Persist the resolved agent command so future bosun commands
+		// (launch, status's proc-scan, cleanup-time IsAgent derivation)
+		// agree on which binary should be running. Skip the persist
+		// when the command equals the config default — no override
+		// means no file, and `bosun status` falls back to the config
+		// default naturally. Reduces state-dir churn for the common
+		// case (no Ollama/Docker wrapper).
+		if agentCmd != rc.cfg.AgentCommand {
+			if err := rc.state.WriteAgentCommand(label, agentCmd); err != nil {
+				return internalErr("persist agent command for "+label, err)
+			}
+		}
 
 		if err := istate.SetCurrent(rc.repoRoot, label, initstate.StepStateFileWrite); err != nil {
 			return internalErr("persist init state", err)
@@ -685,7 +718,7 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 				Strategy:      launcher.Strategy(rc.cfg.Launcher),
 				WorktreePath:  c.path,
 				SessionName:   c.label,
-				Command:       "claude",
+				Command:       c.command,
 				InitialPrompt: prompt,
 				// First session creates a window; subsequent ones land as
 				// tabs in the same window. Cleaner than 4 scattered windows.

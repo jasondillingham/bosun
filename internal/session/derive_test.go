@@ -54,6 +54,10 @@ type fakeState struct {
 	// that exercise the v0.11 attach-then-proc-scan ladder populate
 	// this; legacy tests leave it nil and the reader returns ok=false.
 	attached map[string]int
+	// agentCommands maps session name → persisted agent command.
+	// Tests exercising the Phase 1 per-session override populate this;
+	// legacy tests leave it nil and the reader returns ok=false.
+	agentCommands map[string]string
 }
 
 func (f *fakeState) Read(_, name string) (State, string, error) {
@@ -77,6 +81,14 @@ func (f *fakeState) Attached(_, name string) (int, bool, error) {
 	}
 	pid, ok := f.attached[name]
 	return pid, ok, nil
+}
+
+func (f *fakeState) ReadAgentCommand(_, name string) (string, bool, error) {
+	if f.agentCommands == nil {
+		return "", false, nil
+	}
+	cmd, ok := f.agentCommands[name]
+	return cmd, ok, nil
 }
 
 type fakeClaims struct{ counts map[string]int }

@@ -169,9 +169,31 @@ Ollama API would require ongoing work.
 
 ## 5. Recommended phasing
 
-1. **Phase 1: Slice A** (per-session command + config default). Land
-   this first. It unlocks all three cases (Ollama, Docker, SSH) via
-   operator wrapper scripts. Most of the value at lowest cost.
+1. **Phase 1: Slice A — SHIPPED 2026-05-19.** Per-session command +
+   config default landed. Key surfaces:
+   - `config.AgentCommand` (default `"claude"`) in
+     [config.go](../internal/config/config.go).
+   - Brief clause `(command: ...)` parsed alongside `(depends: ...)`
+     in [brief.go](../internal/brief/brief.go); order-independent.
+   - `state.Store.WriteAgentCommand` / `.ReadAgentCommand` persist
+     per-session overrides in `.bosun/state/<label>.agent-command`;
+     no file written when the session uses the config default
+     (avoids state-dir churn for the common case).
+   - `bosun init --command <cmd>` flag; precedence
+     brief clause > CLI flag > config default.
+   - `proc.IsAgentForCommand(cmd)` + `proc.RunningForCommand`
+     extend the default basename allowlist with the wrapper-script
+     basename so detection works for non-Claude agents.
+   - `bosun launch` reads the persisted command on resume.
+   - `bosun config set/get/unset agent_command` works.
+
+   Decisions settled in flight:
+   - Clause name: `command:` (matches `--command`).
+   - Persistence file format: one-line `<command>\n`, plaintext;
+     multi-line / empty bodies treated as absent (graceful degradation).
+   - `IsAgent` keeps its hardcoded allowlist; wrapper basenames are
+     additive, not replacement — operators can have mixed-fleet
+     rounds with some claude sessions and some wrapper sessions.
 
 2. **Phase 2: revisit.** If wrapper-script friction proves real
    (operators repeatedly hit the same bugs in their Ollama wrappers,

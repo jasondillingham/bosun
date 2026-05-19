@@ -102,6 +102,18 @@ func Running(worktreePath string) (pid int, ok bool, err error) {
 	return RunningWith(GopsutilLister{}, IsAgent, worktreePath)
 }
 
+// RunningForCommand is the per-session-command variant of Running. The
+// agentCommand argument (typically Session.AgentCommand falling back to
+// config.AgentCommand) extends the allowlist with the wrapper-script
+// basename so non-Claude agents — Ollama wrappers, Docker launchers,
+// custom shell scripts — still register as RUNNING in `bosun status`.
+//
+// Empty agentCommand degrades to Running's default behavior, so callers
+// don't need to special-case the no-override path.
+func RunningForCommand(worktreePath, agentCommand string) (pid int, ok bool, err error) {
+	return RunningWith(GopsutilLister{}, IsAgentForCommand(agentCommand), worktreePath)
+}
+
 // RunningWith is the testable core of Running: callers can inject a custom
 // Lister and a name predicate. The path-matching logic (absolute-path
 // normalization, symlink resolution, first-hit return) is shared with
@@ -185,7 +197,55 @@ func canonicalize(path string) string {
 // invocation whose CWD happens to be a worktree from being reported as a
 // live agent.
 func IsAgent(name string) bool {
-	base := strings.ToLower(strings.TrimSuffix(filepath.Base(name), filepath.Ext(name)))
+	switch commandBasename(name) {
+	case "claude", "claude-code", "code-cli":
+		return true
+	}
+	return false
+}
+
+// IsAgentForCommand returns an IsAgent-style predicate that recognizes
+// the default agent basenames PLUS the basename derived from command (a
+// path or shell-style command string like "./ollama-claude.sh" or
+// "claude --model opus-4"). Used by session.Derive when a per-session
+// or config-level override changes which binary bosun should be
+// looking for — without this, `bosun status` would report the
+// wrapper-script session as offline even when it's actively running.
+//
+// Empty command degrades to the IsAgent default — operators on the
+// vanilla "claude" path get identical behavior.
+func IsAgentForCommand(command string) func(name string) bool {
+	extra := commandBasename(command)
+	if extra == "" || isDefaultAgentBase(extra) {
+		return IsAgent
+	}
+	return func(name string) bool {
+		if IsAgent(name) {
+			return true
+		}
+		return commandBasename(name) == extra
+	}
+}
+
+// commandBasename extracts the executable basename from a command
+// string. Handles paths ("./foo/bar.sh" → "bar"), bare names
+// ("claude" → "claude"), and commands with arguments
+// ("claude --model opus" → "claude") via strings.Fields. Lowercases
+// the result for case-insensitive comparison.
+func commandBasename(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	first := strings.Fields(s)[0]
+	return strings.ToLower(strings.TrimSuffix(filepath.Base(first), filepath.Ext(first)))
+}
+
+// isDefaultAgentBase reports whether the basename is already covered by
+// IsAgent's hardcoded allowlist. Used by IsAgentForCommand so the
+// closure-allocation only happens when a custom command brings a new
+// basename — the vanilla "claude" path stays on the cheap function value.
+func isDefaultAgentBase(base string) bool {
 	switch base {
 	case "claude", "claude-code", "code-cli":
 		return true

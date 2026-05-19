@@ -25,6 +25,12 @@ type Brief struct {
 	// the optional `(depends: session-1, auth)` clause on the heading
 	// line. Empty when no clause was given.
 	Depends []string
+	// Command, when non-empty, overrides the default agent command for
+	// this session. Parsed from the optional `(command: ./wrap.sh)`
+	// clause on the heading. Operator-controlled; not validated here
+	// beyond non-emptiness — the launcher resolves the path at spawn
+	// time. Empty means "fall back to CLI flag, then config default."
+	Command string
 }
 
 // Parse reads a plan markdown file and returns a Brief for every `## session-N`
@@ -60,14 +66,22 @@ func ParseString(s string) ([]Brief, error) {
 	return briefs, nil
 }
 
-// headingRe captures the session label (either `session-N` or a bare name
-// matching the bosun label charset) and an optional depends clause.
+// headingRe captures the session label and the optional clause block —
+// zero or more `(key: value)` parentheticals like `(depends: x, y)` or
+// `(command: ./wrap.sh)`. Clauses can appear in any order; clauseRe
+// parses them out individually so the grammar stays extensible.
+//
 // Match groups:
 //
 //	1: session label (e.g. "session-3" or "auth")
-//	2: full "(depends: …)" clause including the parens
-//	3: just the comma-separated body inside the parens
-var headingRe = regexp.MustCompile(`(?m)^##\s+([a-z][a-z0-9-]*)(\s*\(depends:\s*([^)]+)\))?\s*$`)
+//	2: full clause block (one or more "(key: value)" parens, or empty)
+var headingRe = regexp.MustCompile(`(?m)^##\s+([a-z][a-z0-9-]*)((?:\s*\([a-z]+:\s*[^)]+\))*)\s*$`)
+
+// clauseRe extracts one `(key: value)` clause from the captured clause
+// block. Group 1 is the key (e.g. "depends" or "command"), group 2 is
+// the raw value text — interpretation is key-specific (comma-split for
+// depends; whole string for command).
+var clauseRe = regexp.MustCompile(`\(([a-z]+):\s*([^)]+)\)`)
 
 func parseContent(s string) []Brief {
 	// Normalize line endings.
@@ -96,14 +110,29 @@ func parseContent(s string) []Brief {
 		}
 		body := strings.TrimRight(s[bodyStart:end], "\n ")
 
-		// m[6]/m[7] frame the comma-separated dependency list (the third
-		// capture group). -1 when the optional clause is absent.
+		// m[4]/m[5] frame the clause block (group 2). Empty when no
+		// clauses were given. Iterate the individual clauses with
+		// clauseRe so a `(command: ...)` alongside a `(depends: ...)`
+		// in either order is handled identically.
 		var depends []string
-		if m[6] >= 0 && m[7] > m[6] {
-			depends = parseDepList(s[m[6]:m[7]])
+		var command string
+		if m[4] >= 0 && m[5] > m[4] {
+			for _, c := range clauseRe.FindAllStringSubmatch(s[m[4]:m[5]], -1) {
+				key := c[1]
+				val := strings.TrimSpace(c[2])
+				switch key {
+				case "depends":
+					depends = parseDepList(val)
+				case "command":
+					command = val
+				}
+				// Unknown keys are silently ignored — the parser stays
+				// lenient so future clause additions don't break older
+				// briefs.
+			}
 		}
 
-		briefs = append(briefs, Brief{Session: number, Label: label, Body: body, Depends: depends})
+		briefs = append(briefs, Brief{Session: number, Label: label, Body: body, Depends: depends, Command: command})
 	}
 	return briefs
 }

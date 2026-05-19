@@ -210,3 +210,76 @@ func TestClear(t *testing.T) {
 		t.Fatalf("state after clear = %s, want WORKING", st)
 	}
 }
+
+// TestAgentCommand_WriteReadClear walks the persistence lifecycle for
+// the per-session agent command (Phase 1 of agent-command-design.md):
+// missing → write → read → Clear-includes-it. Mirrors
+// TestAttachedPID_WriteReadClear's pattern so a future reviewer can
+// see the surface is symmetric.
+func TestAgentCommand_WriteReadClear(t *testing.T) {
+	dir := t.TempDir()
+	s := NewStore(dir)
+
+	// Missing file: ok=false, no error.
+	if cmd, ok, err := s.ReadAgentCommand(dir, "session-1"); err != nil || ok || cmd != "" {
+		t.Fatalf("ReadAgentCommand(missing) = (%q, %v, %v), want (\"\", false, nil)", cmd, ok, err)
+	}
+
+	if err := s.WriteAgentCommand("session-1", "./scripts/ollama-claude.sh"); err != nil {
+		t.Fatal(err)
+	}
+	cmd, ok, err := s.ReadAgentCommand(dir, "session-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || cmd != "./scripts/ollama-claude.sh" {
+		t.Fatalf("ReadAgentCommand after write = (%q, %v), want (%q, true)", cmd, ok, "./scripts/ollama-claude.sh")
+	}
+
+	// Clear must drop the agent-command marker alongside done/stuck.
+	// Without this, a reaped session's stale command would resurface
+	// the next time a label slot got reused.
+	if err := s.Clear("session-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := s.ReadAgentCommand(dir, "session-1"); ok {
+		t.Errorf("ReadAgentCommand after Clear should report ok=false")
+	}
+}
+
+// TestAgentCommand_EmptyRejected guards against persisting an empty
+// override — that's a programming error, not "fall back to default."
+// Callers wanting the fallback should call Clear instead.
+func TestAgentCommand_EmptyRejected(t *testing.T) {
+	dir := t.TempDir()
+	s := NewStore(dir)
+	if err := s.WriteAgentCommand("session-1", ""); err == nil {
+		t.Errorf("WriteAgentCommand(\"\") returned nil; want error")
+	}
+}
+
+// TestAgentCommand_MalformedBodyTreatedAsAbsent mirrors the
+// attached-pid pattern: a hand-edited or truncated file shouldn't
+// strand the operator with a poison value. Multi-line bodies in
+// particular get treated as absent so a future format change
+// (multi-line config) doesn't get silently parsed as a single line.
+func TestAgentCommand_MalformedBodyTreatedAsAbsent(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := filepath.Join(dir, ".bosun", "state")
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, body := range []string{"", "  \n", "line one\nline two\n"} {
+		if err := os.WriteFile(filepath.Join(stateDir, "session-1.agent-command"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		s := NewStore(dir)
+		cmd, ok, err := s.ReadAgentCommand(dir, "session-1")
+		if err != nil {
+			t.Errorf("ReadAgentCommand(body=%q) err = %v, want nil", body, err)
+		}
+		if ok || cmd != "" {
+			t.Errorf("ReadAgentCommand(body=%q) = (%q, %v), want (\"\", false)", body, cmd, ok)
+		}
+	}
+}

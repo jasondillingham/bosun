@@ -234,3 +234,68 @@ func TestIsAgent(t *testing.T) {
 		}
 	}
 }
+
+// TestIsAgentForCommand pins Phase 1 of the agent-command design: the
+// predicate extends the default allowlist with the basename derived
+// from a wrapper-script command, so non-Claude agents still register
+// in `bosun status`. An empty command degrades to the IsAgent default.
+func TestIsAgentForCommand(t *testing.T) {
+	cases := []struct {
+		name      string
+		command   string
+		probeName string
+		want      bool
+	}{
+		// Default behavior preserved.
+		{"empty command, claude still detected", "", "claude", true},
+		{"empty command, bash still rejected", "", "bash", false},
+		{"claude command equivalent to default", "claude", "claude", true},
+		{"claude with args still default", "claude --model opus-4", "claude", true},
+
+		// Wrapper scripts (bare basename and path forms).
+		{"wrapper bare name registers", "ollama-claude.sh", "ollama-claude.sh", true},
+		{"wrapper path registers via basename", "./scripts/ollama-claude.sh", "ollama-claude", true},
+		{"wrapper path registers via full path probe", "./scripts/ollama-claude.sh", "/work/scripts/ollama-claude", true},
+		{"wrapper command with args picks first token", "ollama-claude.sh --model llama3", "ollama-claude.sh", true},
+
+		// Wrapper still admits the default basenames too — operators may
+		// have multiple sessions, some wrapped, some not.
+		{"wrapper command, claude still admitted", "ollama-claude.sh", "claude", true},
+		{"wrapper command, code-cli still admitted", "ollama-claude.sh", "code-cli", true},
+
+		// Unrelated processes stay rejected even with a wrapper command.
+		{"wrapper command, bash rejected", "ollama-claude.sh", "bash", false},
+		{"wrapper command, git rejected", "ollama-claude.sh", "git", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pred := IsAgentForCommand(tc.command)
+			if got := pred(tc.probeName); got != tc.want {
+				t.Errorf("IsAgentForCommand(%q)(%q) = %v, want %v", tc.command, tc.probeName, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCommandBasename pins the basename-extraction rules so a future
+// regression on the predicate's hot path surfaces here, not in a
+// confusing scenario test.
+func TestCommandBasename(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"claude", "claude"},
+		{"./scripts/wrap.sh", "wrap"},
+		{"/usr/local/bin/claude", "claude"},
+		{"claude --model opus", "claude"},
+		{"  claude  ", "claude"},
+		{"Claude", "claude"},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		if got := commandBasename(tc.in); got != tc.want {
+			t.Errorf("commandBasename(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}

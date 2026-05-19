@@ -22,6 +22,12 @@ const (
 	DefaultIsolateCache     = false
 	DefaultLauncherStrategy = "auto"
 	DefaultVerifyCmd        = "make check"
+	// DefaultAgentCommand is the agent binary bosun spawns inside each
+	// session's worktree. "claude" matches Claude Code's CLI; operators
+	// who want to route through Ollama wrappers, Docker, or any other
+	// agent override either at config level (config.json) or per-session
+	// via the brief's `(command: ./wrap.sh)` clause.
+	DefaultAgentCommand = "claude"
 	// DefaultGitOpTimeoutSeconds is the per-operation timeout applied to
 	// every `git` subprocess by internal/git.Client. Catches the
 	// silent-init-hang case where `git worktree add` blocks indefinitely
@@ -76,6 +82,13 @@ type Config struct {
 	// convention). Projects with different test workflows set this to e.g.
 	// "make test" or "go test ./...".
 	VerifyCmd string `json:"verify_cmd"`
+	// AgentCommand is the default binary bosun launches per session.
+	// Operators who use Ollama wrappers, Docker scripts, or any non-
+	// Claude agent override this either globally (here) or per-session
+	// via the brief's `(command: ...)` clause. Empty → DefaultAgentCommand
+	// ("claude"). See docs/agent-command-design.md for the resolution
+	// precedence (brief clause > init --command flag > config default).
+	AgentCommand string `json:"agent_command"`
 	// GitOpTimeoutSeconds caps each `git` subprocess invocation made by
 	// internal/git.Client. Zero / unset → DefaultGitOpTimeoutSeconds.
 	GitOpTimeoutSeconds int `json:"git_op_timeout_seconds"`
@@ -176,6 +189,7 @@ func Defaults() Config {
 		IsolateCacheDefault:   DefaultIsolateCache,
 		Launcher:              DefaultLauncherStrategy,
 		VerifyCmd:             DefaultVerifyCmd,
+		AgentCommand:          DefaultAgentCommand,
 		GitOpTimeoutSeconds:   DefaultGitOpTimeoutSeconds,
 		Suggest: SuggestConfig{
 			Model:     DefaultSuggestModel,
@@ -232,6 +246,9 @@ func Load(repoRoot string) (Config, error) {
 	}
 	if overlay.VerifyCmd != "" {
 		cfg.VerifyCmd = overlay.VerifyCmd
+	}
+	if overlay.AgentCommand != "" {
+		cfg.AgentCommand = overlay.AgentCommand
 	}
 	// Only override when the operator set a positive value — 0 / unset
 	// keeps the documented default per DefaultGitOpTimeoutSeconds.

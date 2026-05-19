@@ -214,14 +214,19 @@ func (s *Store) Attached(repoRoot, sessionName string) (int, bool, error) {
 	return pid, true, nil
 }
 
-// Clear removes both done and stuck markers for sessionName. Missing is OK.
-// Cross-process safe via the flock MarkDone/MarkStuck use — without it,
-// Clear racing MarkDone could remove the marker MarkDone just wrote.
+// Clear removes the per-session state markers for sessionName. Missing
+// is OK on each. Cross-process safe via the flock MarkDone/MarkStuck
+// use — without it, Clear racing MarkDone could remove the marker
+// MarkDone just wrote.
+//
+// Removes: done, stuck, agent-command. Heartbeat and attached-pid are
+// left alone (heartbeat is observability; attached-pid is the operator
+// re-attaching after reap and is handled separately).
 func (s *Store) Clear(sessionName string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return lockfile.WithLock(filepath.Join(s.dir(), ".lock"), func() error {
-		for _, suffix := range []string{"done", "stuck"} {
+		for _, suffix := range []string{"done", "stuck", "agent-command"} {
 			err := os.Remove(s.path(sessionName, suffix))
 			if err != nil && !errors.Is(err, fs.ErrNotExist) {
 				return fmt.Errorf("remove %s: %w", s.path(sessionName, suffix), err)
@@ -229,6 +234,61 @@ func (s *Store) Clear(sessionName string) error {
 		}
 		return nil
 	})
+}
+
+// WriteAgentCommand persists the agent command chosen for sessionName
+// to .bosun/state/<sessionName>.agent-command. Body is the command
+// string + newline. Used at `bosun init` time so later `bosun launch`,
+// `bosun status` (for proc-name derivation), and tooling all agree on
+// which command should be running in this worktree.
+//
+// Empty command is rejected — call ClearAgentCommand instead if you
+// want to drop the override and fall back to the config default.
+//
+// Cross-process safe via the same flock the DONE/STUCK markers use.
+func (s *Store) WriteAgentCommand(sessionName, command string) error {
+	if command == "" {
+		return fmt.Errorf("WriteAgentCommand: command must not be empty")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := os.MkdirAll(s.dir(), 0o750); err != nil {
+		return fmt.Errorf("mkdir %s: %w", s.dir(), err)
+	}
+	return lockfile.WithLock(filepath.Join(s.dir(), ".lock"), func() error {
+		body := command + "\n"
+		if err := os.WriteFile(s.path(sessionName, "agent-command"), []byte(body), 0o600); err != nil {
+			return fmt.Errorf("write agent-command: %w", err)
+		}
+		return nil
+	})
+}
+
+// ReadAgentCommand returns the persisted agent command for sessionName.
+// `ok` is false (command="") when no agent-command file is present —
+// the caller should fall back to the config default in that case.
+// A malformed file (binary garbage, multi-line content) is treated as
+// "no registration" rather than an error so a hand-edited file degrades
+// gracefully.
+//
+// Implements the AgentCommandReader contract used by session.Derive.
+func (s *Store) ReadAgentCommand(repoRoot, sessionName string) (string, bool, error) {
+	store := s
+	if repoRoot != s.repoRoot {
+		store = NewStore(repoRoot)
+	}
+	body, ok, err := readIfExists(store.path(sessionName, "agent-command"))
+	if err != nil {
+		return "", false, err
+	}
+	if !ok {
+		return "", false, nil
+	}
+	body = strings.TrimSpace(body)
+	if body == "" || strings.ContainsAny(body, "\n\r") {
+		return "", false, nil
+	}
+	return body, true, nil
 }
 
 // WriteHeartbeat records the current time as the session's latest heartbeat

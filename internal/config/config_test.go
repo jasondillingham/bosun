@@ -70,6 +70,39 @@ func TestLoad_VerifyCmdOverride(t *testing.T) {
 	}
 }
 
+func TestLoad_AgentCommandDefault(t *testing.T) {
+	dir := t.TempDir()
+	c, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.AgentCommand != "claude" {
+		t.Errorf("AgentCommand default = %q, want %q", c.AgentCommand, "claude")
+	}
+}
+
+func TestLoad_AgentCommandOverride(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".bosun"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte(`{"agent_command":"./scripts/ollama-claude.sh"}`)
+	if err := os.WriteFile(filepath.Join(dir, ".bosun/config.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.AgentCommand != "./scripts/ollama-claude.sh" {
+		t.Errorf("AgentCommand = %q, want %q", c.AgentCommand, "./scripts/ollama-claude.sh")
+	}
+	// Other fields still defaulted — the override is field-scoped.
+	if c.VerifyCmd != "make check" {
+		t.Errorf("VerifyCmd default lost: %q", c.VerifyCmd)
+	}
+}
+
 func TestLoad_OverridesOnly(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, ".bosun"), 0o755); err != nil {

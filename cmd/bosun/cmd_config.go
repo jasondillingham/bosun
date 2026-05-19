@@ -28,6 +28,7 @@ var configSetKeys = []string{
 	"base_branch",
 	"launcher",
 	"verify_cmd",
+	"agent_command",
 	"default_session_count",
 	"session_prefix",
 	"worktree_suffix_pattern",
@@ -58,6 +59,7 @@ var configRecognizedKeys = []string{
 	"isolate_cache_default",
 	"launcher",
 	"verify_cmd",
+	"agent_command",
 	"git_op_timeout_seconds",
 	"liveness_gate",
 	"hooks",
@@ -430,6 +432,8 @@ func buildConfigExample(c config.Config) string {
 	b.WriteString("// isolate_cache_default:   copy node_modules / build cache into each worktree at init time.\n")
 	b.WriteString("// launcher:                agent-window strategy: auto | tmux | terminal | print.\n")
 	b.WriteString("// verify_cmd:              command the brief preamble tells the agent to run before `bosun done`.\n")
+	b.WriteString("// agent_command:           default agent binary bosun launches per session (default \"claude\").\n")
+	b.WriteString("//                          Override per-session via the brief's `(command: ...)` clause.\n")
 	b.WriteString("// git_op_timeout_seconds:  per-operation cap on each `git` subprocess (0 = built-in default).\n")
 	b.WriteString("// hooks:                   list of {event, command, fail_open?, timeout_seconds?} entries.\n")
 	b.WriteString("//                          Events: pre-init, post-init, post-done, pre-merge, post-merge,\n")

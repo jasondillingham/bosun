@@ -144,6 +144,75 @@ func TestScenario_MergeNoLoadCheckSkipsWarning(t *testing.T) {
 	}
 }
 
+// TestScenario_InitPersistsPerSessionAgentCommand pins Phase 1 of the
+// agent-command design: a brief with mixed `(command: ...)` overrides
+// produces matching state files for the overridden sessions and NO
+// state file for sessions falling back to the config default. The
+// no-file-when-default contract keeps the state dir uncluttered for
+// the common (vanilla "claude") case.
+func TestScenario_InitPersistsPerSessionAgentCommand(t *testing.T) {
+	s := newScenario(t)
+	s.WriteFile("plan.md", `## session-1 (command: ./scripts/ollama-claude.sh)
+session-1 uses the Ollama wrapper.
+
+## session-2
+session-2 falls back to config.agent_command default.
+`)
+
+	// init persists the per-session command without --launch (we're
+	// asserting on the state dir, not the spawn).
+	s.Bosun("init", "2", "--brief", "plan.md")
+
+	// session-1 should have a persisted override file.
+	got, err := os.ReadFile(filepath.Join(s.repo, ".bosun", "state", "session-1.agent-command"))
+	if err != nil {
+		t.Fatalf("session-1 agent-command file should exist: %v", err)
+	}
+	if want := "./scripts/ollama-claude.sh"; strings.TrimSpace(string(got)) != want {
+		t.Errorf("session-1 agent-command body = %q, want %q", strings.TrimSpace(string(got)), want)
+	}
+
+	// session-2 should NOT have an override file — fell back to
+	// config default ("claude"), no need for a state-dir entry.
+	if _, err := os.Stat(filepath.Join(s.repo, ".bosun", "state", "session-2.agent-command")); err == nil {
+		t.Errorf("session-2 agent-command file should not exist (no override)")
+	}
+}
+
+// TestScenario_InitCommandFlagAppliesToAllSessions pins the precedence
+// docs/agent-command-design.md commits to: a CLI --command flag applies
+// to every session unless the brief overrides it. The brief clause
+// wins for session-1; --command supplies session-2's value.
+func TestScenario_InitCommandFlagAppliesToAllSessions(t *testing.T) {
+	s := newScenario(t)
+	s.WriteFile("plan.md", `## session-1 (command: ./brief-wins.sh)
+brief clause takes precedence.
+
+## session-2
+no brief clause; --command flag should land here.
+`)
+
+	s.Bosun("init", "2", "--brief", "plan.md", "--command", "./cli-flag.sh")
+
+	// session-1: brief clause wins.
+	got1, err := os.ReadFile(filepath.Join(s.repo, ".bosun", "state", "session-1.agent-command"))
+	if err != nil {
+		t.Fatalf("session-1 agent-command file should exist: %v", err)
+	}
+	if want := "./brief-wins.sh"; strings.TrimSpace(string(got1)) != want {
+		t.Errorf("session-1: brief clause didn't win over --command (got %q, want %q)", strings.TrimSpace(string(got1)), want)
+	}
+
+	// session-2: CLI flag supplies the value (different from default).
+	got2, err := os.ReadFile(filepath.Join(s.repo, ".bosun", "state", "session-2.agent-command"))
+	if err != nil {
+		t.Fatalf("session-2 agent-command file should exist (CLI --command override): %v", err)
+	}
+	if want := "./cli-flag.sh"; strings.TrimSpace(string(got2)) != want {
+		t.Errorf("session-2: --command didn't land (got %q, want %q)", strings.TrimSpace(string(got2)), want)
+	}
+}
+
 // TestScenario_InitRefusesEmptyBriefBeforePreflight pins the brief-lint
 // ordering contract: a malformed brief (no `## <label>` headings) must
 // fail before any pre-flight runs and before any worktree mutation. We

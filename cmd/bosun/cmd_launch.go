@@ -48,7 +48,7 @@ does not create worktrees, branches, or briefs. Use ` + "`bosun init`" + ` for t
 	cmd.Flags().BoolVar(&isolateCache, "isolate-cache", false, "set per-worktree build-cache env vars")
 	cmd.Flags().StringVar(&initialPrompt, "initial-prompt", "", "first message passed to the launched session")
 	cmd.Flags().BoolVar(&openAsTab, "tab", false, "open as a tab in an existing window (terminal-dependent)")
-	cmd.Flags().StringVar(&command, "command", "claude", "command to run in the launched window")
+	cmd.Flags().StringVar(&command, "command", "", "agent command to run (defaults to the session's persisted command, or config.agent_command, or `claude`)")
 
 	cmd.GroupID = "wiring"
 	return cmd
@@ -113,11 +113,22 @@ func runLaunch(sessionArg string, opts launchOpts) error {
 		}
 	}
 
+	// Resolve agent command with the documented precedence:
+	// CLI flag > session's persisted override > config default.
+	// Persisted overrides land in Session.AgentCommand via Derive.
+	command := opts.command
+	if command == "" {
+		command = s.AgentCommand
+	}
+	if command == "" {
+		command = rc.cfg.AgentCommand
+	}
+
 	strategy, err := launcher.Launch(launcher.Options{
 		Strategy:      launcher.Strategy(rc.cfg.Launcher),
 		WorktreePath:  s.Path,
 		SessionName:   s.Label,
-		Command:       opts.command,
+		Command:       command,
 		InitialPrompt: prompt,
 		OpenAsTab:     opts.openAsTab,
 		Env:           env,

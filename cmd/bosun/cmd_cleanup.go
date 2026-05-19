@@ -10,6 +10,7 @@ import (
 	"github.com/jasondillingham/bosun/internal/git"
 	"github.com/jasondillingham/bosun/internal/history"
 	"github.com/jasondillingham/bosun/internal/hooks"
+	"github.com/jasondillingham/bosun/internal/proc"
 	"github.com/jasondillingham/bosun/internal/session"
 	"github.com/jasondillingham/bosun/internal/spawntree"
 	"github.com/spf13/cobra"
@@ -321,6 +322,21 @@ func executeCleanupOne(rc *runCtx, p cleanupPlan) error {
 		Detail:       p.reason,
 	}); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "bosun: warning: archive history for %s: %v\n", p.s.Name, err)
+	}
+
+	// If a Claude Code agent is still running in this worktree, signal
+	// it before removing the directory. Without this, `bosun cleanup`
+	// reaps the worktree but leaves zombie agents running in deleted
+	// dirs — the operator has to hunt them down in Activity Monitor.
+	// SIGTERM gives the agent a chance to flush state; SIGKILL is the
+	// escalation. Failures here log-and-continue: the agent will
+	// notice the worktree is gone soon enough on its own.
+	if p.s.Running && p.s.RunningPID > 0 {
+		if err := proc.Terminate(p.s.RunningPID, proc.DefaultTerminateGrace); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "bosun: warning: terminate agent pid %d for %s: %v\n", p.s.RunningPID, p.s.Name, err)
+		} else {
+			printf("  terminated agent (pid %d) in %s\n", p.s.RunningPID, p.s.Name)
+		}
 	}
 
 	forceWT := true

@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -3574,6 +3575,40 @@ func startFakeAgent(t *testing.T, worktree string) *exec.Cmd {
 	// before the first bosun call avoids race-skip on busy CI runners.
 	time.Sleep(200 * time.Millisecond)
 	return cmd
+}
+
+// TestScenario_CleanupTerminatesRunningAgent pins the contract that
+// `bosun cleanup` reaps not just the worktree + branch but also the
+// agent process living inside it. Before this landed, cleanup left
+// zombie Claude Code processes running in deleted directories — the
+// operator had to hunt them down in Activity Monitor.
+func TestScenario_CleanupTerminatesRunningAgent(t *testing.T) {
+	s := newScenario(t)
+	s.Bosun("init", "1")
+
+	wt1 := s.WorktreePath(1)
+	s.WriteFileIn(wt1, "feature.txt", "x\n")
+	s.CommitIn(wt1, "feature work")
+	s.Bosun("done", "session-1")
+
+	// Squash-merge so cleanup sees DONE+squashed (the most common reap
+	// shape) and removes without --purge.
+	s.Bosun("merge")
+
+	agent := startFakeAgent(t, wt1)
+	pid := agent.Process.Pid
+
+	out := s.Bosun("cleanup")
+	s.AssertContainsAll(out, "session-1: removed", "terminated agent")
+	s.AssertWorktreeMissing(1)
+
+	// The agent process should be gone. Reap any zombie state first
+	// (the fake-agent's grandparent is this test process), then poll
+	// signal-0 to confirm the kernel has freed the PID.
+	_, _ = agent.Process.Wait()
+	if err := agent.Process.Signal(syscall.Signal(0)); err == nil {
+		t.Errorf("agent pid %d still alive after bosun cleanup", pid)
+	}
 }
 
 // --- v0.6: merge safety (agent-liveness gate, fsck, undo log) ---

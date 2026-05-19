@@ -11,6 +11,7 @@ import (
 	"github.com/jasondillingham/bosun/internal/git"
 	"github.com/jasondillingham/bosun/internal/history"
 	"github.com/jasondillingham/bosun/internal/hooks"
+	"github.com/jasondillingham/bosun/internal/proc"
 	"github.com/jasondillingham/bosun/internal/session"
 	"github.com/jasondillingham/bosun/internal/spawntree"
 	"github.com/spf13/cobra"
@@ -208,6 +209,17 @@ func runRemove(cmd *cobra.Command, sessionArg string, force, ignoreRunning bool)
 			_, _ = fmt.Fprintf(os.Stderr, "bosun: warning: salvage %s: %v\n", s.Label, salvageErr)
 		} else if salvagePath != "" {
 			printf("bosun: salvaged %d file(s) from %s → %s\n", n, s.Label, salvagePath)
+		}
+	}
+
+	// Terminate any agent still running in this worktree before the
+	// dir disappears. Mirrors the cleanup path; the operator chose to
+	// remove the session, so a still-running agent should go too.
+	if s.Running && s.RunningPID > 0 {
+		if err := proc.Terminate(s.RunningPID, proc.DefaultTerminateGrace); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "bosun: warning: terminate agent pid %d for %s: %v\n", s.RunningPID, label, err)
+		} else {
+			printf("bosun: terminated agent (pid %d) in %s\n", s.RunningPID, label)
 		}
 	}
 

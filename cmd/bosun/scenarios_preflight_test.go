@@ -143,3 +143,46 @@ func TestScenario_MergeNoLoadCheckSkipsWarning(t *testing.T) {
 		t.Errorf("--no-load-check should suppress merge warning, got:\n%s", out)
 	}
 }
+
+// TestScenario_InitRefusesEmptyBriefBeforePreflight pins the brief-lint
+// ordering contract: a malformed brief (no `## <label>` headings) must
+// fail before any pre-flight runs and before any worktree mutation. We
+// force a high load average so the pre-flight #2 warning *would* fire if
+// reached — its absence proves the brief check ran first.
+func TestScenario_InitRefusesEmptyBriefBeforePreflight(t *testing.T) {
+	t.Setenv("BOSUN_TEST_LOAD_AVERAGE", "8.0")
+	s := newScenario(t)
+	// Brief with body but no `## label` headings — the canonical first-
+	// touch failure mode Leonard trial #3 surfaced.
+	s.WriteFile("plan.md", "Some prose without any session headings.\n\nMore prose.\n")
+
+	out, err := s.BosunErr("init", "1", "--brief", "plan.md")
+	if err == nil {
+		t.Fatalf("init should refuse an empty-sections brief; got success:\n%s", out)
+	}
+
+	// Helpful-error contract: the message tells the operator what shape
+	// the parser expects.
+	for _, want := range []string{
+		"## <label>",
+		"Expected shape:",
+		"## label-one",
+		"(depends:",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("refusal output missing %q:\n%s", want, out)
+		}
+	}
+
+	// Ordering contract: pre-flight #2's load warning must NOT have
+	// fired. If it did, brief validation is still happening too late.
+	if strings.Contains(out, "system load is") {
+		t.Errorf("brief lint should run before pre-flight #2 (load check); got load warning in:\n%s", out)
+	}
+
+	// No worktree, no init.state — the refusal happens before any mutation.
+	s.AssertWorktreeMissing(1)
+	if _, err := os.Stat(filepath.Join(s.repo, ".bosun", "init.state")); err == nil {
+		t.Fatal(".bosun/init.state should not exist after a brief-lint refusal")
+	}
+}

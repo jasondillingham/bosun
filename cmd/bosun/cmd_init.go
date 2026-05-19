@@ -262,6 +262,31 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 		istate = initstate.New(labels, opts.brief, roundTimestamp)
 	}
 
+	// Parse + validate the brief as the very first work after opts.brief is
+	// fully resolved (post-resume, post-suggest), and BEFORE any pre-flight
+	// scan, load check, base-branch check, or git mutation. A bad brief is
+	// the most common first-touch failure; failing fast here means a
+	// malformed plan doesn't first burn the operator on a 10-second load
+	// warning or a phantom-ref scan.
+	var briefs []brief.Brief
+	if opts.brief != "" {
+		briefs, err = brief.Parse(opts.brief)
+		if err != nil {
+			return userErr("parse brief: %v", err)
+		}
+		if len(briefs) == 0 {
+			return userErr(
+				"brief %s is missing `## <label>` sections.\n\n"+
+					"Expected shape:\n"+
+					"  ## label-one\n"+
+					"  body for session 1\n\n"+
+					"  ## label-two (depends: label-one)\n"+
+					"  body for session 2",
+				opts.brief,
+			)
+		}
+	}
+
 	// Pre-flight #1: phantom-branch detection. Cheap directory scan that
 	// catches Finder / Time Machine / Spotlight artifacts (literal "<name>
 	// <digit>" duplicates) before they confuse later git operations.
@@ -300,18 +325,6 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 	}
 	if currentBranch != base && !opts.force {
 		return userErr("HEAD is on %q, not base branch %q. Re-run with --force to proceed anyway.", currentBranch, base)
-	}
-
-	// Parse brief once, up front, so a bad plan fails fast.
-	var briefs []brief.Brief
-	if opts.brief != "" {
-		briefs, err = brief.Parse(opts.brief)
-		if err != nil {
-			return userErr("parse brief: %v", err)
-		}
-		if len(briefs) == 0 {
-			return userErr("brief %s contains no `## <label>` sections", opts.brief)
-		}
 	}
 
 	// Fire pre-init before any filesystem mutation so the operator hook

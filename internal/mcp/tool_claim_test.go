@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"os"
+	"path/filepath"
 	"sort"
 	"testing"
 	"time"
 
 	"github.com/jasondillingham/bosun/internal/claims"
 	"github.com/jasondillingham/bosun/internal/state"
+	"github.com/jasondillingham/bosun/internal/usage"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -234,6 +237,81 @@ func assertOnDisk(t *testing.T, store *claims.Store, session string, want []stri
 	sort.Strings(sortedWant)
 	if !equalStrings(got, sortedWant) {
 		t.Fatalf("on-disk claims for %s = %v, want %v", session, got, sortedWant)
+	}
+}
+
+// TestServer_ClaimTool_BudgetGate exercises the Phase 4 budget gate on
+// bosun_claim:
+//   - no config → no gate (baseline).
+//   - config set, spend < 80% → claim succeeds with no warning.
+//   - config set, spend >= 80% but < 100% → claim succeeds + warning set.
+//   - config set, spend >= 100% → claim refused (IsError).
+//
+// Each step seeds usage via the on-disk ledger (same path the
+// bosun_usage tool would write to) so the gate runs against real
+// data, not a mock.
+func TestServer_ClaimTool_BudgetGate(t *testing.T) {
+	tmp := t.TempDir()
+	// Write a config with a $1.00 budget. The gate looks at the
+	// repo root, so this is enough to wire it in.
+	if err := os.MkdirAll(filepath.Join(tmp, ".bosun"), 0o755); err != nil {
+		t.Fatalf("mkdir .bosun: %v", err)
+	}
+	cfgPath := filepath.Join(tmp, ".bosun", "config.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"usage_budget_usd": 1.00}`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cstore := claims.NewStore(tmp)
+	sstore := state.NewStore(tmp)
+	srv := NewServer(cstore, sstore, nil)
+
+	sess, cancel, serverDone := startTestSession(t, srv)
+	defer cancel()
+	defer sess.Close()
+	ctx := context.Background()
+
+	// Step 1: well under budget — claim succeeds, no warning.
+	if err := usage.Append(tmp, "session-1", usage.Entry{
+		Timestamp: time.Now(), CostUSD: 0.10, Model: "claude-test",
+	}); err != nil {
+		t.Fatalf("seed usage step 1: %v", err)
+	}
+	got := callClaim(t, ctx, sess, "session-1", []string{"a.go"})
+	if got.BudgetWarning != "" {
+		t.Errorf("step 1: expected no warning at $0.10/$1.00, got %q", got.BudgetWarning)
+	}
+
+	// Step 2: cross the 80% threshold but stay under 100% — claim
+	// succeeds, warning set. Total after this append: $0.85.
+	if err := usage.Append(tmp, "session-1", usage.Entry{
+		Timestamp: time.Now(), CostUSD: 0.75, Model: "claude-test",
+	}); err != nil {
+		t.Fatalf("seed usage step 2: %v", err)
+	}
+	got = callClaim(t, ctx, sess, "session-1", []string{"b.go"})
+	if got.BudgetWarning == "" {
+		t.Errorf("step 2: expected warning at $0.85/$1.00, got empty")
+	}
+
+	// Step 3: blow through the budget — claim refused. Total
+	// after this append: $1.85.
+	if err := usage.Append(tmp, "session-1", usage.Entry{
+		Timestamp: time.Now(), CostUSD: 1.00, Model: "claude-test",
+	}); err != nil {
+		t.Fatalf("seed usage step 3: %v", err)
+	}
+	_, isErr := callClaimRaw(t, ctx, sess, "session-1", []string{"c.go"})
+	if !isErr {
+		t.Errorf("step 3: expected IsError at $1.85/$1.00 budget, got success")
+	}
+
+	sess.Close()
+	cancel()
+	select {
+	case <-serverDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not exit after cancel")
 	}
 }
 

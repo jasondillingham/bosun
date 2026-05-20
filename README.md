@@ -213,6 +213,40 @@ the MCP socket are local-only. That's tracked as Phase 3 in
 the wrapper-script path (`docker-claude.sh` with SSH glue) is the
 workaround until Phase 3 lands.
 
+### Cost tracking and per-session budgets
+
+Agent runtimes that report token + cost usage (Claude Code, wrapped
+Aider, etc.) can call the `bosun_usage` MCP tool after each turn.
+Bosun aggregates the per-session ledger and surfaces it in three
+places:
+
+- `bosun status` adds a `COST` column when at least one session has
+  reported usage. Sessions with no reported usage show `—`.
+- `bosun show <session>` prints cumulative cost, token totals, the
+  last model used, and a per-model breakdown when more than one
+  model was used in the session.
+- `bosun merge` prints a one-line round summary —
+  `bosun: round cost — session-1: $0.42 · session-2: $1.17 · total $1.59`
+  — after the per-session merge results.
+
+Set a per-session budget to gate runaway spend:
+
+```sh
+bosun config set usage_budget_usd 5.00
+```
+
+When set, `bosun_claim` checks the calling session's ledger and:
+
+- attaches an advisory `budget_warning` to the result at ≥ 80% of
+  budget (claim still succeeds);
+- refuses the claim outright at ≥ 100% of budget. Already-open
+  claims and in-flight work aren't affected — the gate only blocks
+  *new* claims so a runaway agent can't open more fronts.
+
+`0` (the default) means no limit. Full protocol details:
+[`docs/mcp-protocol.md`](docs/mcp-protocol.md) — `bosun_usage` and
+"Budget gate" sections.
+
 ### Example config
 
 A fully annotated reference config lives at

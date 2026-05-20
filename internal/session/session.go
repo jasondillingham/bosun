@@ -16,6 +16,7 @@ import (
 	"github.com/jasondillingham/bosun/internal/config"
 	"github.com/jasondillingham/bosun/internal/git"
 	"github.com/jasondillingham/bosun/internal/proc"
+	"github.com/jasondillingham/bosun/internal/usage"
 )
 
 // State is the merge-readiness state of a session.
@@ -95,6 +96,13 @@ type Session struct {
 	// Empty when no override was set — callers fall back to
 	// config.AgentCommand. Phase 1 of docs/agent-command-design.md.
 	AgentCommand string
+	// Usage is the cumulative LLM token + cost totals for this
+	// session, summed from the .bosun/state/<label>.usage ledger.
+	// Zeroed when no usage was recorded — best-effort populate so
+	// agent runtimes that don't call bosun_usage simply show "—"
+	// in the COST column without poisoning status rendering.
+	// Phase 4 cost-tracking surface.
+	Usage usage.Totals
 	// DockerHost is the per-session Docker daemon endpoint persisted
 	// at init time via the brief's `(host: ...)` clause, the
 	// `bosun init --docker-host` flag, or config.Docker.Hosts[0].
@@ -148,6 +156,11 @@ type StateReader interface {
 	// this on every init so launcher, status, and proc.Running can all
 	// reach the right binary without re-resolving config + brief.
 	ReadAgentCommand(repoRoot, sessionName string) (command string, ok bool, err error)
+	// ReadUsageTotals returns the summed cost + token ledger for
+	// sessionName. Zero totals are returned when no usage was
+	// recorded — not an error. Best-effort populate by Derive so
+	// renderers can show a COST column without an extra read pass.
+	ReadUsageTotals(repoRoot, sessionName string) (usage.Totals, error)
 	// ReadDockerHost returns the Docker daemon endpoint persisted for
 	// sessionName at init time. `ok` is false when no remote host was
 	// configured for the session and the caller should treat that as
@@ -250,6 +263,11 @@ func Derive(ctx context.Context, c *git.Client, cfg config.Config, repoRoot stri
 		// exports it as DOCKER_HOST for relaunches.
 		dockerHost, _, _ := sr.ReadDockerHost(repoRoot, name)
 
+		// Cumulative usage ledger (Phase 4 cost tracking). Zero totals
+		// when no bosun_usage calls have been recorded — not an error;
+		// renderers display the COST column as "—" in that case.
+		usageTotals, _ := sr.ReadUsageTotals(repoRoot, name)
+
 		// Liveness gate: in "external" mode the operator has declared
 		// they're driving workers from outside the proc-scan's view
 		// (Claude Code Task sub-agents, CI agents, …). Skip the entire
@@ -337,6 +355,7 @@ func Derive(ctx context.Context, c *git.Client, cfg config.Config, repoRoot stri
 			HeartbeatAt:     hbAt,
 			AgentCommand:    agentCmd,
 			DockerHost:      dockerHost,
+			Usage:           usageTotals,
 		})
 	}
 

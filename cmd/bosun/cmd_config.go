@@ -38,6 +38,7 @@ var configSetKeys = []string{
 	"agent_spawn.max_concurrent_sub_sessions",
 	"agent_spawn.max_depth",
 	"docker.image",
+	"usage_budget_usd",
 }
 
 // configListKeys is the order `bosun config list` and `bosun config get` know
@@ -70,6 +71,7 @@ var configRecognizedKeys = []string{
 	"agent_spawn",
 	"agent_subtask",
 	"docker",
+	"usage_budget_usd",
 }
 
 func newConfigCmd() *cobra.Command {
@@ -614,6 +616,11 @@ func formatConfigValue(cfg config.Config, key string) string {
 			return "[]"
 		}
 		return "[" + strings.Join(cfg.Docker.Hosts, ", ") + "]"
+	case "usage_budget_usd":
+		if cfg.UsageBudgetUSD == 0 {
+			return "0 (no limit)"
+		}
+		return "$" + strconv.FormatFloat(cfg.UsageBudgetUSD, 'f', 2, 64)
 	}
 	return ""
 }
@@ -643,6 +650,18 @@ func encodeConfigValue(key, value string) (json.RawMessage, error) {
 			return nil, fmt.Errorf("%s must be an integer, got %q", key, value)
 		}
 		return json.Marshal(n)
+	case "usage_budget_usd":
+		// Strip a leading "$" if the operator types `bosun config set
+		// usage_budget_usd $5.00` — common reflex. Parse as float.
+		v := strings.TrimPrefix(strings.TrimSpace(value), "$")
+		f, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			return nil, fmt.Errorf("%s must be a non-negative number (e.g. 5.00), got %q", key, value)
+		}
+		if f < 0 {
+			return nil, fmt.Errorf("%s must be >= 0, got %f", key, f)
+		}
+		return json.Marshal(f)
 	}
 	return nil, fmt.Errorf("unknown config key %q", key)
 }

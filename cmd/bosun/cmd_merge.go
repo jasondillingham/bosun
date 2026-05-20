@@ -18,6 +18,7 @@ import (
 	"github.com/jasondillingham/bosun/internal/proc"
 	"github.com/jasondillingham/bosun/internal/session"
 	"github.com/jasondillingham/bosun/internal/spawntree"
+	"github.com/jasondillingham/bosun/internal/usage"
 	"github.com/spf13/cobra"
 )
 
@@ -213,10 +214,58 @@ func runMerge(cmd *cobra.Command, args []string, opts mergeOpts) error {
 		}
 		printf("  %s %s: %s — %s\n", mark, r.name, r.status, r.reason)
 	}
+
+	// Phase 4 cost summary. For each session that produced a real
+	// merge outcome (merged / skipped / conflict — anything but
+	// would-merge in dry-run), read its usage ledger and roll up
+	// per-session + round totals. Silent when no usage was recorded
+	// — agent runtimes that don't call bosun_usage produce zero
+	// rows and we don't print a "$0.00 total" line that looks like
+	// the round was free.
+	var realNames []string
+	for _, r := range results {
+		if r.status == mergeStatusWouldMerge {
+			continue
+		}
+		realNames = append(realNames, r.name)
+	}
+	printMergeCostSummary(rc, realNames)
+
 	if conflictHit {
 		println("\nbosun: stopped at first conflict. Resolve, commit, then re-run `bosun merge`.")
 	}
 	return nil
+}
+
+// printMergeCostSummary writes a one-line "session-1: $0.42 ·
+// session-2: $1.17 · total $1.59" cost roll-up after a merge run.
+// Best-effort: a missing or unreadable usage ledger just contributes
+// zero, never errors. Outputs nothing when no session has recorded
+// cost — keeps the merge output clean for operators not using
+// bosun_usage.
+func printMergeCostSummary(rc *runCtx, sessionNames []string) {
+	type sessionCost struct {
+		name string
+		cost float64
+	}
+	var costs []sessionCost
+	var total float64
+	for _, name := range sessionNames {
+		tot, err := usage.ReadTotals(rc.repoRoot, name)
+		if err != nil || tot.TurnCount == 0 {
+			continue
+		}
+		costs = append(costs, sessionCost{name: name, cost: tot.CostUSD})
+		total += tot.CostUSD
+	}
+	if len(costs) == 0 {
+		return
+	}
+	var parts []string
+	for _, c := range costs {
+		parts = append(parts, fmt.Sprintf("%s: $%.2f", c.name, c.cost))
+	}
+	printf("\nbosun: round cost — %s · total $%.2f\n", strings.Join(parts, " · "), total)
 }
 
 // Status constants returned by mergeOne. Exposed so callers (cmd_merge,

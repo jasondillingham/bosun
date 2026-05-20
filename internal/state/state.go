@@ -18,6 +18,7 @@ import (
 	"github.com/jasondillingham/bosun/internal/lockfile"
 	"github.com/jasondillingham/bosun/internal/phantom"
 	"github.com/jasondillingham/bosun/internal/session"
+	"github.com/jasondillingham/bosun/internal/usage"
 )
 
 const (
@@ -219,14 +220,15 @@ func (s *Store) Attached(repoRoot, sessionName string) (int, bool, error) {
 // use — without it, Clear racing MarkDone could remove the marker
 // MarkDone just wrote.
 //
-// Removes: done, stuck, agent-command, docker-host. Heartbeat and
-// attached-pid are left alone (heartbeat is observability; attached-pid
-// is the operator re-attaching after reap and is handled separately).
+// Removes: done, stuck, agent-command, docker-host, usage.
+// Heartbeat and attached-pid are left alone (heartbeat is
+// observability; attached-pid is the operator re-attaching after
+// reap and is handled separately).
 func (s *Store) Clear(sessionName string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return lockfile.WithLock(filepath.Join(s.dir(), ".lock"), func() error {
-		for _, suffix := range []string{"done", "stuck", "agent-command", "docker-host"} {
+		for _, suffix := range []string{"done", "stuck", "agent-command", "docker-host", "usage"} {
 			err := os.Remove(s.path(sessionName, suffix))
 			if err != nil && !errors.Is(err, fs.ErrNotExist) {
 				return fmt.Errorf("remove %s: %w", s.path(sessionName, suffix), err)
@@ -320,6 +322,22 @@ func (s *Store) WriteDockerHost(sessionName, host string) error {
 		}
 		return nil
 	})
+}
+
+// ReadUsageTotals returns the summed usage ledger for sessionName.
+// Thin wrapper over usage.ReadTotals — kept on Store so the
+// session.StateReader contract has a single source for all per-session
+// state reads. Missing ledger returns zero totals (no error); a
+// malformed file degrades gracefully via usage.Read's per-line skip.
+//
+// Phase 4 cost-tracking surface: bosun status' COST column,
+// bosun show's usage section, and the budget-gate in bosun_check
+// all consume this.
+func (s *Store) ReadUsageTotals(repoRoot, sessionName string) (usage.Totals, error) {
+	if repoRoot == "" {
+		repoRoot = s.repoRoot
+	}
+	return usage.ReadTotals(repoRoot, sessionName)
 }
 
 // ReadDockerHost returns the persisted Docker host endpoint for

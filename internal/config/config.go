@@ -96,6 +96,13 @@ type Config struct {
 	// ("claude"). See docs/agent-command-design.md for the resolution
 	// precedence (brief clause > init --command flag > config default).
 	AgentCommand string `json:"agent_command"`
+	// UsageBudgetUSD is the per-session spend cap in dollars. Zero or
+	// unset means "no limit." When set, the bosun_check MCP tool warns
+	// at 80% and refuses claims past 100%; renderers show the
+	// remaining budget alongside the cost. Agents report per-turn
+	// cost via the bosun_usage MCP tool — operators whose agent
+	// runtime doesn't call bosun_usage get no enforcement.
+	UsageBudgetUSD float64 `json:"usage_budget_usd"`
 	// GitOpTimeoutSeconds caps each `git` subprocess invocation made by
 	// internal/git.Client. Zero / unset → DefaultGitOpTimeoutSeconds.
 	GitOpTimeoutSeconds int `json:"git_op_timeout_seconds"`
@@ -295,6 +302,11 @@ func Load(repoRoot string) (Config, error) {
 	if overlay.AgentCommand != "" {
 		cfg.AgentCommand = overlay.AgentCommand
 	}
+	// UsageBudgetUSD: zero is the documented "no limit" sentinel, so a
+	// missing key keeps that semantic. A positive value overrides.
+	if overlay.UsageBudgetUSD > 0 {
+		cfg.UsageBudgetUSD = overlay.UsageBudgetUSD
+	}
 	// Only override when the operator set a positive value — 0 / unset
 	// keeps the documented default per DefaultGitOpTimeoutSeconds.
 	if overlay.GitOpTimeoutSeconds > 0 {
@@ -438,6 +450,9 @@ func (c Config) Validate() error {
 	}
 	if c.GitOpTimeoutSeconds < 0 {
 		return fmt.Errorf("git_op_timeout_seconds must be ≥ 0, got %d", c.GitOpTimeoutSeconds)
+	}
+	if c.UsageBudgetUSD < 0 {
+		return fmt.Errorf("usage_budget_usd must be ≥ 0, got %f", c.UsageBudgetUSD)
 	}
 	for i, h := range c.Hooks {
 		if !hooks.IsKnownEvent(h.Event) {

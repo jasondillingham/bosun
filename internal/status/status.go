@@ -64,7 +64,16 @@ func RenderText(w io.Writer, opts RenderOptions) error {
 	writeEvents(w, opts, useColor)
 
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(tw, "SESSION\tBRANCH\tSTATE\tAHEAD\tDIRTY\tCLAIMED\tRUNNING\tLAST_COMMIT")
+	// COST column is suppressed entirely when no session has recorded
+	// usage — operators not using bosun_usage shouldn't see a wall of
+	// "—" cells cluttering the table. The decision rides on the
+	// session set itself so a per-row check stays cheap.
+	showCost := anySessionHasUsage(opts.Sessions)
+	if showCost {
+		_, _ = fmt.Fprintln(tw, "SESSION\tBRANCH\tSTATE\tAHEAD\tDIRTY\tCLAIMED\tRUNNING\tCOST\tLAST_COMMIT")
+	} else {
+		_, _ = fmt.Fprintln(tw, "SESSION\tBRANCH\tSTATE\tAHEAD\tDIRTY\tCLAIMED\tRUNNING\tLAST_COMMIT")
+	}
 	rows := opts.Sessions
 	if !opts.NoTree {
 		rows = TreeOrdered(opts.Sessions)
@@ -78,16 +87,30 @@ func RenderText(w io.Writer, opts RenderOptions) error {
 			// when --no-tree exists for scripts that care.
 			name = Indent(s.Depth) + "└─ " + s.Name
 		}
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%d\t%d\t%s\t%s\n",
-			name,
-			s.Branch,
-			renderStateCell(s, useColor),
-			s.Ahead,
-			s.Dirty,
-			s.Claimed,
-			formatRunning(s),
-			formatLastCommit(s),
-		)
+		if showCost {
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%d\t%d\t%s\t%s\t%s\n",
+				name,
+				s.Branch,
+				renderStateCell(s, useColor),
+				s.Ahead,
+				s.Dirty,
+				s.Claimed,
+				formatRunning(s),
+				formatCost(s),
+				formatLastCommit(s),
+			)
+		} else {
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%d\t%d\t%s\t%s\n",
+				name,
+				s.Branch,
+				renderStateCell(s, useColor),
+				s.Ahead,
+				s.Dirty,
+				s.Claimed,
+				formatRunning(s),
+				formatLastCommit(s),
+			)
+		}
 	}
 	if err := tw.Flush(); err != nil {
 		return err
@@ -264,6 +287,30 @@ func formatRunning(s session.Session) string {
 		return "—"
 	}
 	return fmt.Sprintf("%d", s.RunningPID)
+}
+
+// anySessionHasUsage reports whether any session in the slice has
+// recorded LLM usage. Used to suppress the COST column entirely on
+// rounds where no agent runtime calls bosun_usage — keeps the status
+// table clean for operators who don't track spend.
+func anySessionHasUsage(sessions []session.Session) bool {
+	for _, s := range sessions {
+		if s.Usage.TurnCount > 0 || s.Usage.CostUSD > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// formatCost renders the COST column: USD cost with two-decimal
+// precision when usage is recorded, em-dash placeholder otherwise.
+// "$0.42" is more useful than a bare "0.42" since the operator
+// scanning the table sees the currency intent at a glance.
+func formatCost(s session.Session) string {
+	if s.Usage.TurnCount == 0 {
+		return "—"
+	}
+	return fmt.Sprintf("$%.2f", s.Usage.CostUSD)
 }
 
 func formatLastCommit(s session.Session) string {

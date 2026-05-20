@@ -128,7 +128,12 @@ fields keep consumers working.
   "dirty": 0,
   "claimed_paths": [],
   "recent_commits": "abc1234 (HEAD -> bosun/session-1) initial\n",
-  "brief": "# Bosun brief — session-1\n..."
+  "brief": "# Bosun brief — session-1\n...",
+  "agent_command": "",
+  "usage_cost_usd": 0,
+  "usage_tokens_in": 0,
+  "usage_tokens_out": 0,
+  "usage_turns": 0
 }
 ```
 
@@ -139,6 +144,15 @@ fields keep consumers working.
   May be empty and may contain newlines.
 - `brief` is the full `BOSUN_BRIEF.md` of the worktree. May be empty
   (missing brief is not an error). May be large.
+- `agent_command` is the per-session command override (from the brief
+  or `init --command`). Empty string when the session uses the
+  repo-wide `config.agent_command` default — combine with
+  `bosun config get agent_command` to compute the effective command.
+- `usage_*` fields are the Phase 4 cost tracking aggregates from the
+  session's `bosun_usage` ledger. All four are always present; zero
+  when the agent runtime hasn't reported any usage. Consumers
+  distinguish "agent didn't report" from "agent reported $0" via
+  `usage_turns` (turn count, never aggregated).
 - None of the optional fields use `omitempty` here — they are always
   emitted, with empty strings or `[]` for the zero value. This is a
   deliberate divergence from the status surface so consumers don't have

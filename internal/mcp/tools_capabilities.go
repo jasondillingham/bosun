@@ -26,4 +26,5 @@ const (
 	ToolStuck         = "bosun_stuck"
 	ToolSubtask       = "bosun_subtask"
 	ToolSubtaskCancel = "bosun_subtask_cancel"
+	ToolUsage         = "bosun_usage"
 )

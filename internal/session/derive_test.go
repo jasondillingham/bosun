@@ -11,6 +11,7 @@ import (
 	"github.com/jasondillingham/bosun/internal/config"
 	"github.com/jasondillingham/bosun/internal/git"
 	"github.com/jasondillingham/bosun/internal/proc"
+	"github.com/jasondillingham/bosun/internal/usage"
 )
 
 // fakeRunner implements git.Runner with simple arg-matching.
@@ -64,6 +65,10 @@ type fakeState struct {
 	// ok=false (so Session.DockerHost stays "" — the local-docker
 	// signal).
 	dockerHosts map[string]string
+	// usageTotals maps session name → cumulative usage. Phase 4 cost-
+	// tracking surface; legacy tests leave nil and Session.Usage stays
+	// zeroed (which renders as "—" in the COST column).
+	usageTotals map[string]usage.Totals
 }
 
 func (f *fakeState) Read(_, name string) (State, string, error) {
@@ -103,6 +108,13 @@ func (f *fakeState) ReadDockerHost(_, name string) (string, bool, error) {
 	}
 	host, ok := f.dockerHosts[name]
 	return host, ok, nil
+}
+
+func (f *fakeState) ReadUsageTotals(_, name string) (usage.Totals, error) {
+	if f.usageTotals == nil {
+		return usage.Totals{}, nil
+	}
+	return f.usageTotals[name], nil
 }
 
 type fakeClaims struct{ counts map[string]int }

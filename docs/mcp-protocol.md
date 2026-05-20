@@ -108,6 +108,79 @@ Each is one parallel session's deliverable:
   into each launched session. See the **Discovery contract** section
   above for the resolution order and socket-path policy. ✅ shipped
 
+## `bosun_usage` (Phase 4)
+
+**Description:** Append a turn's token + cost usage to the calling
+session's ledger. Agent runtimes are expected to call this after each
+LLM round-trip with the cost the provider reported. Bosun aggregates
+the ledger into `bosun status` (the COST column), `bosun show` (the
+Usage section), and the merge-time round summary.
+
+**Input schema:**
+
+```json
+{
+  "session":     "session-1",   // or "1" — same canonical-label shortcut other tools accept
+  "tokens_in":   1234,           // optional; omit when only total cost is known
+  "tokens_out":  567,            // optional
+  "cost_usd":    0.0421,         // required
+  "model":       "claude-opus-4-7",
+  "turn_label":  "auth handler refactor"
+}
+```
+
+**Output schema:**
+
+```json
+{
+  "totals": {
+    "tokens_in":   8120,
+    "tokens_out":  4011,
+    "cost_usd":    0.4732,
+    "turn_count":  9,
+    "last_model":  "claude-opus-4-7"
+  }
+}
+```
+
+**On-disk:** newline-delimited JSON appended to
+`.bosun/state/<session>.usage`. Append-only, atomic under PIPE_BUF, no
+locking required. Malformed lines are skipped silently by readers — a
+corrupt entry can't poison the rest of the ledger.
+
+**Refusal cases:**
+
+- Empty session → user error.
+- Session is not bosun-managed (no matching worktree / state) →
+  refused. Prevents an off-tree agent from polluting an unrelated
+  session's ledger.
+- Negative cost_usd or token counts → refused.
+
+## Budget gate (Phase 4)
+
+When `config.usage_budget_usd` is set to a positive dollar amount in
+`.bosun/config.json`, `bosun_claim` enforces a per-session ceiling:
+
+- **`cost_usd < 80%` of budget** → claim succeeds, no signal.
+- **`cost_usd >= 80%`, `< 100%`** → claim succeeds and the result
+  carries `budget_warning` — a short advisory string a wrapper can
+  surface to the operator (also appended to the human-readable
+  summary line).
+- **`cost_usd >= 100%`** → claim **refused** with a user-error message
+  pointing at `config.usage_budget_usd` and `bosun done`. The
+  intent: stop the agent from opening new claims when it has already
+  spent its budget. Already-open claims and in-flight work aren't
+  affected; the gate is only on *new* claims.
+
+`0` (the default) means "no limit" — the gate short-circuits before
+reading the ledger, so an unconfigured repo pays nothing for the
+feature.
+
+The gate is best-effort. If `config.json` fails to parse, or the
+usage ledger can't be read, the claim goes through and the gate
+silently skips — refusing claims because of a malformed config would
+be worse than letting them through.
+
 ## Compatibility with filesystem coordination
 
 The MCP server reads and writes the **same** `.bosun/claims/` and

@@ -10,6 +10,7 @@ import (
 	"github.com/jasondillingham/bosun/internal/session"
 	"github.com/jasondillingham/bosun/internal/spawntree"
 	"github.com/jasondillingham/bosun/internal/status"
+	"github.com/jasondillingham/bosun/internal/usage"
 	"github.com/spf13/cobra"
 )
 
@@ -54,6 +55,14 @@ type showJSON struct {
 	// agent_command`). Always present (per docs/json-schema.md F5,
 	// matching brief / state_msg / recent_commits).
 	AgentCommand string `json:"agent_command"`
+	// Usage fields: cumulative cost + tokens from the bosun_usage
+	// ledger. All four are always present (per docs/json-schema.md
+	// F5). Zero when no usage was recorded — tooling distinguishes
+	// "agent didn't report" from "agent reported $0" via UsageTurns.
+	UsageCostUSD   float64 `json:"usage_cost_usd"`
+	UsageTokensIn  int     `json:"usage_tokens_in"`
+	UsageTokensOut int     `json:"usage_tokens_out"`
+	UsageTurns     int     `json:"usage_turns"`
 }
 
 func newShowCmd() *cobra.Command {
@@ -100,16 +109,20 @@ func runShow(cmd *cobra.Command, sessionArg string, jsonOut bool) error {
 
 func renderShowJSON(rc *runCtx, s *session.Session) error {
 	payload := showJSON{
-		Version:      status.JSONSchemaVersion,
-		Name:         s.Name,
-		Branch:       s.Branch,
-		Worktree:     s.Path,
-		State:        string(s.State),
-		StateMsg:     s.StateMsg,
-		Ahead:        s.Ahead,
-		Dirty:        s.Dirty,
-		ClaimedPaths: []string{},
-		AgentCommand: s.AgentCommand,
+		Version:        status.JSONSchemaVersion,
+		Name:           s.Name,
+		Branch:         s.Branch,
+		Worktree:       s.Path,
+		State:          string(s.State),
+		StateMsg:       s.StateMsg,
+		Ahead:          s.Ahead,
+		Dirty:          s.Dirty,
+		ClaimedPaths:   []string{},
+		AgentCommand:   s.AgentCommand,
+		UsageCostUSD:   s.Usage.CostUSD,
+		UsageTokensIn:  s.Usage.TokensIn,
+		UsageTokensOut: s.Usage.TokensOut,
+		UsageTurns:     s.Usage.TurnCount,
 	}
 
 	c, err := rc.claims.Read(s.Name)
@@ -157,6 +170,28 @@ func renderShowText(rc *runCtx, s *session.Session) error {
 	// for the common case.
 	if s.AgentCommand != "" {
 		_, _ = fmt.Fprintf(os.Stdout, "Agent:    %s\n", s.AgentCommand)
+	}
+
+	// Phase 4 cost tracking. Surfaces only when the agent runtime
+	// has called bosun_usage at least once — runtimes that don't
+	// emit usage stay invisible in the show output so the operator
+	// isn't confused by a flat-zero block.
+	if s.Usage.TurnCount > 0 {
+		_, _ = fmt.Fprintf(os.Stdout, "Cost:     $%.4f over %d turn(s)\n", s.Usage.CostUSD, s.Usage.TurnCount)
+		_, _ = fmt.Fprintf(os.Stdout, "Tokens:   %d in / %d out\n", s.Usage.TokensIn, s.Usage.TokensOut)
+		if s.Usage.LastModel != "" {
+			_, _ = fmt.Fprintf(os.Stdout, "Model:    %s (last turn)\n", s.Usage.LastModel)
+		}
+		// Optional per-model breakdown when more than one model was used —
+		// signals model-switching mid-session, useful for cost analysis.
+		entries, _ := usage.Read(rc.repoRoot, s.Name)
+		perModel := usage.PerModel(entries)
+		if len(perModel) > 1 {
+			_, _ = fmt.Fprintln(os.Stdout, "          per-model breakdown:")
+			for _, m := range usage.SortedModels(perModel) {
+				_, _ = fmt.Fprintf(os.Stdout, "            %s: $%.4f\n", m, perModel[m])
+			}
+		}
 	}
 
 	// v0.9 spawn-tree info, if this session is part of one.

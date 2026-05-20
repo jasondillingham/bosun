@@ -376,15 +376,37 @@ func tourWorktreePath(sandboxRoot string, n int) string {
 }
 
 // looksLikeTourRoundTimestamp matches the UTC `YYYYMMDD-HHMMSS` token
-// cmd_init bakes into worktree dir names. Kept colocated with
-// tourWorktreePath so the tour's path lookup doesn't reach into another
-// package's internals.
+// cmd_init bakes into worktree dir names, with or without the `-PID`
+// suffix added in the 2026-05 bug-hunt pass-2 #4 fix. Kept colocated
+// with tourWorktreePath so the tour's path lookup doesn't reach into
+// another package's internals.
 func looksLikeTourRoundTimestamp(s string) bool {
-	if len(s) != 15 || s[8] != '-' {
-		return false
+	// Bare YYYYMMDD-HHMMSS (15 chars).
+	if len(s) == 15 && s[8] == '-' && tourAllDigitsExcept(s, 8) {
+		return true
 	}
+	// PID-suffixed: YYYYMMDD-HHMMSS-<digits>. Verify the leading
+	// 15-char prefix is the date+time and the rest after the dash is
+	// at least one digit.
+	if len(s) > 16 && s[8] == '-' && s[15] == '-' && tourAllDigitsExcept(s[:15], 8) {
+		tail := s[16:]
+		if len(tail) == 0 {
+			return false
+		}
+		for i := 0; i < len(tail); i++ {
+			ch := tail[i]
+			if ch < '0' || ch > '9' {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+func tourAllDigitsExcept(s string, skip int) bool {
 	for i := 0; i < len(s); i++ {
-		if i == 8 {
+		if i == skip {
 			continue
 		}
 		ch := s[i]

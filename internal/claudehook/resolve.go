@@ -75,8 +75,15 @@ func LabelFromWorktreePath(repoRoot, worktreePath string, cfg config.Config) (st
 }
 
 // stripRoundTimestampPrefix returns the substring after a leading
-// `YYYYMMDD-HHMMSS-` token, plus true when the prefix was found.
-// The format matches what cmd_init.go's initRoundTimestampFmt produces.
+// `YYYYMMDD-HHMMSS-` token (optionally followed by `-<PID>-`), plus
+// true when the prefix was found. The format matches what
+// cmd_init.go's newRoundTimestamp() produces.
+//
+// 2026-05 bug-hunt pass-2 #4 added the PID to the timestamp so
+// same-second parallel inits no longer collide; this function now
+// strips both the date-time AND the optional PID component so the
+// downstream session/label lookup still works.
+//
 // A non-matching input is returned unchanged with false.
 func stripRoundTimestampPrefix(s string) (string, bool) {
 	// Need at least "YYYYMMDD-HHMMSS-" (16 chars) plus at least 1 char of tail.
@@ -92,5 +99,24 @@ func stripRoundTimestampPrefix(s string) (string, bool) {
 			return s, false
 		}
 	}
-	return s[16:], true
+	tail := s[16:]
+	// Check for the optional `<PID>-<rest>` shape — all digits up to
+	// the next dash. If we find it, strip; otherwise the tail is
+	// already the legacy `<N>` or `<label>` substring and the caller
+	// handles it. Empty PID (consecutive dashes) is not stripped — a
+	// `-bosun-20260520-115400--3` literal isn't valid output.
+	if dash := strings.IndexByte(tail, '-'); dash > 0 {
+		allDigits := true
+		for i := 0; i < dash; i++ {
+			ch := tail[i]
+			if ch < '0' || ch > '9' {
+				allDigits = false
+				break
+			}
+		}
+		if allDigits {
+			return tail[dash+1:], true
+		}
+	}
+	return tail, true
 }

@@ -20,9 +20,10 @@ const servePidfileRelative = ".bosun/serve.pid"
 
 func newServeCmd() *cobra.Command {
 	var (
-		port     int
-		bind     string
-		interval int
+		port           int
+		bind           string
+		interval       int
+		maxConnections int
 	)
 
 	cmd := &cobra.Command{
@@ -46,33 +47,39 @@ your own risk.`,
 			if bind == "" {
 				return userErr("--bind must not be empty")
 			}
-			return runServe(bind, port, time.Duration(interval)*time.Second)
+			if maxConnections < 0 {
+				return userErr("--max-connections must be >= 0 (0 disables the cap)")
+			}
+			return runServe(bind, port, time.Duration(interval)*time.Second, maxConnections)
 		},
 	}
 
 	cmd.Flags().IntVar(&port, "port", 8765, "TCP port to bind")
 	cmd.Flags().StringVar(&bind, "bind", "127.0.0.1", "address to bind (non-loopback exposes the dashboard with no auth)")
 	cmd.Flags().IntVar(&interval, "interval", 2, "seconds between /api/status recomputes")
+	cmd.Flags().IntVar(&maxConnections, "max-connections", web.DefaultMaxConnections,
+		"cap on concurrent inbound HTTP connections; 0 disables the cap (raise when serving multiple operators, lower when bound to non-loopback)")
 
 	cmd.GroupID = "wiring"
 	return cmd
 }
 
-func runServe(bind string, port int, interval time.Duration) error {
+func runServe(bind string, port int, interval time.Duration, maxConnections int) error {
 	rc, err := loadCtx()
 	if err != nil {
 		return err
 	}
 
 	srv := web.New(web.Config{
-		RepoRoot: rc.repoRoot,
-		Git:      rc.git,
-		Cfg:      rc.cfg,
-		Claims:   rc.claims,
-		State:    rc.state,
-		Bind:     bind,
-		Port:     port,
-		Interval: interval,
+		RepoRoot:       rc.repoRoot,
+		Git:            rc.git,
+		Cfg:            rc.cfg,
+		Claims:         rc.claims,
+		State:          rc.state,
+		Bind:           bind,
+		Port:           port,
+		Interval:       interval,
+		MaxConnections: maxConnections,
 	})
 
 	_, _ = fmt.Fprintf(os.Stdout, "bosun serve: listening on http://%s:%d\n", bind, port)

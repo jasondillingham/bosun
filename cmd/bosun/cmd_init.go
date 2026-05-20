@@ -14,6 +14,7 @@ import (
 	"github.com/jasondillingham/bosun/internal/brief"
 	"github.com/jasondillingham/bosun/internal/config"
 	"github.com/jasondillingham/bosun/internal/doctor"
+	"github.com/jasondillingham/bosun/internal/git"
 	"github.com/jasondillingham/bosun/internal/hooks"
 	"github.com/jasondillingham/bosun/internal/webhooks"
 	initstate "github.com/jasondillingham/bosun/internal/init"
@@ -115,10 +116,111 @@ type initOpts struct {
 // docs/uid-worktree-design.md). Example: "20260518-115400".
 const initRoundTimestampFmt = "20060102-150405"
 
+// forceCleanupOp captures everything `--force` needs to wipe for one
+// label before init recreates it. Pre-built into a plan slice so the
+// execute step can report progress when something fails partway
+// through. 2026-05 bug-hunt pass-2 #10.
+type forceCleanupOp struct {
+	label     string
+	branch    string
+	path      string
+	worktrees []string // registered worktrees that point at this branch or path
+	staleDir  bool     // on-disk dir at path not registered with git
+}
+
+// buildForceCleanupPlan builds the per-label cleanup operations the
+// --force loop will execute. Pure function — no side effects — so
+// tests can exercise the plan-building without touching the
+// filesystem.
+func buildForceCleanupPlan(repoRoot string, cfg config.Config, labels []string, roundTimestamp string, existingWorktrees []git.Worktree) []forceCleanupOp {
+	plan := make([]forceCleanupOp, 0, len(labels))
+	for _, label := range labels {
+		op := forceCleanupOp{
+			label:  label,
+			branch: cfg.BranchForLabel(label),
+			path:   session.WorktreePathForLabel(repoRoot, cfg, label, roundTimestamp),
+		}
+		for _, wt := range existingWorktrees {
+			if wt.Branch == "refs/heads/"+op.branch || wt.Path == op.path {
+				op.worktrees = append(op.worktrees, wt.Path)
+			}
+		}
+		if info, err := os.Stat(op.path); err == nil && info.IsDir() {
+			op.staleDir = true
+		}
+		plan = append(plan, op)
+	}
+	return plan
+}
+
+// executeForceCleanup performs one label's cleanup: registered
+// worktrees first, then any stale on-disk dir, then the branch.
+// Returns the first error; the caller surfaces partial progress.
+func executeForceCleanup(rc *runCtx, op forceCleanupOp) error {
+	for _, wtPath := range op.worktrees {
+		_, _ = fmt.Fprintf(os.Stdout, "bosun: --force: removing worktree %s...\n", wtPath)
+		if err := rc.git.RemoveWorktree(rc.ctx, rc.repoRoot, wtPath, true); err != nil {
+			return fmt.Errorf("remove worktree %s: %w", wtPath, err)
+		}
+	}
+	if op.staleDir {
+		// Orphan dirs can contain large Go module caches (observed
+		// ~6 min recursive delete during the v0.7 kickoff). Surface
+		// what's happening so operators don't suspect a hang.
+		_, _ = fmt.Fprintf(os.Stdout, "bosun: --force: deleting stale on-disk dir %s (may take a moment if it contains a build cache)...\n", op.path)
+		if err := os.RemoveAll(op.path); err != nil {
+			return fmt.Errorf("force-remove stale worktree dir %s: %w", op.path, err)
+		}
+	}
+	if exists, _ := rc.git.BranchExists(rc.ctx, rc.repoRoot, op.branch); exists {
+		if err := rc.git.DeleteBranch(rc.ctx, rc.repoRoot, op.branch, true); err != nil {
+			return fmt.Errorf("delete branch %s: %w", op.branch, err)
+		}
+	}
+	return nil
+}
+
+// remainingLabels returns the labels from plan that come after the
+// current op (the one that failed) and haven't been completed yet.
+// Used by the --force partial-failure message so the operator knows
+// which sessions still need manual cleanup.
+func remainingLabels(plan []forceCleanupOp, completed []string, failedAt string) []string {
+	doneSet := make(map[string]bool, len(completed))
+	for _, c := range completed {
+		doneSet[c] = true
+	}
+	out := make([]string, 0, len(plan))
+	for _, op := range plan {
+		if doneSet[op.label] || op.label == failedAt {
+			continue
+		}
+		out = append(out, op.label)
+	}
+	return out
+}
+
 // initNowFn is the clock used to capture the per-round timestamp. Tests
 // override it to exercise the same-second-collision case under
 // deterministic time without racing the wall clock.
 var initNowFn = time.Now
+
+// initPIDFn returns the calling process's PID. Tests override it when
+// they want to simulate two parallel inits from different processes
+// landing on the same wall-clock second. Production uses os.Getpid.
+// 2026-05 bug-hunt pass-2 #4: the round-timestamp used to collide for
+// two same-second invocations from any source; appending the PID
+// disambiguates cross-process callers while keeping the same-process
+// in-test invariant (TestInitNowFn_SameSecondRunsCollide).
+var initPIDFn = os.Getpid
+
+// newRoundTimestamp formats the per-round UTC timestamp with a PID
+// suffix. Resume continues to read istate.RoundTimestamp verbatim, so
+// a resume in a different process inherits the original PID — the
+// timestamp string is durable, not re-derived.
+func newRoundTimestamp() string {
+	return initNowFn().UTC().Format(initRoundTimestampFmt) +
+		"-" + strconv.Itoa(initPIDFn())
+}
 
 func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 	rc, err := loadCtx()
@@ -212,7 +314,7 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 		// `-bosun-N` paths the prior run actually produced.
 		roundTimestamp = istate.RoundTimestamp
 	} else {
-		roundTimestamp = initNowFn().UTC().Format(initRoundTimestampFmt)
+		roundTimestamp = newRoundTimestamp()
 	}
 
 	// Resolve the label set. --resume drives it entirely off init.state so
@@ -397,37 +499,36 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 	}
 
 	// If --force: remove existing worktrees first. Also `rm -rf` any
-	// stale on-disk dirs that aren't registered with git — without that,
-	// the upcoming AddWorktree would still hit "already exists".
+	// stale on-disk dirs that aren't registered with git — without
+	// that, the upcoming AddWorktree would still hit "already exists".
+	//
+	// 2026-05 bug-hunt pass-2 #10: the cleanup used to be a single
+	// per-label loop with no rollback tracking. If removal of worktree
+	// 3 failed mid-loop, worktrees 1+2 were already gone with no
+	// indication of where things stood. Refactored to plan-then-execute
+	// with explicit progress accounting so a partial failure tells the
+	// operator exactly what completed and what didn't.
 	if opts.force {
-		for _, label := range labels {
-			branch := rc.cfg.BranchForLabel(label)
-			path := session.WorktreePathForLabel(rc.repoRoot, rc.cfg, label, roundTimestamp)
-			for _, wt := range existingWorktrees {
-				if wt.Branch == "refs/heads/"+branch || wt.Path == path {
-					_, _ = fmt.Fprintf(os.Stdout, "bosun: --force: removing worktree %s...\n", wt.Path)
-					if err := rc.git.RemoveWorktree(rc.ctx, rc.repoRoot, wt.Path, true); err != nil {
-						return gitErr(fmt.Sprintf("remove existing worktree %s", wt.Path), err)
-					}
-				}
+		plan := buildForceCleanupPlan(rc.repoRoot, rc.cfg, labels, roundTimestamp, existingWorktrees)
+		completed := make([]string, 0, len(plan))
+		for _, op := range plan {
+			if err := executeForceCleanup(rc, op); err != nil {
+				rest := remainingLabels(plan, completed, op.label)
+				return userErr(
+					"--force cleanup failed at session %q: %v\n\n"+
+						"  completed cleanup for: %v\n"+
+						"  not yet attempted:    %v\n\n"+
+						"  manual fix: finish cleanup for %q (`bosun cleanup --force %s`\n"+
+						"  or `git worktree remove --force <path>` + `git branch -D %s`),\n"+
+						"  then re-run `bosun init --force` to resume",
+					op.label, err, completed, rest, op.label, op.label, op.branch,
+				)
 			}
-			if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
-				// Orphan dirs can contain large Go module caches (observed:
-				// ~6 min recursive delete during the v0.7 kickoff). Surface
-				// what's happening so operators don't suspect a hang.
-				_, _ = fmt.Fprintf(os.Stdout, "bosun: --force: deleting stale on-disk dir %s (may take a moment if it contains a build cache)...\n", path)
-				if err := os.RemoveAll(path); err != nil {
-					return internalErr("force-remove stale worktree dir "+path, err)
-				}
-			}
-			if exists, _ := rc.git.BranchExists(rc.ctx, rc.repoRoot, branch); exists {
-				if err := rc.git.DeleteBranch(rc.ctx, rc.repoRoot, branch, true); err != nil {
-					return gitErr(fmt.Sprintf("delete existing branch %s", branch), err)
-				}
-			}
+			completed = append(completed, op.label)
 		}
-		// The cleanup invalidated the snapshot; refresh so the per-session
-		// loop's registered-check reflects post-cleanup state.
+		// The cleanup invalidated the snapshot; refresh so the
+		// per-session loop's registered-check reflects post-cleanup
+		// state.
 		existingWorktrees, err = rc.git.ListWorktrees(rc.ctx, rc.repoRoot)
 		if err != nil {
 			return gitErr("list worktrees", err)

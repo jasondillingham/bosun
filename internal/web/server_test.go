@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -414,6 +415,71 @@ func TestServer_Status_IncludesSpawnTreeFields(t *testing.T) {
 // TestServer_StatusMethodNotAllowed proves the handler rejects non-GET
 // methods rather than silently returning the cached body. Keeps the API
 // boundary tight if someone later turns this into a public-facing service.
+// TestServer_MaxConnectionsCap pins the 2026-05 bug-hunt pass-2 #9
+// fix: when MaxConnections is set, opening more sockets than the
+// cap forces the additional ones to wait. We hold N=2 connections
+// open and confirm a third Accept doesn't complete until one of the
+// originals is closed.
+func TestServer_MaxConnectionsCap(t *testing.T) {
+	repo := newTestRepo(t)
+	srv := startTestServerWithMaxConns(t, repo, 2)
+
+	// Dial three TCP connections. The first two should connect
+	// immediately; the third should block on the listener Accept
+	// loop and only complete once we close one of the first two.
+	addr := srv.Addr()
+
+	dial := func() (net.Conn, error) {
+		return net.DialTimeout("tcp", addr, 2*time.Second)
+	}
+	c1, err := dial()
+	if err != nil {
+		t.Fatalf("dial 1: %v", err)
+	}
+	defer c1.Close()
+	c2, err := dial()
+	if err != nil {
+		t.Fatalf("dial 2: %v", err)
+	}
+	defer c2.Close()
+
+	// Third dial: TCP-level connect actually succeeds on most OSes
+	// (the kernel's listen backlog buffers the SYN), but our Accept
+	// loop hasn't pulled it. To prove the cap, we issue a real HTTP
+	// request on a separate goroutine and confirm it doesn't
+	// complete until we close one of the held conns.
+	thirdDone := make(chan struct{})
+	go func() {
+		c3, err := dial()
+		if err == nil {
+			// Send an HTTP request so the server actually has to
+			// Accept and handle it.
+			_, _ = c3.Write([]byte("GET /api/status HTTP/1.1\r\nHost: localhost\r\n\r\n"))
+			buf := make([]byte, 64)
+			_, _ = c3.Read(buf)
+			c3.Close()
+		}
+		close(thirdDone)
+	}()
+
+	select {
+	case <-thirdDone:
+		t.Fatalf("third connection completed despite cap=2; should have blocked")
+	case <-time.After(500 * time.Millisecond):
+		// Good — third request hasn't returned because the cap is
+		// holding it back.
+	}
+
+	// Free a slot by closing c1; the third request should now finish.
+	c1.Close()
+	select {
+	case <-thirdDone:
+		// Pass.
+	case <-time.After(3 * time.Second):
+		t.Fatal("third connection didn't complete after a slot was freed")
+	}
+}
+
 func TestServer_StatusMethodNotAllowed(t *testing.T) {
 	repo := newTestRepo(t)
 	srv := startTestServer(t, repo)
@@ -434,6 +500,14 @@ func TestServer_StatusMethodNotAllowed(t *testing.T) {
 // reports a real port — that's the contract Start makes via the bind step.
 func startTestServer(t *testing.T, repo string) *Server {
 	t.Helper()
+	return startTestServerWithMaxConns(t, repo, 0)
+}
+
+// startTestServerWithMaxConns is the variant the connection-limit test
+// uses; production callers stick with startTestServer which keeps the
+// cap at 0 (no limit).
+func startTestServerWithMaxConns(t *testing.T, repo string, maxConns int) *Server {
+	t.Helper()
 	cfg, err := config.Load(repo)
 	if err != nil {
 		t.Fatalf("config.Load: %v", err)
@@ -446,7 +520,8 @@ func startTestServer(t *testing.T, repo string) *Server {
 		State:    state.NewStore(repo),
 		Bind:     "127.0.0.1:0",
 		// Interval=0 disables status caching so each test sees fresh data.
-		Interval: 0,
+		Interval:       0,
+		MaxConnections: maxConns,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())

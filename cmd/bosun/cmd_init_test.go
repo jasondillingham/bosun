@@ -142,7 +142,12 @@ func loadCtxAt(dir string) (*runCtx, error) {
 // (scheme C in docs/uid-worktree-design.md). Used by the tests below
 // to assert each session's worktree is named with the same round
 // timestamp.
-var roundTimestampWorktreeRe = regexp.MustCompile(`^myproj-bosun-(\d{8}-\d{6})-(\d+)$`)
+// Pattern now expects `<repo>-bosun-<YYYYMMDD-HHMMSS>-<PID>-<N>`
+// after the 2026-05 bug-hunt pass-2 #4 fix added a PID component to
+// disambiguate same-second parallel inits. The PID is captured but
+// discarded — the test only asserts the timestamp portion matches
+// across sibling worktrees. Group 1 = timestamp, group 2 = session N.
+var roundTimestampWorktreeRe = regexp.MustCompile(`^myproj-bosun-(\d{8}-\d{6})-\d+-(\d+)$`)
 
 // TestScenario_InitUsesTimestampedWorktreeDirs locks in the lane-3
 // contract: `bosun init N` produces N worktrees whose dirs all share
@@ -268,13 +273,74 @@ func readParentDir(t *testing.T, dir string) []os.DirEntry {
 	return entries
 }
 
+// TestInitNowFn_DifferentPIDsAvoidCollision pins the 2026-05 bug-hunt
+// pass-2 #4 fix: two `bosun init` invocations from DIFFERENT processes
+// landing on the same wall-clock second no longer produce identical
+// worktree paths. The PID is part of the round timestamp now, so
+// distinct PIDs disambiguate even when the clock matches.
+//
+// (The same-process same-second case — TestInitNowFn_SameSecondRunsCollide
+// below — still collides intentionally so an operator who fat-fingers
+// two sequential `bosun init` calls in the same shell session still
+// gets refused on the second instead of silent overwrite.)
+func TestInitNowFn_DifferentPIDsAvoidCollision(t *testing.T) {
+	repo := newInitTestRepo(t)
+
+	fixed := time.Date(2026, 5, 18, 11, 54, 0, 0, time.UTC)
+	prev := initNowFn
+	initNowFn = func() time.Time { return fixed }
+	t.Cleanup(func() { initNowFn = prev })
+
+	prevPID := initPIDFn
+	t.Cleanup(func() { initPIDFn = prevPID })
+
+	// First init from PID 100.
+	initPIDFn = func() int { return 100 }
+	if err := runInitFromDir(repo, []string{"a"}, initOpts{noLoadCheck: true, forceICloud: true}); err != nil {
+		t.Fatalf("first init (PID 100): %v", err)
+	}
+
+	// Second init from PID 200, same clock-second. Without the PID
+	// disambiguation this would collide and refuse; with it, the
+	// timestamps differ and both rounds get distinct worktree dirs.
+	initPIDFn = func() int { return 200 }
+	if err := runInitFromDir(repo, []string{"b"}, initOpts{noLoadCheck: true, forceICloud: true}); err != nil {
+		t.Fatalf("second init (PID 200): %v", err)
+	}
+
+	// Confirm both worktrees exist with PID-distinguishable names.
+	entries, err := os.ReadDir(filepath.Dir(repo))
+	if err != nil {
+		t.Fatalf("read parent: %v", err)
+	}
+	got := entryNames(entries)
+	want1 := "myproj-bosun-20260518-115400-100-a"
+	want2 := "myproj-bosun-20260518-115400-200-b"
+	have1, have2 := false, false
+	for _, n := range got {
+		if n == want1 {
+			have1 = true
+		}
+		if n == want2 {
+			have2 = true
+		}
+	}
+	if !have1 || !have2 {
+		t.Errorf("expected both %q and %q in parent dir; got %v", want1, want2, got)
+	}
+}
+
 // TestInitNowFn_SameSecondRunsCollide locks the safety check the brief
-// calls out: two `bosun init` invocations that land in the same second
-// must produce identical timestamps, so the second run is refused on
-// the existing `worktree path already exists` pre-flight rather than
-// silently overwriting the first. Drives `runInit` in-process with a
-// mocked `initNowFn` so the test is deterministic regardless of how
-// fast the host runs.
+// calls out: two `bosun init` invocations FROM THE SAME PROCESS that
+// land in the same second must produce identical timestamps, so the
+// second run is refused on the existing `worktree path already exists`
+// pre-flight rather than silently overwriting the first. Drives
+// `runInit` in-process with a mocked `initNowFn` so the test is
+// deterministic regardless of how fast the host runs.
+//
+// 2026-05 pass-2: the PID is now part of the timestamp, so this test
+// also pins that the SAME-process invariant still holds — same PID
+// + same clock-second → same timestamp → same collision.
 func TestInitNowFn_SameSecondRunsCollide(t *testing.T) {
 	repo := newInitTestRepo(t)
 
@@ -312,6 +378,15 @@ func TestInitState_RoundTimestampPersisted(t *testing.T) {
 	initNowFn = func() time.Time { return fixed }
 	t.Cleanup(func() { initNowFn = prev })
 
+	// Pin the PID too — 2026-05 bug-hunt pass-2 #4 appended the PID
+	// to the round timestamp to disambiguate same-second cross-
+	// process inits. Without freezing it here, the test would
+	// non-deterministically include whichever PID the test binary
+	// happens to have.
+	prevPID := initPIDFn
+	initPIDFn = func() int { return 42 }
+	t.Cleanup(func() { initPIDFn = prevPID })
+
 	if err := runInitFromDir(repo, []string{"1"}, initOpts{noLoadCheck: true, forceICloud: true}); err != nil {
 		t.Fatalf("init: %v", err)
 	}
@@ -326,7 +401,7 @@ func TestInitState_RoundTimestampPersisted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read parent: %v", err)
 	}
-	want := "myproj-bosun-20260518-115400-1"
+	want := "myproj-bosun-20260518-115400-42-1"
 	found := false
 	for _, e := range entries {
 		if e.Name() == want {

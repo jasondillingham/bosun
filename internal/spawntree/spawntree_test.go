@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 
@@ -24,6 +25,86 @@ func TestLoad_MissingFileReturnsEmptyTree(t *testing.T) {
 	}
 	if len(tree.Sessions) != 0 {
 		t.Errorf("Sessions = %+v, want empty", tree.Sessions)
+	}
+}
+
+// writeTreeJSON drops a hand-crafted spawn-tree.json into the store's
+// .bosun/ dir. Used by the validateTree tests below to seed pathological
+// states the in-process API would normally refuse to produce.
+func writeTreeJSON(t *testing.T, repoRoot string, body string) {
+	t.Helper()
+	dir := filepath.Join(repoRoot, ".bosun")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir .bosun: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "spawn-tree.json"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write spawn-tree.json: %v", err)
+	}
+}
+
+// TestLoad_RefusesSelfParent pins the validation gate: a node listing
+// itself as parent (corrupt JSON, hand-edited file) must be refused
+// instead of silently loaded — otherwise ParentOf walks indefinitely.
+func TestLoad_RefusesSelfParent(t *testing.T) {
+	dir := t.TempDir()
+	writeTreeJSON(t, dir, `{"version":"v1","sessions":{"session-1":{"depth":0,"parent":"session-1","spawned_at":"2026-01-01T00:00:00Z"}}}`)
+	_, err := NewStore(dir).Load()
+	if err == nil {
+		t.Fatal("expected error on self-parent, got nil")
+	}
+	if !strings.Contains(err.Error(), "lists itself as parent") {
+		t.Errorf("err %v should mention self-parent", err)
+	}
+}
+
+// TestLoad_RefusesOrphanedChild: a node references a parent that
+// doesn't exist in the Sessions map. Loading silently would leave
+// EnrichSessions to crash on the missing entry.
+func TestLoad_RefusesOrphanedChild(t *testing.T) {
+	dir := t.TempDir()
+	writeTreeJSON(t, dir, `{"version":"v1","sessions":{"orphan":{"depth":1,"parent":"ghost","spawned_at":"2026-01-01T00:00:00Z"}}}`)
+	_, err := NewStore(dir).Load()
+	if err == nil {
+		t.Fatal("expected error on orphan-with-missing-parent, got nil")
+	}
+	if !strings.Contains(err.Error(), `references parent "ghost"`) {
+		t.Errorf("err %v should mention missing parent", err)
+	}
+}
+
+// TestLoad_RefusesParentCycle: A → B → A. Walking parents would loop.
+func TestLoad_RefusesParentCycle(t *testing.T) {
+	dir := t.TempDir()
+	body := `{"version":"v1","sessions":{
+"a":{"depth":1,"parent":"b","spawned_at":"2026-01-01T00:00:00Z"},
+"b":{"depth":1,"parent":"a","spawned_at":"2026-01-01T00:00:00Z"}
+}}`
+	writeTreeJSON(t, dir, body)
+	_, err := NewStore(dir).Load()
+	if err == nil {
+		t.Fatal("expected error on parent cycle, got nil")
+	}
+	if !strings.Contains(err.Error(), "cycle") {
+		t.Errorf("err %v should mention cycle", err)
+	}
+}
+
+// TestLoad_AcceptsValidTree confirms the validation doesn't false-
+// positive on a well-formed three-level tree.
+func TestLoad_AcceptsValidTree(t *testing.T) {
+	dir := t.TempDir()
+	body := `{"version":"v1","sessions":{
+"root":{"depth":0,"children":["mid"],"spawned_at":"2026-01-01T00:00:00Z"},
+"mid":{"depth":1,"parent":"root","children":["leaf"],"spawned_at":"2026-01-01T00:00:00Z"},
+"leaf":{"depth":2,"parent":"mid","spawned_at":"2026-01-01T00:00:00Z"}
+}}`
+	writeTreeJSON(t, dir, body)
+	tree, err := NewStore(dir).Load()
+	if err != nil {
+		t.Fatalf("Load on valid tree: %v", err)
+	}
+	if len(tree.Sessions) != 3 {
+		t.Errorf("got %d sessions, want 3", len(tree.Sessions))
 	}
 }
 

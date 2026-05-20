@@ -335,6 +335,70 @@ func TestPropose_GivesUpAfterOverlapRefinementBudget(t *testing.T) {
 	}
 }
 
+// TestPropose_RetriesOn429 pins the 2026-05 bug-hunt pass-2 #8
+// fix: a 429 (rate-limit) used to fail the whole Propose call
+// immediately. Now call() retries with backoff up to
+// maxCallRetries times before giving up.
+func TestPropose_RetriesOn429(t *testing.T) {
+	// Speed up the test by collapsing the backoff to ~0.
+	prev := callRetryBaseDelayForTest()
+	setCallRetryBaseDelay(1 * time.Millisecond)
+	t.Cleanup(func() { setCallRetryBaseDelay(prev) })
+
+	var attempt int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&attempt, 1)
+		if n < 3 {
+			// First two attempts: 429. Third: success.
+			w.Header().Set("content-type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = io.WriteString(w, `{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}`)
+			return
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = io.WriteString(w, anthropicResponseEnvelope(validProposalJSON("g", 2)))
+	}))
+	t.Cleanup(srv.Close)
+
+	p := newTestProposer(t, srv.URL)
+	proposal, err := p.Propose(context.Background(), "g", RepoIntel{}, 2)
+	if err != nil {
+		t.Fatalf("Propose with retry-eligible 429s: %v", err)
+	}
+	if len(proposal.Sessions) != 2 {
+		t.Errorf("sessions = %d, want 2", len(proposal.Sessions))
+	}
+	if attempt != 3 {
+		t.Errorf("attempt count = %d, want 3 (two 429s + success)", attempt)
+	}
+}
+
+// TestPropose_DoesNotRetryOn401 confirms terminal auth errors fail
+// fast — we don't want to waste retries on a misconfigured key.
+func TestPropose_DoesNotRetryOn401(t *testing.T) {
+	prev := callRetryBaseDelayForTest()
+	setCallRetryBaseDelay(1 * time.Millisecond)
+	t.Cleanup(func() { setCallRetryBaseDelay(prev) })
+
+	var attempt int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&attempt, 1)
+		w.Header().Set("content-type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, `{"type":"error","error":{"type":"authentication_error","message":"invalid key"}}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	p := newTestProposer(t, srv.URL)
+	_, err := p.Propose(context.Background(), "g", RepoIntel{}, 2)
+	if err == nil {
+		t.Fatal("expected error on 401")
+	}
+	if attempt != 1 {
+		t.Errorf("attempt count = %d, want 1 (no retries for 401)", attempt)
+	}
+}
+
 func TestPropose_PropagatesAPIError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "application/json")

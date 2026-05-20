@@ -292,12 +292,18 @@ func (s *scenario) WorktreePathLabel(label string) string {
 	}
 }
 
-// RoundTimestamp returns the `YYYYMMDD-HHMMSS` token bosun baked into
+// RoundTimestamp returns the round-timestamp token bosun baked into
 // the worktree dir names for this round, or "" if no such dir exists
 // yet (e.g. before `bosun init`). Resume tests that hand-seed
 // `.bosun/init.state` need this so the seeded `round_timestamp` matches
 // the actual worktrees on disk; otherwise resume looks for legacy paths
 // and refuses on missing completed-session worktrees.
+//
+// 2026-05 bug-hunt pass-2 #4: the token format gained a `-PID` suffix
+// to disambiguate parallel inits. This helper now returns the whole
+// `YYYYMMDD-HHMMSS-PID` portion (everything before the trailing
+// `-<sub>`), so callers seeding init.state get the full string that
+// would be written by a real run.
 func (s *scenario) RoundTimestamp() string {
 	entries, err := os.ReadDir(s.parent)
 	if err != nil {
@@ -310,29 +316,68 @@ func (s *scenario) RoundTimestamp() string {
 			continue
 		}
 		tail := strings.TrimPrefix(name, prefix)
-		// Expect "<TS>-<sub>" where TS is exactly 15 chars
-		// (YYYYMMDD-HHMMSS). Any sibling matching this prefix shape
-		// is the freshest round; tests run in fresh tmpdirs so a single
-		// match is the rule.
-		if len(tail) >= 16 && tail[8] == '-' && tail[15] == '-' && looksLikeRoundTimestamp(tail[:15]) {
-			return tail[:15]
+		// Find the final `-<sub>` boundary — `<sub>` is the session
+		// number or named-label that comes at the end. Everything
+		// before that final dash is the timestamp+PID token.
+		lastDash := strings.LastIndexByte(tail, '-')
+		if lastDash <= 0 {
+			continue
+		}
+		token := tail[:lastDash]
+		// Validate token matches the timestamp(+PID) shape so a
+		// legacy `-bosun-3` entry doesn't get misidentified as a
+		// timestamp.
+		if looksLikeRoundTimestamp(token) {
+			return token
 		}
 	}
 	return ""
 }
 
 // looksLikeRoundTimestamp reports whether s has the shape produced by
-// cmd_init's `initRoundTimestampFmt` (UTC `YYYYMMDD-HHMMSS`). Keeps the
-// path-glob in WorktreePathLabel from confusing a sibling label whose
-// own value happens to end in `-<sub>`.
+// cmd_init's `initRoundTimestampFmt` (UTC `YYYYMMDD-HHMMSS`) — with or
+// without the `-PID` suffix the 2026-05 bug-hunt pass-2 #4 added to
+// disambiguate same-second parallel inits. Both forms must match so
+// the path-glob in WorktreePathLabel finds worktrees from old + new
+// builds. Keeps the glob from confusing a sibling label whose own
+// value happens to end in `-<sub>`.
 func looksLikeRoundTimestamp(s string) bool {
-	if len(s) != 15 || s[8] != '-' {
+	// Legacy bare form: 15 chars, `YYYYMMDD-HHMMSS`.
+	if len(s) == 15 && s[8] == '-' && allDigitsExcept(s, 8) {
+		return true
+	}
+	// Scheme-C-with-PID: `YYYYMMDD-HHMMSS-<pid>`. The PID is digits
+	// of arbitrary positive length, so we require the leading 15
+	// chars to match the date+time form and the rest after the
+	// trailing `-` to be all digits.
+	if len(s) > 16 && s[8] == '-' && s[15] == '-' && allDigitsExcept(s[:15], 8) && allDigits(s[16:]) {
+		return true
+	}
+	return false
+}
+
+// allDigitsExcept reports whether every byte in s is a digit, except
+// at the explicitly-permitted index (typically a single dash).
+func allDigitsExcept(s string, skip int) bool {
+	for i := 0; i < len(s); i++ {
+		if i == skip {
+			continue
+		}
+		ch := s[i]
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// allDigits reports whether every byte in s is an ASCII digit.
+// Empty string returns false — we want PIDs to be at least one digit.
+func allDigits(s string) bool {
+	if len(s) == 0 {
 		return false
 	}
 	for i := 0; i < len(s); i++ {
-		if i == 8 {
-			continue
-		}
 		ch := s[i]
 		if ch < '0' || ch > '9' {
 			return false

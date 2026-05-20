@@ -194,6 +194,35 @@ func isOurTimeout(parentCtx, childCtx context.Context) bool {
 	return childCtx.Err() == context.DeadlineExceeded && parentCtx.Err() != context.DeadlineExceeded
 }
 
+// runAllowExitCode is like run but returns the process exit code on
+// a non-zero exit alongside the output, instead of wrapping it as an
+// error. Used by callers like BranchExists / TreeEqualsBase /
+// MergeYieldsBase that need to discriminate "command ran and reported
+// false (exit 1)" from "command failed to run."
+//
+// Applies the configured timeout the same way run does, so the
+// 2026-05 bug-hunt pass-2 #7 gap (those three methods used to bypass
+// c.Timeout by calling c.Runner.Run directly) is closed. Returns
+// (stdout, stderr, exitCode, err). On timeout, err is a *TimeoutError
+// and exitCode is -1. On a non-timeout transport failure, err wraps
+// the underlying error and exitCode is -1.
+func (c *Client) runAllowExitCode(parentCtx context.Context, dir string, args ...string) (string, string, int, error) {
+	ctx, cancel := withTimeout(parentCtx, c.Timeout)
+	defer cancel()
+	out, errOut, err := c.Runner.Run(ctx, dir, args...)
+	if err == nil {
+		return out, errOut, 0, nil
+	}
+	if isOurTimeout(parentCtx, ctx) {
+		return out, errOut, -1, &TimeoutError{Op: strings.Join(args, " "), Timeout: c.Timeout}
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return out, errOut, exitErr.ExitCode(), nil
+	}
+	return out, errOut, -1, fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+}
+
 // runStreams is like run but returns stdout and stderr separately, without
 // folding either into the error string. Use this when a caller (e.g.
 // FsckWorktree) needs the raw stderr text — git fsck writes its diagnostic
@@ -309,16 +338,21 @@ func (c *Client) CurrentBranch(ctx context.Context, dir string) (string, error) 
 }
 
 // BranchExists reports whether a local branch with that name exists.
+// Routes through runAllowExitCode so the configured c.Timeout applies
+// (2026-05 bug-hunt pass-2 #7). show-ref is fast in practice; the
+// timeout is defensive.
 func (c *Client) BranchExists(ctx context.Context, dir, branch string) (bool, error) {
-	_, errOut, err := c.Runner.Run(ctx, dir, "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
-	if err == nil {
+	_, errOut, code, err := c.runAllowExitCode(ctx, dir, "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
+	if err != nil {
+		return false, fmt.Errorf("git show-ref refs/heads/%s: %w: %s", branch, err, strings.TrimSpace(errOut))
+	}
+	if code == 0 {
 		return true, nil
 	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+	if code == 1 {
 		return false, nil
 	}
-	return false, fmt.Errorf("git show-ref refs/heads/%s: %w: %s", branch, err, strings.TrimSpace(errOut))
+	return false, fmt.Errorf("git show-ref refs/heads/%s: unexpected exit code %d: %s", branch, code, strings.TrimSpace(errOut))
 }
 
 // CreateBranch creates `name` pointing at `base`.
@@ -535,15 +569,21 @@ func (c *Client) UnmergedPatches(ctx context.Context, dir, base, branch string) 
 // a prior squash conflict and commits, the branch's content lives on base
 // but the patch-ids no longer match.
 func (c *Client) TreeEqualsBase(ctx context.Context, dir, base, branch string) (bool, error) {
-	_, errOut, err := c.Runner.Run(ctx, dir, "diff", "--quiet", base+".."+branch, "--")
-	if err == nil {
+	// 2026-05 bug-hunt pass-2 #7: routed through runAllowExitCode so
+	// the configured timeout applies. `git diff --quiet` is normally
+	// fast but can legitimately stall on a large diff or fsync
+	// pressure; bounded is better than unbounded.
+	_, errOut, code, err := c.runAllowExitCode(ctx, dir, "diff", "--quiet", base+".."+branch, "--")
+	if err != nil {
+		return false, fmt.Errorf("git diff --quiet %s..%s: %w: %s", base, branch, err, strings.TrimSpace(errOut))
+	}
+	if code == 0 {
 		return true, nil
 	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+	if code == 1 {
 		return false, nil
 	}
-	return false, fmt.Errorf("git diff --quiet %s..%s: %w: %s", base, branch, err, strings.TrimSpace(errOut))
+	return false, fmt.Errorf("git diff --quiet %s..%s: unexpected exit code %d: %s", base, branch, code, strings.TrimSpace(errOut))
 }
 
 // MergeYieldsBase reports whether merging branch into base would produce
@@ -563,14 +603,20 @@ func (c *Client) TreeEqualsBase(ctx context.Context, dir, base, branch string) (
 // stays on the safe side. Requires git 2.38+; bosun's doctor floor is
 // 2.40 so this is always available.
 func (c *Client) MergeYieldsBase(ctx context.Context, dir, base, branch string) (bool, error) {
-	out, errOut, err := c.Runner.Run(ctx, dir, "merge-tree", "--write-tree", base, branch)
+	// 2026-05 bug-hunt pass-2 #7: routed through runAllowExitCode so
+	// the configured timeout applies. `git merge-tree --write-tree`
+	// performs a real 3-way merge; on a large branch this is
+	// legitimately slow and needs a bound.
+	out, errOut, code, err := c.runAllowExitCode(ctx, dir, "merge-tree", "--write-tree", base, branch)
 	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
-			// Conflict — merge wouldn't be clean. Not a no-op.
-			return false, nil
-		}
 		return false, fmt.Errorf("git merge-tree %s %s: %w: %s", base, branch, err, strings.TrimSpace(errOut))
+	}
+	if code == 1 {
+		// Conflict — merge wouldn't be clean. Not a no-op.
+		return false, nil
+	}
+	if code != 0 {
+		return false, fmt.Errorf("git merge-tree %s %s: unexpected exit code %d: %s", base, branch, code, strings.TrimSpace(errOut))
 	}
 	mergeTreeOID := strings.TrimSpace(out)
 	if mergeTreeOID == "" {

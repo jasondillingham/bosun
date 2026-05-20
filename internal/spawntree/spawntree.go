@@ -90,6 +90,13 @@ func (s *Store) lock() string { return filepath.Join(s.repoRoot, lockRelative) }
 // tree (the common case before any session has spawned anything).
 // A version mismatch is a hard error — callers should refuse to
 // proceed rather than silently truncate state.
+//
+// Validates parent-child consistency after decode (2026-05 bug-hunt
+// pass-2 #6): self-references, orphaned children (parent label not
+// in the Sessions map), and cycles in the parent chain. Without
+// these checks, a corrupt or hand-edited spawn-tree.json could let
+// ParentOf walk indefinitely or EnrichSessions crash on a missing
+// entry.
 func (s *Store) Load() (*Tree, error) {
 	data, err := os.ReadFile(s.path())
 	if err != nil {
@@ -111,7 +118,48 @@ func (s *Store) Load() (*Tree, error) {
 	if t.Sessions == nil {
 		t.Sessions = map[string]Node{}
 	}
+	if err := validateTree(&t); err != nil {
+		return nil, fmt.Errorf("validate %s: %w", s.path(), err)
+	}
 	return &t, nil
+}
+
+// validateTree returns a non-nil error when the spawn-tree's
+// parent-child invariants don't hold. The checks are cheap (O(N) over
+// session count, which never exceeds the spawn-depth ceiling × the
+// per-parent quota) and run unconditionally on Load.
+func validateTree(t *Tree) error {
+	for label, node := range t.Sessions {
+		if node.Parent == label {
+			return fmt.Errorf("session %q lists itself as parent", label)
+		}
+		if node.Parent != "" {
+			if _, ok := t.Sessions[node.Parent]; !ok {
+				return fmt.Errorf("session %q references parent %q which is not in the tree", label, node.Parent)
+			}
+		}
+	}
+	// Cycle detection via parent-chain walk. Each node walks up; if we
+	// revisit a label, we have a cycle. Bounded by the schema-imposed
+	// depth limit + a safety margin.
+	const cycleHopLimit = 32
+	for start := range t.Sessions {
+		visited := make(map[string]struct{}, 4)
+		visited[start] = struct{}{}
+		cur := start
+		for i := 0; i < cycleHopLimit; i++ {
+			node, ok := t.Sessions[cur]
+			if !ok || node.Parent == "" {
+				break
+			}
+			if _, seen := visited[node.Parent]; seen {
+				return fmt.Errorf("parent cycle detected at session %q (chain visits %q twice)", start, node.Parent)
+			}
+			visited[node.Parent] = struct{}{}
+			cur = node.Parent
+		}
+	}
+	return nil
 }
 
 // AddTopLevel records a session as a root (no parent, depth 0). Used

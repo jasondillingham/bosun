@@ -143,6 +143,14 @@ the goal, the lane labels, or the session count. Output JSON only.`
 // same overlap to different lanes.
 const maxProposeAttempts = 3
 
+// retryErrorByteCap bounds how much of a validation error gets echoed
+// back to the model in retry messages. JSON-decode errors can include
+// the whole malformed blob; without a cap, the conversation context
+// bloats by tens of KB across the three attempts. 256 bytes is
+// enough to convey what went wrong without burning the token budget.
+// 2026-05 bug-hunt pass-2 #5.
+const retryErrorByteCap = 256
+
 // anthropicRequest mirrors the Messages API request body. Only the
 // fields bosun cares about are modeled here; extras would be silently
 // ignored by the API.
@@ -306,7 +314,12 @@ func (c *ClaudeProposer) Propose(ctx context.Context, goal string, intel RepoInt
 			}
 			messages = append(messages,
 				anthropicMessage{Role: "assistant", Content: text},
-				anthropicMessage{Role: "user", Content: fmt.Sprintf(retryFollowupTemplate, parseErr.Error())},
+				// Truncate validation errors before echoing — without
+				// the cap, an unparseable-JSON error message can
+				// itself include the whole bad-JSON blob, and after
+				// three retries the conversation context grows by
+				// tens of KB of garbage. 2026-05 bug-hunt pass-2 #5.
+				anthropicMessage{Role: "user", Content: fmt.Sprintf(retryFollowupTemplate, truncate(parseErr.Error(), retryErrorByteCap))},
 			)
 			continue
 		}
@@ -332,7 +345,8 @@ func (c *ClaudeProposer) Propose(ctx context.Context, goal string, intel RepoInt
 			}
 			messages = append(messages,
 				anthropicMessage{Role: "assistant", Content: text},
-				anthropicMessage{Role: "user", Content: fmt.Sprintf(overlapRefineTemplate, validateErr.Error())},
+				// Same truncation as the schema-retry path — see comment there.
+				anthropicMessage{Role: "user", Content: fmt.Sprintf(overlapRefineTemplate, truncate(validateErr.Error(), retryErrorByteCap))},
 			)
 			continue
 		}
@@ -349,10 +363,81 @@ func (c *ClaudeProposer) Propose(ctx context.Context, goal string, intel RepoInt
 	}
 }
 
-// call performs one Messages API round trip and returns the
-// concatenated text content. Non-2xx responses become network errors
-// carrying the Anthropic error message when one is present.
+// maxCallRetries caps how many transient-error retries a single call
+// will absorb on top of the initial attempt. 2026-05 bug-hunt pass-2
+// #8: 429s and 5xx used to fail the whole call. Three attempts
+// (initial + two retries) cover the common Anthropic rate-limit
+// hiccup without burning the budget on a genuine outage.
+const maxCallRetries = 2
+
+// callRetryBaseDelay is the first sleep before retry; subsequent
+// retries double it. 500ms + 1000ms = total 1.5s extra on the worst
+// case, well under any reasonable per-Propose budget. var (not const)
+// so tests can collapse it to ~0 without burning real wall-clock time.
+var callRetryBaseDelay = 500 * time.Millisecond
+
+// setCallRetryBaseDelay overrides the retry-backoff base for tests.
+// Returns the previous value so the caller can restore via t.Cleanup.
+func setCallRetryBaseDelay(d time.Duration) { callRetryBaseDelay = d }
+
+// callRetryBaseDelayForTest returns the current backoff base. Test-only
+// helper paired with setCallRetryBaseDelay.
+func callRetryBaseDelayForTest() time.Duration { return callRetryBaseDelay }
+
+// transientCallError flags an HTTP failure that callers should retry.
+// Wraps the underlying error so callers that don't want to retry can
+// still surface it.
+type transientCallError struct{ Err error }
+
+func (e *transientCallError) Error() string { return e.Err.Error() }
+func (e *transientCallError) Unwrap() error { return e.Err }
+
+// isTransientStatus reports whether an HTTP status code is worth
+// retrying. 408 (request timeout), 425 (too early), 429 (rate
+// limit), and 5xx (server errors) are transient by convention. 4xx
+// auth errors and 400s aren't — they need operator attention.
+func isTransientStatus(code int) bool {
+	if code == http.StatusRequestTimeout || code == http.StatusTooEarly || code == http.StatusTooManyRequests {
+		return true
+	}
+	return code >= 500 && code < 600
+}
+
+// call performs one Messages API round trip, retrying transient
+// failures (429, 5xx, transport errors) with exponential backoff up
+// to maxCallRetries times. Non-transient errors fail fast.
 func (c *ClaudeProposer) call(ctx context.Context, messages []anthropicMessage) (string, error) {
+	var lastErr error
+	for attempt := 0; attempt <= maxCallRetries; attempt++ {
+		if attempt > 0 {
+			// Backoff doubles each attempt. Honor ctx cancellation
+			// so a hard interrupt doesn't sit through the sleep.
+			delay := callRetryBaseDelay * (1 << (attempt - 1))
+			select {
+			case <-time.After(delay):
+			case <-ctx.Done():
+				return "", ctx.Err()
+			}
+		}
+		text, err := c.callOnce(ctx, messages)
+		if err == nil {
+			return text, nil
+		}
+		lastErr = err
+		// Only retry transient errors. Terminal errors (auth, bad
+		// schema) return immediately.
+		var transient *transientCallError
+		if !errors.As(err, &transient) {
+			return "", err
+		}
+	}
+	return "", fmt.Errorf("bosun: anthropic call failed after %d retries: %w", maxCallRetries, lastErr)
+}
+
+// callOnce performs exactly one request. Returns a transientCallError
+// for retry-worthy failures so the outer call() loop can decide
+// whether to back off and retry.
+func (c *ClaudeProposer) callOnce(ctx context.Context, messages []anthropicMessage) (string, error) {
 	body, err := json.Marshal(anthropicRequest{
 		Model:     c.Model,
 		MaxTokens: c.MaxTokens,
@@ -373,22 +458,31 @@ func (c *ClaudeProposer) call(ctx context.Context, messages []anthropicMessage) 
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("bosun: anthropic request failed: %w", err)
+		// Transport-level errors (DNS, dial, TLS) are usually
+		// transient — connection-level glitches resolve on retry.
+		return "", &transientCallError{Err: fmt.Errorf("bosun: anthropic request failed: %w", err)}
 	}
 	defer resp.Body.Close()
 
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("bosun: read anthropic response: %w", err)
+		// Mid-read failure is likely a connection drop; retry-worthy.
+		return "", &transientCallError{Err: fmt.Errorf("bosun: read anthropic response: %w", err)}
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		// Try to surface the structured error message; fall back to raw.
 		var apiErr anthropicErrorResponse
+		var inner error
 		if json.Unmarshal(raw, &apiErr) == nil && apiErr.Error.Message != "" {
-			return "", fmt.Errorf("bosun: anthropic %d: %s", resp.StatusCode, apiErr.Error.Message)
+			inner = fmt.Errorf("bosun: anthropic %d: %s", resp.StatusCode, apiErr.Error.Message)
+		} else {
+			inner = fmt.Errorf("bosun: anthropic %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
 		}
-		return "", fmt.Errorf("bosun: anthropic %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+		if isTransientStatus(resp.StatusCode) {
+			return "", &transientCallError{Err: inner}
+		}
+		return "", inner
 	}
 
 	var parsed anthropicResponse

@@ -112,13 +112,37 @@ func lookupWorktreePathByLabel(rc *runCtx, label string) (string, bool) {
 		if base == legacyBase {
 			return wt.Path, true
 		}
-		// Scheme-C UID-per-worktree form: `<patternPrefix><ts>-<sub><patternSuffix>`.
+		// Scheme-C UID-per-worktree form. Two shapes:
+		//   pre-2026-05:  <patternPrefix><YYYYMMDD-HHMMSS>-<sub><patternSuffix>
+		//   post-2026-05: <patternPrefix><YYYYMMDD-HHMMSS>-<PID>-<sub><patternSuffix>
+		// The PID was appended (bug-hunt pass-2 #4) so same-second
+		// parallel inits no longer collide. We accept both.
 		if !strings.HasPrefix(base, patternPrefix) || !strings.HasSuffix(base, patternSuffix) {
 			continue
 		}
 		mid := base[len(patternPrefix) : len(base)-len(patternSuffix)]
-		if len(mid) >= 17 && mid[8] == '-' && mid[15] == '-' && allDigitsExceptDash(mid[:15]) && mid[16:] == sub {
+		// Strip the YYYYMMDD-HHMMSS- prefix; whatever's left is either
+		// `<sub>` (legacy timestamp-only) or `<PID>-<sub>` (current).
+		if len(mid) < 17 || mid[8] != '-' || mid[15] != '-' || !allDigitsExceptDash(mid[:15]) {
+			continue
+		}
+		tail := mid[16:]
+		if tail == sub {
 			return wt.Path, true
+		}
+		// PID-prefixed form: split on the next dash and require the
+		// PID portion to be all digits.
+		if dash := strings.IndexByte(tail, '-'); dash > 0 {
+			allDigits := true
+			for i := 0; i < dash; i++ {
+				if c := tail[i]; c < '0' || c > '9' {
+					allDigits = false
+					break
+				}
+			}
+			if allDigits && tail[dash+1:] == sub {
+				return wt.Path, true
+			}
 		}
 	}
 	return "", false

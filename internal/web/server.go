@@ -39,7 +39,24 @@ type Config struct {
 	// when called. The handler caches the last payload for this long so
 	// rapid polling doesn't fork a `git status` per request.
 	Interval time.Duration
+
+	// MaxConnections caps concurrent inbound HTTP connections. Zero or
+	// negative means no cap (preserves legacy behaviour). The default
+	// (set by cmd_serve.go) is DefaultMaxConnections. 2026-05 bug-hunt
+	// pass-2 #9: SSE handlers spawn a goroutine + a per-second poll
+	// ticker each, so an attacker (or curious script) opening 10K
+	// connections accumulates 10K goroutines and timers. The cap closes
+	// that path. Operators exposing the dashboard via --bind
+	// non-loopback can set this lower; localhost-only operators rarely
+	// need to touch it.
+	MaxConnections int
 }
+
+// DefaultMaxConnections is the cmd_serve.go default for
+// Config.MaxConnections. 64 is generous for personal dev use (one
+// browser tab is one SSE + occasional XHR) and small enough to make a
+// flood obvious in `bosun serve`'s log.
+const DefaultMaxConnections = 64
 
 // Server wraps an *http.Server with the bosun-specific handler set and
 // owns the listener lifecycle. Start blocks until ctx is cancelled.
@@ -58,6 +75,43 @@ type Server struct {
 // New returns a Server ready to listen. Call Start to bind and serve.
 func New(cfg Config) *Server {
 	return &Server{cfg: cfg}
+}
+
+// limitListener wraps inner so it accepts at most n connections at
+// once. Inlined here instead of pulling in golang.org/x/net/netutil
+// (the tree-wide rule is "no third-party deps without strong
+// justification" and this is 20 lines of code).
+type limitedListener struct {
+	net.Listener
+	sem chan struct{}
+}
+
+func limitListener(inner net.Listener, n int) net.Listener {
+	return &limitedListener{Listener: inner, sem: make(chan struct{}, n)}
+}
+
+func (l *limitedListener) Accept() (net.Conn, error) {
+	l.sem <- struct{}{} // block until a slot is free
+	c, err := l.Listener.Accept()
+	if err != nil {
+		<-l.sem
+		return nil, err
+	}
+	return &limitedConn{Conn: c, sem: l.sem}, nil
+}
+
+// limitedConn releases its semaphore slot on Close so the cap reflects
+// "currently open" connections, not "ever opened."
+type limitedConn struct {
+	net.Conn
+	once sync.Once
+	sem  chan struct{}
+}
+
+func (c *limitedConn) Close() error {
+	err := c.Conn.Close()
+	c.once.Do(func() { <-c.sem })
+	return err
 }
 
 // Addr returns the network address the server is bound to. Only useful
@@ -87,6 +141,15 @@ func (s *Server) Start(ctx context.Context) error {
 	lis, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", addr, err)
+	}
+	// Wrap the listener with a connection cap when one is configured.
+	// netutil.LimitListener is the canonical Go primitive for this; we
+	// inline a tiny equivalent so the wider tree doesn't grow a new
+	// third-party dep. Refusing the Accept loop's caller (rather than
+	// accepting and immediately closing) is the right behaviour — the
+	// client sees ECONNREFUSED instead of a connection that hangs.
+	if s.cfg.MaxConnections > 0 {
+		lis = limitListener(lis, s.cfg.MaxConnections)
 	}
 	s.mu.Lock()
 	s.addr = lis.Addr().String()

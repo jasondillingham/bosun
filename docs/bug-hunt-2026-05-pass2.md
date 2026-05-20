@@ -11,15 +11,16 @@ Follow-up to `docs/bug-hunt-2026-05.md`. First pass covered bug *classes* (races
 | P2-3 — `init.state` lingers when post-init hook fails | **Fixed** (Clear runs before hook) | Medium |
 | P2-4 — `git.UnmergedPatches` missing `\r` trim on Windows | **Fixed** | Low |
 | P2-5 — `extractJSON` docstring lies about "largest" object | **Fixed** (docstring matches code) | Low |
-| Init partial-failure orphan worktrees | **Open** — bigger refactor | High |
-| Init `--force` cleanup has no rollback | **Open** — bigger refactor | Medium |
-| Same-second parallel init collision | **Open** — needs process coordination | Medium |
-| spawn-tree no consistency validation on Load | **Open** — defensive validation needed | Medium |
-| Suggest no retry on 429/5xx | **Open** — needs transient-error classifier | Medium |
-| Suggest token-budget unbounded | **Open** — needs design (cap conversation size or estimate tokens) | Medium |
-| HTTP/SSE no connection limit | **Open** — operator config knob would suffice | Low |
-| `git.BranchExists/TreeEqualsBase/MergeYieldsBase` bypass timeout | **Open** — small refactor, low impact | Low |
-| Subtask label collision unclear error message | **Open** | Low |
+| Same-second parallel init collision | **Fixed** (PID appended to round timestamp) | Medium |
+| Suggest retry-template error growth | **Fixed** (`retryErrorByteCap=256`) | Medium |
+| spawn-tree no consistency validation on Load | **Fixed** (`validateTree` rejects self-parent, orphans, cycles) | Medium |
+| `git.BranchExists/TreeEqualsBase/MergeYieldsBase` bypass timeout | **Fixed** (`runAllowExitCode` helper) | Low |
+| Suggest no retry on 429/5xx | **Fixed** (`transientCallError` + exponential backoff) | Medium |
+| HTTP/SSE no connection limit | **Fixed** (`--max-connections` flag, default 64) | Low |
+| Init `--force` cleanup has no rollback | **Fixed** (plan-then-execute with completed-list reporting) | Medium |
+| Init partial-failure orphan worktrees | **Open** — needs resume-time orphan detection | High |
+| Suggest token-budget unbounded | **Open** — needs token estimation or hard byte cap | Medium |
+| Subtask label collision unclear error message | **Open** — small UX improvement | Low |
 
 ## Findings detail
 

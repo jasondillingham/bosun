@@ -42,6 +42,11 @@ var KnownEvents = []string{
 	"post-merge",
 	"pre-cleanup",
 	"post-cleanup",
+	// pre-remove was already wired in cmd_remove.go but missing from
+	// this list — an operator who registered a hook for it would have
+	// failed config validation despite the callsite existing. Added
+	// alongside the Phase 5 #64 webhook wiring.
+	"pre-remove",
 }
 
 // IsKnownEvent reports whether name is in KnownEvents.

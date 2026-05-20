@@ -11,6 +11,7 @@ import (
 	"github.com/jasondillingham/bosun/internal/git"
 	"github.com/jasondillingham/bosun/internal/history"
 	"github.com/jasondillingham/bosun/internal/hooks"
+	"github.com/jasondillingham/bosun/internal/webhooks"
 	"github.com/jasondillingham/bosun/internal/launcher"
 	"github.com/jasondillingham/bosun/internal/proc"
 	"github.com/jasondillingham/bosun/internal/session"
@@ -173,6 +174,7 @@ func runRemove(cmd *cobra.Command, sessionArg string, force, ignoreRunning bool)
 	if err := hooks.Run(rc.ctx, rc.cfg.Hooks, "pre-remove", hookEnv); err != nil {
 		return userErr("%v", err)
 	}
+	_ = webhooks.Fire(rc.ctx, rc.cfg.Webhooks, "pre-remove", hookEnv)
 
 	// Archive the session before the destructive ops wipe it. Best-effort:
 	// a failure here logs to stderr but never blocks remove, since history

@@ -213,6 +213,47 @@ the MCP socket are local-only. That's tracked as Phase 3 in
 the wrapper-script path (`docker-claude.sh` with SSH glue) is the
 workaround until Phase 3 lands.
 
+### Webhooks (Slack / Discord / custom)
+
+Bosun fires HTTP POSTs at lifecycle events when `config.webhooks`
+is populated. Sibling to the existing `hooks` (shell commands) —
+webhooks deliver async to Slack, Discord, or any HTTPS endpoint
+without you having to wrap `curl` in a shell script.
+
+```json
+{
+  "webhooks": [
+    {
+      "url": "https://hooks.slack.com/services/...",
+      "events": ["post-done", "post-merge"],
+      "format": "slack"
+    },
+    {
+      "url": "https://discord.com/api/webhooks/...",
+      "format": "discord"
+    },
+    {
+      "url": "https://collector.internal/bosun",
+      "format": "plain",
+      "headers": {"X-Auth-Token": "..."}
+    }
+  ]
+}
+```
+
+- `events` is a filter — empty means "all lifecycle events"
+  (pre/post init, post-done, pre/post merge, pre/post cleanup,
+  pre-remove). Typos fail at config-load time.
+- `format` shapes the body. `slack` and `discord` send the
+  one-line text payload those incoming-webhook APIs accept;
+  `plain` sends a full JSON envelope (event, session, env, ts)
+  for custom collectors.
+- Delivery is **fire-and-forget**: a slow endpoint can't stall
+  `bosun done`. Failures log to stderr; bosun doesn't retry
+  (operators who need guaranteed delivery should put a real
+  queue between bosun and the endpoint).
+- `timeout_seconds` caps each POST. Default 10s, max 60s.
+
 ### Cost tracking and per-session budgets
 
 Agent runtimes that report token + cost usage (Claude Code, wrapped

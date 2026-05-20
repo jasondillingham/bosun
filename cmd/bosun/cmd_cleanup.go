@@ -13,6 +13,7 @@ import (
 	"github.com/jasondillingham/bosun/internal/git"
 	"github.com/jasondillingham/bosun/internal/history"
 	"github.com/jasondillingham/bosun/internal/hooks"
+	"github.com/jasondillingham/bosun/internal/webhooks"
 	"github.com/jasondillingham/bosun/internal/launcher"
 	"github.com/jasondillingham/bosun/internal/proc"
 	"github.com/jasondillingham/bosun/internal/session"
@@ -579,6 +580,7 @@ func runCleanup(cmd *cobra.Command, opts cleanupOpts) error {
 		if err := hooks.Run(rc.ctx, rc.cfg.Hooks, "pre-cleanup", preEnv); err != nil {
 			return userErr("%v", err)
 		}
+		_ = webhooks.Fire(rc.ctx, rc.cfg.Webhooks, "pre-cleanup", preEnv)
 	}
 
 	removed, skipped := 0, 0
@@ -629,6 +631,7 @@ func runCleanup(cmd *cobra.Command, opts cleanupOpts) error {
 		if err := hooks.Run(rc.ctx, rc.cfg.Hooks, "post-cleanup", postEnv); err != nil {
 			printf("bosun: warning: post-cleanup hook: %v\n", err)
 		}
+		_ = webhooks.Fire(rc.ctx, rc.cfg.Webhooks, "post-cleanup", postEnv)
 	}
 	return nil
 }

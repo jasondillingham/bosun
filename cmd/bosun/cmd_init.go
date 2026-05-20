@@ -15,6 +15,7 @@ import (
 	"github.com/jasondillingham/bosun/internal/config"
 	"github.com/jasondillingham/bosun/internal/doctor"
 	"github.com/jasondillingham/bosun/internal/hooks"
+	"github.com/jasondillingham/bosun/internal/webhooks"
 	initstate "github.com/jasondillingham/bosun/internal/init"
 	"github.com/jasondillingham/bosun/internal/launcher"
 	bosunmcp "github.com/jasondillingham/bosun/internal/mcp"
@@ -346,6 +347,7 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 	if err := hooks.Run(rc.ctx, rc.cfg.Hooks, "pre-init", preEnv); err != nil {
 		return userErr("%v", err)
 	}
+	_ = webhooks.Fire(rc.ctx, rc.cfg.Webhooks, "pre-init", preEnv)
 
 	// Snapshot the worktrees git knows about — used for the pre-flight
 	// "already exists" check, the --force cleanup, and the per-session
@@ -702,6 +704,7 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 	if err := hooks.Run(rc.ctx, rc.cfg.Hooks, "post-init", postEnv); err != nil {
 		return userErr("%v", err)
 	}
+	_ = webhooks.Fire(rc.ctx, rc.cfg.Webhooks, "post-init", postEnv)
 
 	// Everything succeeded — discard the resume breadcrumb so the next
 	// plain `bosun init` isn't refused on stale state.

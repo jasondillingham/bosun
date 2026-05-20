@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/jasondillingham/bosun/internal/hooks"
+	"github.com/jasondillingham/bosun/internal/webhooks"
 )
 
 const (
@@ -131,6 +132,11 @@ type Config struct {
 	// server (Phase 5 #61). Each entry is registered alongside the
 	// built-in bosun_* tools at server start. Empty by default.
 	MCPTools []MCPToolDef `json:"mcp_tools,omitempty"`
+	// Webhooks fire async HTTP POSTs at lifecycle events (Phase 5
+	// #64). Sibling to Hooks (shell commands); fire-and-forget by
+	// design so a slow endpoint can't stall bosun. See
+	// internal/webhooks for the delivery semantics.
+	Webhooks []webhooks.WebhookDef `json:"webhooks,omitempty"`
 	// LivenessGate selects how `bosun status` decides whether a WORKING
 	// session has CRASHED:
 	//
@@ -426,6 +432,9 @@ func Load(repoRoot string) (Config, error) {
 	// it. Defaults are empty so no override-when-set dance is needed.
 	cfg.MCPTools = overlay.MCPTools
 
+	// Webhooks (Phase 5 #64): same wholesale-adopt semantics.
+	cfg.Webhooks = overlay.Webhooks
+
 	if err := cfg.Validate(); err != nil {
 		return cfg, err
 	}
@@ -523,6 +532,23 @@ func (c Config) Validate() error {
 			return fmt.Errorf("hooks[%d]: timeout_seconds must be ≥ 0, got %d", i, h.TimeoutSeconds)
 		}
 	}
+	// Phase 5 #64: validate Webhooks defs. Includes event-name check
+	// against the same set hooks.IsKnownEvent recognises so a typo
+	// like "post-don" never silently fires nothing. Done before the
+	// MCPTools validation because webhooks are simpler — surface its
+	// errors first.
+	for i, w := range c.Webhooks {
+		if err := w.Validate(i); err != nil {
+			return err
+		}
+		for j, ev := range w.Events {
+			if !hooks.IsKnownEvent(ev) {
+				return fmt.Errorf("webhooks[%d].events[%d]: unknown event %q (known: %s)",
+					i, j, ev, strings.Join(hooks.KnownEvents, ", "))
+			}
+		}
+	}
+
 	// Phase 5 #61: validate MCPTools defs. The exec layer doesn't get
 	// to see invalid defs — Load returns the validation error, so the
 	// server starts with built-ins only when an operator misconfigures.

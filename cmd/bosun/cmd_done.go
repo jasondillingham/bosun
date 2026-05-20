@@ -4,6 +4,7 @@ import (
 	"strconv"
 
 	"github.com/jasondillingham/bosun/internal/hooks"
+	"github.com/jasondillingham/bosun/internal/webhooks"
 	"github.com/jasondillingham/bosun/internal/session"
 	"github.com/spf13/cobra"
 )
@@ -98,6 +99,10 @@ func runPostDoneHook(rc *runCtx, label, status string, ahead int, message string
 	if err := hooks.Run(rc.ctx, rc.cfg.Hooks, "post-done", env); err != nil {
 		printf("bosun: warning: post-done hook: %v\n", err)
 	}
+	// Phase 5 #64: fire-and-forget HTTP delivery alongside hooks.
+	// Discarding the WaitGroup is intentional — `bosun done` must
+	// return promptly, not block on a Slack p99.
+	_ = webhooks.Fire(rc.ctx, rc.cfg.Webhooks, "post-done", env)
 }
 
 // findSessionByLabel returns the session whose Label matches, or nil.

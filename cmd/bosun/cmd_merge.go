@@ -14,6 +14,7 @@ import (
 	"github.com/jasondillingham/bosun/internal/brief"
 	"github.com/jasondillingham/bosun/internal/history"
 	"github.com/jasondillingham/bosun/internal/hooks"
+	"github.com/jasondillingham/bosun/internal/webhooks"
 	"github.com/jasondillingham/bosun/internal/preflight"
 	"github.com/jasondillingham/bosun/internal/proc"
 	"github.com/jasondillingham/bosun/internal/session"
@@ -387,6 +388,7 @@ func mergeOne(rc *runCtx, s *session.Session, opts mergeOpts) (status, reason st
 	if err := hooks.Run(rc.ctx, rc.cfg.Hooks, "pre-merge", preEnv); err != nil {
 		return mergeStatusSkipped, fmt.Sprintf("pre-merge hook refused: %v", err), nil
 	}
+	_ = webhooks.Fire(rc.ctx, rc.cfg.Webhooks, "pre-merge", preEnv)
 
 	// Capture main's HEAD before the merge so we can record an undo
 	// anchor in .bosun/merges.log once the squash commits. Recording
@@ -465,6 +467,7 @@ func mergeOne(rc *runCtx, s *session.Session, opts mergeOpts) (status, reason st
 	if err := hooks.Run(rc.ctx, rc.cfg.Hooks, "post-merge", postEnv); err != nil {
 		printf("bosun: warning: post-merge hook: %v\n", err)
 	}
+	_ = webhooks.Fire(rc.ctx, rc.cfg.Webhooks, "post-merge", postEnv)
 
 	// Archive the merged session before clearSessionMetadata wipes the
 	// claims+state files. Best-effort: history is observability, so a

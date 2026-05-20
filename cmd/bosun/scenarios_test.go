@@ -61,6 +61,43 @@ func TestScenario_InitForceOverwrites(t *testing.T) {
 	s.AssertContainsAll(out, "session-1", "session-2")
 }
 
+// TestScenario_InitDockerHostsRoundRobin pins the 2026-05 follow-up
+// grind #100 fix: when config.docker.hosts has multiple entries,
+// `bosun init N` distributes sessions across them round-robin
+// instead of pinning every session to hosts[0]. Pre-fix, an
+// operator with a 3-host fleet would have to write per-session
+// `(host: ...)` brief clauses to use anything but the first host.
+//
+// Verifies the assignment by reading each session's persisted
+// .docker-host state file — the same file `bosun launch` and
+// `bosun cleanup` read to find the right daemon.
+func TestScenario_InitDockerHostsRoundRobin(t *testing.T) {
+	s := newScenario(t)
+	s.WriteFile(".bosun/config.json", `{"docker": {"hosts": ["ssh://host-a", "ssh://host-b", "ssh://host-c"]}}`)
+	s.Bosun("init", "5", "--no-load-check")
+
+	// Expected assignment (index % 3): 1=a, 2=b, 3=c, 4=a, 5=b.
+	want := map[int]string{
+		1: "ssh://host-a",
+		2: "ssh://host-b",
+		3: "ssh://host-c",
+		4: "ssh://host-a",
+		5: "ssh://host-b",
+	}
+	for n, expectedHost := range want {
+		path := filepath.Join(s.repo, ".bosun", "state", "session-"+itoa(n)+".docker-host")
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Errorf("session-%d .docker-host missing: %v", n, err)
+			continue
+		}
+		got := strings.TrimSpace(string(data))
+		if got != expectedHost {
+			t.Errorf("session-%d docker host = %q, want %q", n, got, expectedHost)
+		}
+	}
+}
+
 func TestScenario_InitWithBriefWritesPerSessionFile(t *testing.T) {
 	s := newScenario(t)
 	plan := `# Plan

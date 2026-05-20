@@ -107,6 +107,7 @@ func DefaultChecks() []Check {
 		CheckStaleInitLock,
 		CheckPhantomBranchRefs,
 		CheckMCPDaemonStartup,
+		CheckDockerHosts,
 	}
 }
 

@@ -644,10 +644,21 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 	}
 
 	// resolveDockerHost applies the Phase 3 precedence:
-	// brief clause > init --docker-host flag > config.Docker.Hosts[0] > "".
-	// Empty result means "no DOCKER_HOST override; target local docker"
-	// — today's behavior. Lane 3 will make the remote case actually
-	// reach a remote daemon; lane 1 only plumbs the env var.
+	// brief clause > init --docker-host flag > round-robin across
+	// config.Docker.Hosts > "".
+	//
+	// 2026-05 follow-up grind #100: when config.docker.hosts has
+	// multiple entries AND no per-session override applies, sessions
+	// are distributed round-robin instead of all defaulting to
+	// hosts[0]. Operators with a fleet of docker daemons get
+	// parallelism across hardware without per-session brief clauses.
+	// Same-process determinism: the index into labels picks the host,
+	// so a re-run of `bosun init N` produces the same assignment for
+	// the same label list.
+	labelIndex := make(map[string]int, len(labels))
+	for i, l := range labels {
+		labelIndex[l] = i
+	}
 	resolveDockerHost := func(label string) string {
 		if b := brief.LookupBriefByLabel(briefs, label); b != nil && b.Host != "" {
 			return b.Host
@@ -655,8 +666,9 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 		if opts.dockerHost != "" {
 			return opts.dockerHost
 		}
-		if len(rc.cfg.Docker.Hosts) > 0 {
-			return rc.cfg.Docker.Hosts[0]
+		if n := len(rc.cfg.Docker.Hosts); n > 0 {
+			idx := labelIndex[label] % n
+			return rc.cfg.Docker.Hosts[idx]
 		}
 		return ""
 	}

@@ -206,12 +206,29 @@ hands it to your OS terminal launcher. Worktree + MCP socket are
 bind-mounted; operator-configured `docker.extra_mounts` and
 `docker.env_passthrough` cover credentials and runtime config.
 
-**Multi-host / remote-docker (offload sessions to one or many other
-machines) is NOT covered by the native launcher** — bind mounts and
-the MCP socket are local-only. That's tracked as Phase 3 in
-[`docs/sandbox-launcher-design.md`](docs/sandbox-launcher-design.md);
-the wrapper-script path (`docker-claude.sh` with SSH glue) is the
-workaround until Phase 3 lands.
+For **multi-host / remote-docker** (offload sessions to one or many
+other machines), configure `docker.hosts` with SSH or TCP endpoints:
+
+```sh
+bosun config set launcher docker
+bosun config set docker.image ghcr.io/your-org/bosun-agent:latest
+# Edit .bosun/config.json directly for the hosts list:
+#   "docker": { "hosts": ["ssh://thor", "ssh://loki"] }
+bosun init 4   # sessions distribute round-robin across hosts
+```
+
+When `docker.hosts` has multiple entries, `bosun init N` assigns
+sessions round-robin across them — operator with a 3-host fleet
+gets parallelism across hardware without per-session brief
+clauses. Per-session `(host: ssh://...)` clauses or
+`--docker-host` still override when needed. `bosun doctor`'s
+`docker-hosts` check pings every configured endpoint via
+`docker info` so unreachable bridges surface before init half-
+creates worktrees. The MCP socket is bridged into each remote
+container via `ssh -R`, so coordination works across hosts.
+
+Full design at [`docs/sandbox-launcher-design.md`](docs/sandbox-launcher-design.md)
+and [`docs/remote-docker-plan.md`](docs/remote-docker-plan.md).
 
 ### Webhooks (Slack / Discord / custom)
 

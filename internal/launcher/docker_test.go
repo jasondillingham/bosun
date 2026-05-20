@@ -146,6 +146,117 @@ func TestDockerInvocation_ExtraMountsForwarded(t *testing.T) {
 	}
 }
 
+// TestDockerInvocation_RemoteSSHHostDropsWorktreeBind: when
+// DOCKER_HOST=ssh://… the remote docker daemon can't see the local
+// filesystem. The bind-mount must be omitted; the startup command
+// becomes a git clone instead.
+func TestDockerInvocation_RemoteSSHHostDropsWorktreeBind(t *testing.T) {
+	got, err := dockerInvocation(Options{
+		WorktreePath: "/tmp/work",
+		SessionName:  "session-1",
+		Command:      "claude",
+		DockerImage:  "img",
+		Env: map[string]string{
+			"DOCKER_HOST":   "ssh://user@example.com",
+			"BOSUN_ORIGIN":  "ssh://op@bosun-host:/abs/repo.git",
+			"BOSUN_BRANCH":  "bosun/session-1",
+			"BOSUN_SESSION": "session-1",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(got, "-v /tmp/work:/work") {
+		t.Errorf("remote host should NOT bind-mount worktree, got:\n%s", got)
+	}
+	for _, want := range []string{
+		"git clone",
+		`"$BOSUN_BRANCH"`,
+		`"$BOSUN_ORIGIN"`,
+		"/work",
+		"exec claude",
+		"sh -lc",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("remote startup missing %q\nfull:\n%s", want, got)
+		}
+	}
+}
+
+// TestDockerInvocation_RemoteSSHHostDropsMCPBind: in remote mode the
+// MCP socket reaches the container via ssh -R reverse forward, not
+// via -v bind. Verify the bind is omitted but BOSUN_MCP_SOCK env
+// still points at the same /work/.bosun/mcp.sock path.
+func TestDockerInvocation_RemoteSSHHostDropsMCPBind(t *testing.T) {
+	got, err := dockerInvocation(Options{
+		WorktreePath: "/tmp/work",
+		SessionName:  "session-1",
+		Command:      "claude",
+		DockerImage:  "img",
+		Env: map[string]string{
+			"DOCKER_HOST":    "ssh://user@example.com",
+			"BOSUN_ORIGIN":   "ssh://op@host:/r.git",
+			"BOSUN_BRANCH":   "bosun/session-1",
+			"BOSUN_MCP_SOCK": "/host/path/.bosun/mcp.sock",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(got, "-v /host/path/.bosun/mcp.sock") {
+		t.Errorf("remote host should NOT bind MCP socket, got:\n%s", got)
+	}
+	if !strings.Contains(got, "-e BOSUN_MCP_SOCK=/work/.bosun/mcp.sock") {
+		t.Errorf("expected BOSUN_MCP_SOCK env still set to /work path, got:\n%s", got)
+	}
+}
+
+// TestDockerInvocation_LocalKeepsBindMount: with no DOCKER_HOST (or a
+// non-ssh one) we keep the existing local bind-mount behaviour. This
+// is the regression guard — lane 2+3 must not change local-mode
+// invocations.
+func TestDockerInvocation_LocalKeepsBindMount(t *testing.T) {
+	got, err := dockerInvocation(Options{
+		WorktreePath: "/tmp/work",
+		SessionName:  "session-1",
+		Command:      "claude",
+		DockerImage:  "img",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "-v /tmp/work:/work") {
+		t.Errorf("local mode must keep worktree bind, got:\n%s", got)
+	}
+	if strings.Contains(got, "git clone") {
+		t.Errorf("local mode must NOT inject git clone startup, got:\n%s", got)
+	}
+}
+
+// TestDockerInvocation_DockerHostNotForwardedToContainer: DOCKER_HOST
+// must stay on the host side of the docker CLI. Forwarding it into
+// the container would mis-point any in-container docker CLI at an
+// unreachable ssh:// URL.
+func TestDockerInvocation_DockerHostNotForwardedToContainer(t *testing.T) {
+	got, err := dockerInvocation(Options{
+		WorktreePath: "/tmp/work",
+		SessionName:  "session-1",
+		Command:      "claude",
+		DockerImage:  "img",
+		Env: map[string]string{
+			"DOCKER_HOST":  "ssh://user@example.com",
+			"BOSUN_ORIGIN": "ssh://op@host:/r.git",
+			"BOSUN_BRANCH": "bosun/session-1",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(got, "-e DOCKER_HOST=") {
+		t.Errorf("DOCKER_HOST should NOT be forwarded as -e, got:\n%s", got)
+	}
+}
+
 // TestDockerInvocation_EnvPassthroughByName forwards host env vars by
 // name only — Docker resolves the value from its parent shell at
 // container start time. Lets operators forward ANTHROPIC_API_KEY,

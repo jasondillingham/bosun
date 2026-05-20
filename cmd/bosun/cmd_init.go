@@ -19,6 +19,7 @@ import (
 	"github.com/jasondillingham/bosun/internal/launcher"
 	bosunmcp "github.com/jasondillingham/bosun/internal/mcp"
 	"github.com/jasondillingham/bosun/internal/preflight"
+	"github.com/jasondillingham/bosun/internal/remote"
 	"github.com/jasondillingham/bosun/internal/session"
 	"github.com/jasondillingham/bosun/internal/spawntree"
 	"github.com/jasondillingham/bosun/internal/state"
@@ -773,6 +774,37 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 			// Empty result preserves today's local-only behavior.
 			if c.dockerHost != "" {
 				env["DOCKER_HOST"] = c.dockerHost
+			}
+
+			// Phase 3 lane 2+3: SSH-bridged remote docker support.
+			// When the resolved docker host is an ssh:// endpoint
+			// AND the launcher is docker, publish the session branch
+			// into the bare sibling repo (so the remote container can
+			// clone it) and open an `ssh -R` tunnel so the in-container
+			// agent's MCP traffic reverses back to this bosun host.
+			// Lane 1's DOCKER_HOST plumbing above is what arms this
+			// block; lane 3 stays a no-op for local docker or non-ssh
+			// remotes.
+			if dockerHost, ok := env["DOCKER_HOST"]; ok && strings.HasPrefix(dockerHost, "ssh://") && rc.cfg.Launcher == config.LauncherDocker {
+				originURI, err := remote.PreparePushable(rc.repoRoot, c.branch)
+				if err != nil {
+					_, _ = fmt.Fprintf(os.Stderr, "  %s: remote prepare failed: %v\n", c.label, err)
+					continue
+				}
+				env["BOSUN_ORIGIN"] = originURI
+				env["BOSUN_BRANCH"] = c.branch
+
+				// Open the reverse-proxy BEFORE docker run. The
+				// in-container agent expects the MCP socket to be
+				// reachable the moment it tries to register.
+				if mcpSocket != "" {
+					tun, err := remote.OpenReverseProxy(mcpSocket, "/work/.bosun/mcp.sock", dockerHost)
+					if err != nil {
+						_, _ = fmt.Fprintf(os.Stderr, "  %s: open reverse-proxy to %s: %v\n", c.label, dockerHost, err)
+						continue
+					}
+					retainTunnel(tun)
+				}
 			}
 			strategy, err := launcher.Launch(launcher.Options{
 				Strategy:      launcher.Strategy(rc.cfg.Launcher),

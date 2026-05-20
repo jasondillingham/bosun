@@ -1,0 +1,164 @@
+package remote
+
+import (
+	"os/exec"
+	"strings"
+	"testing"
+	"time"
+)
+
+// withFakeSSH swaps execCommand for a factory that runs a stand-in
+// process instead of real ssh. The stand-in is a `sleep` whose
+// duration the test controls — long enough to look "healthy" past
+// startupProbe, short enough to not waste wall-clock when the test
+// kills it. Returns the captured argv so tests can pin the shape of
+// the ssh invocation that production callers would have made.
+func withFakeSSH(t *testing.T, sleepFor string) *[]string {
+	t.Helper()
+	captured := &[]string{}
+	prev := execCommand
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		*captured = append(*captured, name)
+		*captured = append(*captured, args...)
+		// Substitute the stand-in: a sleep that lives long enough
+		// for the startup probe to consider the tunnel healthy.
+		return exec.Command("sleep", sleepFor)
+	}
+	t.Cleanup(func() { execCommand = prev })
+	return captured
+}
+
+// TestOpenReverseProxy_BuildsExpectedSSHCommand pins the ssh argv
+// shape: -R remote:local, the host, and the keep-alive command.
+// Regression-guards against silent flag drift that would break the
+// reverse-forward contract.
+func TestOpenReverseProxy_BuildsExpectedSSHCommand(t *testing.T) {
+	captured := withFakeSSH(t, "2")
+
+	tun, err := OpenReverseProxy("/tmp/host.sock", "/work/.bosun/mcp.sock", "ssh://user@example.com")
+	if err != nil {
+		t.Fatalf("OpenReverseProxy: %v", err)
+	}
+	t.Cleanup(func() { _ = tun.Close() })
+
+	joined := strings.Join(*captured, " ")
+	for _, want := range []string{
+		"ssh",
+		"-R /work/.bosun/mcp.sock:/tmp/host.sock",
+		"ssh://user@example.com",
+		"sleep infinity",
+		"ExitOnForwardFailure=yes",
+		"BatchMode=yes",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("ssh argv missing %q\nfull: %s", want, joined)
+		}
+	}
+}
+
+// TestOpenReverseProxy_RejectsEmptyInputs catches the operator-side
+// "forgot to thread the local socket through" bug before ssh would
+// emit a confusing "bad forwarding specification" error.
+func TestOpenReverseProxy_RejectsEmptyInputs(t *testing.T) {
+	if _, err := OpenReverseProxy("", "/work/x", "host"); err == nil {
+		t.Errorf("expected error for empty localSock")
+	}
+	if _, err := OpenReverseProxy("/tmp/x.sock", "", "host"); err == nil {
+		t.Errorf("expected error for empty remotePath")
+	}
+	if _, err := OpenReverseProxy("/tmp/x.sock", "/work/x", ""); err == nil {
+		t.Errorf("expected error for empty host")
+	}
+}
+
+// TestOpenReverseProxy_StartupFailureSurfacesError: if ssh exits
+// inside the startup probe window, OpenReverseProxy should return
+// the error rather than handing back a dead tunnel. Simulated by
+// swapping in a no-op `true` command (exits 0 immediately).
+func TestOpenReverseProxy_StartupFailureSurfacesError(t *testing.T) {
+	prev := execCommand
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		// `true` exits 0 immediately — close enough to "ssh died
+		// during connect" for the probe-window logic.
+		return exec.Command("true")
+	}
+	t.Cleanup(func() { execCommand = prev })
+
+	_, err := OpenReverseProxy("/tmp/host.sock", "/work/.bosun/mcp.sock", "ssh://nope")
+	if err == nil {
+		t.Errorf("expected error when ssh exits during startup probe")
+	}
+}
+
+// TestTunnel_CloseKillsProcessAndWaits: Close must terminate the
+// underlying process and block until it's reaped. Without that, a
+// cmd_init that closes tunnels at shutdown could race a still-alive
+// ssh child outliving bosun.
+func TestTunnel_CloseKillsProcessAndWaits(t *testing.T) {
+	withFakeSSH(t, "10")
+
+	tun, err := OpenReverseProxy("/tmp/host.sock", "/work/x", "host")
+	if err != nil {
+		t.Fatalf("OpenReverseProxy: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- tun.Close() }()
+
+	select {
+	case err := <-done:
+		// Close itself returns nil regardless of how the child
+		// exited — the contract is "process is gone", not "process
+		// exited cleanly".
+		if err != nil {
+			t.Errorf("unexpected Close error: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Errorf("Close didn't return within 3s — likely deadlock")
+	}
+}
+
+// TestTunnel_CloseIsIdempotent: callers that defer Close() AND get
+// called from a watchdog path shouldn't panic on double-close.
+func TestTunnel_CloseIsIdempotent(t *testing.T) {
+	withFakeSSH(t, "5")
+
+	tun, err := OpenReverseProxy("/tmp/host.sock", "/work/x", "host")
+	if err != nil {
+		t.Fatalf("OpenReverseProxy: %v", err)
+	}
+	if err := tun.Close(); err != nil {
+		t.Errorf("first Close: %v", err)
+	}
+	if err := tun.Close(); err != nil {
+		t.Errorf("second Close: %v", err)
+	}
+}
+
+// TestTunnel_WaitReturnsAfterProcessExit: callers that supervise the
+// tunnel (e.g. "kill the docker run when ssh dies") use Wait() as
+// the blocking primitive. Verify it unblocks once the process is
+// gone — using the stand-in sleep that we kill via Close.
+func TestTunnel_WaitReturnsAfterProcessExit(t *testing.T) {
+	withFakeSSH(t, "10")
+
+	tun, err := OpenReverseProxy("/tmp/host.sock", "/work/x", "host")
+	if err != nil {
+		t.Fatalf("OpenReverseProxy: %v", err)
+	}
+
+	// Wait in the background; Close should unblock it.
+	waited := make(chan struct{})
+	go func() {
+		_ = tun.Wait()
+		close(waited)
+	}()
+
+	_ = tun.Close()
+	select {
+	case <-waited:
+		// good
+	case <-time.After(3 * time.Second):
+		t.Errorf("Wait didn't return after Close within 3s")
+	}
+}

@@ -181,6 +181,110 @@ usage ledger can't be read, the claim goes through and the gate
 silently skips — refusing claims because of a malformed config would
 be worse than letting them through.
 
+## Operator-defined tools (Phase 5 #61)
+
+Bosun's MCP server picks up custom tool definitions from
+`config.mcp_tools` and registers each alongside the built-in
+`bosun_*` tools at startup. Agents discover them via `tools/list`
+and call them via `tools/call` exactly like any built-in. Useful
+for repo-specific commands (`bosun_lint`, `bosun_test_one`,
+`bosun_db_seed`) that don't belong in upstream bosun but should be
+agent-callable.
+
+Example config:
+
+```json
+{
+  "mcp_tools": [
+    {
+      "name": "bosun_lint",
+      "description": "Run the repo's lint script and report issues. Pass args=[\"--fix\"] to auto-fix.",
+      "command": ["./scripts/lint.sh"],
+      "timeout_seconds": 60
+    },
+    {
+      "name": "bosun_test_one",
+      "description": "Run a single test by name. args=[\"TestFoo\"]",
+      "command": ["go", "test", "-run"]
+    }
+  ]
+}
+```
+
+**Schema:** every operator-defined tool exposes the same input
+shape:
+
+```json
+{
+  "args": ["optional", "positional", "args"]
+}
+```
+
+Agent-supplied `args` are **appended** to the configured `command`
+before exec. No shell interpretation — argv is exec'd directly, so
+`; rm -rf /` injected via a brief or web page can't escape into a
+shell.
+
+**Output:** stdout is returned as TextContent (the answer the
+agent reads). The structured result carries stdout / stderr /
+exit_code separately for callers that need them.
+
+**Validation gates (refused at config-load time):**
+
+- `name` must be non-empty and start with `bosun_` (so a custom
+  tool can never shadow a tool from a different MCP server the
+  agent is wired to).
+- `name` must be unique within the list.
+- `description` must be non-empty (agents pick tools by
+  description; an empty one is unselectable in practice).
+- `command` must have at least one entry, with a non-blank `[0]`.
+- `timeout_seconds` must be between 0 (default = 30s) and 300s
+  (the hard ceiling so a runaway tool can't pin a session).
+
+**Security model:** any operator with write access to
+`.bosun/config.json` already has equivalent shell access to the
+repo, so a malicious def is no worse than the operator running
+that command directly. The guardrails above stop malicious
+**input from elsewhere** (a brief from a web page, an agent that
+reads an untrusted comment) from escalating into RCE.
+
+## In-container liveness (Phase 5 #63)
+
+When a session's agent runs inside a Docker container — local or
+remote, single-host or SSH-tunneled — the host's PID-namespace-bound
+proc-scan can't see the in-container PIDs. The attached-PID path is
+also broken across namespaces: an in-container PID `1` doesn't
+correspond to anything meaningful on the host, and registering it
+would either falsely match the host's init or silently never resolve.
+
+The portable signal that crosses the boundary is **`bosun_heartbeat`**.
+The MCP server on the host writes the timestamp to
+`.bosun/state/<session>.heartbeat`; `session.Derive` treats a
+heartbeat newer than `HeartbeatStaleAfter` (5 minutes) as evidence
+the session is alive, even when no attached PID or proc-scan match
+exists.
+
+Resulting behavior in `bosun status`:
+
+| Liveness evidence | RUNNING column |
+|---|---|
+| Attached PID is alive | `<pid>` |
+| Attached PID is dead | `—` (and state flips to CRASHED) |
+| Proc-scan match in worktree | `<pid>` |
+| **Only a fresh heartbeat** | `heartbeat` (Phase 5 #63) |
+| `liveness_gate=external` mode | `external` |
+| Nothing | `—` |
+
+Note the precedence: a dead attached PID still wins over a fresh
+heartbeat. The explicit "I crashed" signal is treated as
+authoritative — an old heartbeat sitting just inside its TTL
+shouldn't mask a real crash.
+
+A reference shim that calls `bosun_heartbeat` from inside a
+container every 60s lives at
+[`examples/agent-wrappers/in-container-heartbeat.sh`](../examples/agent-wrappers/in-container-heartbeat.sh).
+Copy into your image and background from the entrypoint.
+
 ## Compatibility with filesystem coordination
 
 The MCP server reads and writes the **same** `.bosun/claims/` and

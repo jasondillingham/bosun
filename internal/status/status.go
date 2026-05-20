@@ -270,9 +270,12 @@ func renderStateCell(s session.Session, color bool) string {
 
 // formatRunning renders the RUNNING column: the pid of the live agent when
 // one was detected, "external" when the liveness gate is in external
-// mode (operator-driven, no proc-scan), or an em-dash placeholder
-// otherwise. The pid is more useful than a bare "yes" since it lets
-// the operator attach or kill the session without rederiving it.
+// mode (operator-driven, no proc-scan), "heartbeat" when the agent is
+// in a container whose PID namespace isn't visible to the host
+// proc-scan but is emitting periodic bosun_heartbeat calls (Phase 5
+// #63), or an em-dash placeholder otherwise. The pid is more useful
+// than a bare "yes" since it lets the operator attach or kill the
+// session without rederiving it.
 func formatRunning(s session.Session) string {
 	if s.RunningExternal {
 		// In external mode the operator declared they're driving
@@ -285,6 +288,12 @@ func formatRunning(s session.Session) string {
 	}
 	if !s.Running {
 		return "—"
+	}
+	if s.RunningHeartbeat {
+		// Heartbeat-only RUNNING comes from in-container agents that
+		// the host's proc-scan can't see. There's no PID to print —
+		// the in-container PID would be meaningless on the host.
+		return "heartbeat"
 	}
 	return fmt.Sprintf("%d", s.RunningPID)
 }

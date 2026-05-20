@@ -54,6 +54,41 @@ trusts it ahead of the proc-scan. Subsequent `bosun status`
 correctly shows RUNNING; `bosun cleanup` SIGTERMs the right
 process before removing the worktree.
 
+### In-container agents: heartbeat instead of attached-PID
+
+Self-registration with `bosun attach --pid` works on the **host**
+because the wrapper and the host's proc-scan share the same PID
+namespace. **Inside a Docker container, that PID is meaningless to
+the host** — the container's claude is `1` (or some low number)
+which collides with PID 1 / random host PIDs. Registering it
+silently breaks the liveness gate.
+
+The portable pattern for in-container agents is to call
+`bosun_heartbeat` over the bind-mounted MCP socket every minute or
+two. Bosun's liveness gate treats a fresh heartbeat as evidence of
+liveness when nothing else proved RUNNING, and the status table
+renders `heartbeat` in the RUNNING column (distinct from a real
+PID) so the operator can see at a glance that the session is in
+container mode.
+
+[`in-container-heartbeat.sh`](in-container-heartbeat.sh) is a
+drop-in reference shim. Copy it into your image and background it
+from the entrypoint:
+
+```dockerfile
+COPY in-container-heartbeat.sh /usr/local/bin/bosun-heartbeat
+RUN chmod +x /usr/local/bin/bosun-heartbeat
+```
+
+```sh
+# in your entrypoint
+/usr/local/bin/bosun-heartbeat &
+exec claude
+```
+
+Either `python3` or `socat` must be present in the image — both
+common, the script auto-detects which one is available.
+
 ## Examples in this directory
 
 ### `ollama-aider.sh`

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/jasondillingham/bosun/internal/hooks"
@@ -513,6 +514,158 @@ func TestValidate_DockerHosts(t *testing.T) {
 				t.Fatalf("Validate(Docker.Hosts=%v) err=%v, wantErr=%v", tc.hosts, err, tc.wantErr)
 			}
 		})
+	}
+}
+
+// TestValidate_MCPTools_TableDriven covers the Phase 5 #61 validation
+// surface. Each row is one failure mode plus one happy-path baseline,
+// asserting both directions: invalid defs must surface a specific
+// error string the operator can act on, and the canonical valid def
+// must accept.
+func TestValidate_MCPTools_TableDriven(t *testing.T) {
+	cases := []struct {
+		name    string
+		defs    []MCPToolDef
+		wantErr string // substring; empty means "expect no error"
+	}{
+		{
+			name: "valid def passes",
+			defs: []MCPToolDef{{
+				Name:        "bosun_lint",
+				Description: "Run the repo's lint script",
+				Command:     []string{"./scripts/lint.sh"},
+			}},
+		},
+		{
+			name: "empty name refused",
+			defs: []MCPToolDef{{
+				Name: "", Description: "x", Command: []string{"true"},
+			}},
+			wantErr: "name must not be empty",
+		},
+		{
+			name: "name without bosun_ prefix refused",
+			defs: []MCPToolDef{{
+				Name: "lint", Description: "x", Command: []string{"true"},
+			}},
+			wantErr: `must start with "bosun_"`,
+		},
+		{
+			name: "duplicate names refused",
+			defs: []MCPToolDef{
+				{Name: "bosun_lint", Description: "a", Command: []string{"true"}},
+				{Name: "bosun_lint", Description: "b", Command: []string{"true"}},
+			},
+			wantErr: "duplicate name",
+		},
+		{
+			name: "blank description refused",
+			defs: []MCPToolDef{{
+				Name: "bosun_lint", Description: "  ", Command: []string{"true"},
+			}},
+			wantErr: "description must not be empty",
+		},
+		{
+			name: "empty command refused",
+			defs: []MCPToolDef{{
+				Name: "bosun_lint", Description: "x", Command: nil,
+			}},
+			wantErr: "command must not be empty",
+		},
+		{
+			name: "blank command[0] refused",
+			defs: []MCPToolDef{{
+				Name: "bosun_lint", Description: "x", Command: []string{"  "},
+			}},
+			wantErr: "must not be blank",
+		},
+		{
+			name: "negative timeout refused",
+			defs: []MCPToolDef{{
+				Name: "bosun_lint", Description: "x", Command: []string{"true"},
+				TimeoutSeconds: -1,
+			}},
+			wantErr: "timeout_seconds must be ≥ 0",
+		},
+		{
+			name: "timeout above ceiling refused",
+			defs: []MCPToolDef{{
+				Name: "bosun_lint", Description: "x", Command: []string{"true"},
+				TimeoutSeconds: MaxCustomToolTimeoutSeconds + 1,
+			}},
+			wantErr: "exceeds the",
+		},
+		{
+			name: "zero timeout is OK (defaulted at exec time)",
+			defs: []MCPToolDef{{
+				Name: "bosun_lint", Description: "x", Command: []string{"true"},
+				TimeoutSeconds: 0,
+			}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := Defaults()
+			c.MCPTools = tc.defs
+			err := c.Validate()
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Validate returned %v, want nil", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("Validate returned nil, want error containing %q", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("Validate err = %v, want substring %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestLoad_MCPToolsRoundTrip confirms an MCPTools list survives the
+// JSON loader — the field appears verbatim in the loaded Config and
+// the validate gate runs at Load time so a bad def can't reach
+// runtime by hand-editing the file.
+func TestLoad_MCPToolsRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".bosun"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"mcp_tools":[{"name":"bosun_lint","description":"run the linter","command":["./lint.sh","--fix"],"timeout_seconds":15}]}`
+	if err := os.WriteFile(filepath.Join(dir, ".bosun/config.json"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(c.MCPTools) != 1 {
+		t.Fatalf("MCPTools len = %d, want 1", len(c.MCPTools))
+	}
+	got := c.MCPTools[0]
+	if got.Name != "bosun_lint" || got.Description != "run the linter" ||
+		len(got.Command) != 2 || got.Command[0] != "./lint.sh" || got.Command[1] != "--fix" ||
+		got.TimeoutSeconds != 15 {
+		t.Errorf("loaded def = %+v, mismatch", got)
+	}
+}
+
+// TestLoad_RejectsBadMCPToolsDef confirms the validate path fires
+// from the file loader too — same shape as TestLoad_RejectsBadDockerHost.
+func TestLoad_RejectsBadMCPToolsDef(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".bosun"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Name without bosun_ prefix — same gate the unit test covers.
+	body := `{"mcp_tools":[{"name":"lint","description":"x","command":["true"]}]}`
+	if err := os.WriteFile(filepath.Join(dir, ".bosun/config.json"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(dir); err == nil {
+		t.Fatal("Load with a bare-name mcp_tools def should fail")
 	}
 }
 

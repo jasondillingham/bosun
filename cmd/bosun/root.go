@@ -88,6 +88,7 @@ worktree, with one place to see what every session is doing.`,
 		newEventsCmd(),
 		newDebugCmd(),
 		newHistoryCmd(),
+		newAuditCmd(),
 	)
 
 	return root

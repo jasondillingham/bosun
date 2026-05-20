@@ -586,6 +586,137 @@ func TestDerive_AttachedDead_FlipsCrashed(t *testing.T) {
 	}
 }
 
+// TestDerive_HeartbeatFresh_MarksRunning: a session that's only emitting
+// `bosun_heartbeat` (no attached PID, no proc-scan match) should still
+// register as RUNNING when the heartbeat is fresh. This is the Phase 5
+// #63 in-container shim path — agents inside Docker containers have a
+// different PID namespace than the host, so neither the attached-PID
+// check nor proc.RunningForCommand can see them. The heartbeat is the
+// portable liveness signal that crosses the boundary.
+func TestDerive_HeartbeatFresh_MarksRunning(t *testing.T) {
+	r := &fakeRunner{
+		t: t,
+		worktree: strings.Join([]string{
+			"worktree /repo",
+			"HEAD aaa",
+			"branch refs/heads/main",
+			"",
+			"worktree /repo-bosun-1",
+			"HEAD bbb",
+			"branch refs/heads/bosun/session-1",
+			"",
+		}, "\n"),
+		revCount: map[string]string{"/repo-bosun-1": "0\n"},
+		// Dirty worktree — without the heartbeat fallback this would
+		// flip CRASHED because nothing else proved liveness.
+		status: map[string]string{"/repo-bosun-1": " M a.go\n"},
+	}
+	c := &git.Client{Runner: r}
+	got, err := Derive(context.Background(), c, config.Defaults(), "/repo",
+		&fakeState{heartbeats: map[string]time.Time{
+			"session-1": time.Now().Add(-30 * time.Second),
+		}},
+		&fakeClaims{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0].State != StateWorking {
+		t.Errorf("State = %q, want WORKING (heartbeat is fresh)", got[0].State)
+	}
+	if !got[0].Running {
+		t.Errorf("Running = false, want true (fresh heartbeat implies alive)")
+	}
+	if !got[0].RunningHeartbeat {
+		t.Errorf("RunningHeartbeat = false, want true (liveness came from heartbeat path)")
+	}
+	if got[0].RunningPID != 0 {
+		t.Errorf("RunningPID = %d, want 0 (heartbeat path has no PID)", got[0].RunningPID)
+	}
+	if got[0].Stale {
+		t.Errorf("Stale = true, want false (heartbeat 30s old, threshold 5m)")
+	}
+}
+
+// TestDerive_HeartbeatStale_DoesNotMarkRunning: an old heartbeat
+// (past HeartbeatStaleAfter) is NOT treated as evidence of liveness.
+// The session falls through to the normal STALE+CRASHED logic — the
+// fallback exists only to close the in-container visibility gap, not
+// to mask actually-dead sessions.
+func TestDerive_HeartbeatStale_DoesNotMarkRunning(t *testing.T) {
+	r := &fakeRunner{
+		t: t,
+		worktree: strings.Join([]string{
+			"worktree /repo",
+			"HEAD aaa",
+			"branch refs/heads/main",
+			"",
+			"worktree /repo-bosun-1",
+			"HEAD bbb",
+			"branch refs/heads/bosun/session-1",
+			"",
+		}, "\n"),
+		revCount: map[string]string{"/repo-bosun-1": "0\n"},
+		status:   map[string]string{"/repo-bosun-1": ""},
+	}
+	c := &git.Client{Runner: r}
+	got, err := Derive(context.Background(), c, config.Defaults(), "/repo",
+		&fakeState{heartbeats: map[string]time.Time{
+			"session-1": time.Now().Add(-10 * time.Minute),
+		}},
+		&fakeClaims{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0].Running {
+		t.Errorf("Running = true, want false (heartbeat is stale)")
+	}
+	if got[0].RunningHeartbeat {
+		t.Errorf("RunningHeartbeat = true, want false (stale heartbeat doesn't count)")
+	}
+}
+
+// TestDerive_HeartbeatDoesNotMaskAttachedDead: when an attached-pid
+// file exists but the PID is dead, the explicit "I crashed" wins
+// over any heartbeat — even a fresh one. The agent registered, then
+// disappeared; that's a real crash signal, not a missing-heartbeat one.
+func TestDerive_HeartbeatDoesNotMaskAttachedDead(t *testing.T) {
+	deadPID := 2147483640
+	if procIsAlive(deadPID) {
+		t.Skipf("PID %d happens to be live on this host", deadPID)
+	}
+	r := &fakeRunner{
+		t: t,
+		worktree: strings.Join([]string{
+			"worktree /repo",
+			"HEAD aaa",
+			"branch refs/heads/main",
+			"",
+			"worktree /repo-bosun-1",
+			"HEAD bbb",
+			"branch refs/heads/bosun/session-1",
+			"",
+		}, "\n"),
+		revCount: map[string]string{"/repo-bosun-1": "0\n"},
+		status:   map[string]string{"/repo-bosun-1": ""},
+	}
+	c := &git.Client{Runner: r}
+	got, err := Derive(context.Background(), c, config.Defaults(), "/repo",
+		&fakeState{
+			attached:   map[string]int{"session-1": deadPID},
+			heartbeats: map[string]time.Time{"session-1": time.Now()},
+		},
+		&fakeClaims{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0].State != StateCrashed {
+		t.Errorf("State = %q, want CRASHED (attached-dead wins over fresh heartbeat)", got[0].State)
+	}
+	if got[0].RunningHeartbeat {
+		t.Errorf("RunningHeartbeat = true, want false (attached-dead suppresses heartbeat liveness)")
+	}
+}
+
 // TestDerive_ExternalGate_SkipsCrashed: liveness_gate=external
 // suppresses CRASHED transitions entirely. The session keeps WORKING
 // even with dirty files + no live agent, and RunningExternal=true so

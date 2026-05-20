@@ -127,6 +127,10 @@ type Config struct {
 	// composition helpers for cache/credential mounts and env
 	// passthrough. See docs/sandbox-launcher-design.md Phase 2.
 	Docker DockerConfig `json:"docker"`
+	// MCPTools is the operator-defined extension surface for the MCP
+	// server (Phase 5 #61). Each entry is registered alongside the
+	// built-in bosun_* tools at server start. Empty by default.
+	MCPTools []MCPToolDef `json:"mcp_tools,omitempty"`
 	// LivenessGate selects how `bosun status` decides whether a WORKING
 	// session has CRASHED:
 	//
@@ -215,6 +219,55 @@ type AgentSubtaskConfig struct {
 	// agent removes them or the operator nukes the dir.
 	MaxConcurrent int `json:"max_concurrent"`
 }
+
+// MCPToolDef is one operator-defined MCP tool registered by the bosun
+// MCP server at startup. Phase 5 #61: lets operators expose
+// project-specific commands to their agent without writing Go. Each
+// def is wired into the same registration path as the built-in
+// bosun_* tools — agents discover them via tools/list and call them
+// via tools/call exactly like any other.
+//
+// Security model: any operator with write access to .bosun/config.json
+// already has equivalent shell access to the repo. The MCP server runs
+// as the operator, so a malicious def is no worse than the operator
+// running the same command. We still enforce a few guardrails:
+//   - Name must start with "bosun_" so operator tools never shadow a
+//     built-in (which also start with bosun_).
+//   - Command must be an explicit []string (no shell-string parsing) so
+//     "; rm -rf /" injected via brief contents can't be exec'd.
+//   - Timeout has a hard ceiling so an agent can't pin a session.
+type MCPToolDef struct {
+	// Name is the tool name agents see (e.g. "bosun_lint"). Must
+	// start with "bosun_". Validate refuses anything else, including
+	// empty.
+	Name string `json:"name"`
+	// Description shows up in the agent's tools/list and matters more
+	// than the operator typically thinks — the agent's prompt-time
+	// reasoning over which tool to call is largely vibes from the
+	// description. Required, non-empty.
+	Description string `json:"description"`
+	// Command is the argv exec'd when the tool is called. argv[0] is
+	// PATH-resolved unless absolute. Args are passed verbatim — no
+	// shell interpretation. Required, non-empty.
+	Command []string `json:"command"`
+	// TimeoutSeconds bounds how long the tool can run. Zero/unset
+	// resolves to DefaultCustomToolTimeoutSeconds (30s). Values above
+	// MaxCustomToolTimeoutSeconds (300s) are refused at validate time
+	// so a misconfigured 1000 doesn't pin a session.
+	TimeoutSeconds int `json:"timeout_seconds,omitempty"`
+}
+
+// DefaultCustomToolTimeoutSeconds is the cap applied when an MCPToolDef
+// leaves TimeoutSeconds at zero. 30s matches the default for git
+// operations elsewhere in bosun — long enough for compile/test
+// commands of moderate size, short enough that a runaway returns
+// promptly.
+const DefaultCustomToolTimeoutSeconds = 30
+
+// MaxCustomToolTimeoutSeconds is the hard upper bound. Tools that
+// genuinely need to run longer should be invoked outside the MCP
+// path (e.g. as a normal shell command in the worktree).
+const MaxCustomToolTimeoutSeconds = 300
 
 // SuggestConfig configures the brief-authoring assistant (`bosun suggest`).
 // All fields are overridable via CLI flags on the suggest command.
@@ -368,6 +421,11 @@ func Load(repoRoot string) (Config, error) {
 	cfg.Docker.EnvPassthrough = overlay.Docker.EnvPassthrough
 	cfg.Docker.Hosts = overlay.Docker.Hosts
 
+	// MCPTools (Phase 5 #61) are adopted wholesale — no per-field
+	// merge — so clearing the list in the config file actually clears
+	// it. Defaults are empty so no override-when-set dance is needed.
+	cfg.MCPTools = overlay.MCPTools
+
 	if err := cfg.Validate(); err != nil {
 		return cfg, err
 	}
@@ -463,6 +521,39 @@ func (c Config) Validate() error {
 		}
 		if h.TimeoutSeconds < 0 {
 			return fmt.Errorf("hooks[%d]: timeout_seconds must be ≥ 0, got %d", i, h.TimeoutSeconds)
+		}
+	}
+	// Phase 5 #61: validate MCPTools defs. The exec layer doesn't get
+	// to see invalid defs — Load returns the validation error, so the
+	// server starts with built-ins only when an operator misconfigures.
+	seen := make(map[string]bool, len(c.MCPTools))
+	for i, def := range c.MCPTools {
+		name := strings.TrimSpace(def.Name)
+		if name == "" {
+			return fmt.Errorf("mcp_tools[%d]: name must not be empty", i)
+		}
+		if !strings.HasPrefix(name, "bosun_") {
+			return fmt.Errorf("mcp_tools[%d]: name %q must start with \"bosun_\" so it can't shadow non-bosun tools", i, name)
+		}
+		if seen[name] {
+			return fmt.Errorf("mcp_tools[%d]: duplicate name %q (each tool name must be unique)", i, name)
+		}
+		seen[name] = true
+		if strings.TrimSpace(def.Description) == "" {
+			return fmt.Errorf("mcp_tools[%d]: description must not be empty (agents pick tools by description)", i)
+		}
+		if len(def.Command) == 0 {
+			return fmt.Errorf("mcp_tools[%d]: command must not be empty (need argv[0] at minimum)", i)
+		}
+		if strings.TrimSpace(def.Command[0]) == "" {
+			return fmt.Errorf("mcp_tools[%d]: command[0] (the binary) must not be blank", i)
+		}
+		if def.TimeoutSeconds < 0 {
+			return fmt.Errorf("mcp_tools[%d]: timeout_seconds must be ≥ 0, got %d", i, def.TimeoutSeconds)
+		}
+		if def.TimeoutSeconds > MaxCustomToolTimeoutSeconds {
+			return fmt.Errorf("mcp_tools[%d]: timeout_seconds %d exceeds the %ds ceiling (tools that genuinely need longer should run outside the MCP path)",
+				i, def.TimeoutSeconds, MaxCustomToolTimeoutSeconds)
 		}
 	}
 	return nil

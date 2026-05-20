@@ -65,6 +65,13 @@ type Session struct {
 	// suppressed. The flag is independent of Running — a session can be
 	// "external" with no observed PID and still not flicker CRASHED.
 	RunningExternal bool
+	// RunningHeartbeat is set when the only evidence of liveness is a
+	// fresh `bosun_heartbeat` write — used by in-container agents that
+	// the host's PID-namespace-bound proc-scan can't see. Implies
+	// Running==true with RunningPID==0; the RUNNING column renders
+	// "heartbeat" to make the distinction visible. Phase 5 #63 — the
+	// "in-container shim" pattern, see docs/mcp-protocol.md.
+	RunningHeartbeat bool
 	// Stale is a derived flag — set when a WORKING (not CRASHED) session has
 	// a recorded heartbeat older than HeartbeatStaleAfter. Kept off the
 	// State enum so the wire-stable state values stay compact; UI surfaces
@@ -275,10 +282,11 @@ func Derive(ctx context.Context, c *git.Client, cfg config.Config, repoRoot stri
 		// the column, and CRASHED auto-transitions are suppressed.
 		// Otherwise fall through the attach-then-proc-scan ladder.
 		var (
-			running         bool
-			runPID          int
-			runningExternal bool
-			attachedDead    bool
+			running          bool
+			runPID           int
+			runningExternal  bool
+			runningHeartbeat bool
+			attachedDead     bool
 		)
 		if cfg.LivenessGate == config.LivenessGateExternal {
 			runningExternal = true
@@ -307,6 +315,21 @@ func Derive(ctx context.Context, c *git.Client, cfg config.Config, repoRoot stri
 					effectiveCmd = cfg.AgentCommand
 				}
 				runPID, running, _ = proc.RunningForCommand(wt.Path, effectiveCmd)
+			}
+
+			// Heartbeat fallback (Phase 5 #63 — in-container shim).
+			// In-container agents have a different PID namespace than
+			// the host, so neither attached-PID nor proc.RunningForCommand
+			// can see them. If they emit periodic bosun_heartbeat calls
+			// AND nothing else proved liveness, treat a fresh heartbeat
+			// (within HeartbeatStaleAfter) as evidence the agent is up.
+			// We don't fire this when the attached PID is dead — that's
+			// an explicit "I crashed", which should win over an old
+			// heartbeat that hasn't aged out yet.
+			if !running && !attachedDead && hbExists && time.Since(hbAt) < HeartbeatStaleAfter {
+				running = true
+				runPID = 0
+				runningHeartbeat = true
 			}
 		}
 
@@ -337,25 +360,26 @@ func Derive(ctx context.Context, c *git.Client, cfg config.Config, repoRoot stri
 		}
 
 		result = append(result, Session{
-			Number:          number,
-			Name:            name,
-			Label:           label,
-			Branch:          branch,
-			Path:            wt.Path,
-			Ahead:           ahead,
-			Dirty:           dirty,
-			Claimed:         claimed,
-			State:           state,
-			StateMsg:        msg,
-			Last:            last,
-			Running:         running,
-			RunningPID:      runPID,
-			RunningExternal: runningExternal,
-			Stale:           stale,
-			HeartbeatAt:     hbAt,
-			AgentCommand:    agentCmd,
-			DockerHost:      dockerHost,
-			Usage:           usageTotals,
+			Number:           number,
+			Name:             name,
+			Label:            label,
+			Branch:           branch,
+			Path:             wt.Path,
+			Ahead:            ahead,
+			Dirty:            dirty,
+			Claimed:          claimed,
+			State:            state,
+			StateMsg:         msg,
+			Last:             last,
+			Running:          running,
+			RunningPID:       runPID,
+			RunningExternal:  runningExternal,
+			RunningHeartbeat: runningHeartbeat,
+			Stale:            stale,
+			HeartbeatAt:      hbAt,
+			AgentCommand:     agentCmd,
+			DockerHost:       dockerHost,
+			Usage:            usageTotals,
 		})
 	}
 

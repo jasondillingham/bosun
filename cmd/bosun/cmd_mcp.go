@@ -87,6 +87,14 @@ func runMcp(_ *cobra.Command, socketPath string) error {
 	// run. Off by default (config.AgentSpawn.Enabled gates the tool
 	// itself); this just makes the dependencies available.
 	srv.WithSpawnSupport(rc.cfg, spawntree.NewStore(rc.repoRoot))
+
+	// Phase 5 #61: register operator-defined MCP tools from the
+	// config. Empty list (the default) is a no-op. The CLI log is
+	// the only operator-visible signal that custom tools were wired —
+	// the MCP server's tools/list reflects them in-band.
+	if names := bosunmcp.RegisterCustomTools(srv, rc.cfg.MCPTools); len(names) > 0 {
+		_, _ = fmt.Fprintf(os.Stdout, "bosun mcp: registered %d operator-defined tool(s): %v\n", len(names), names)
+	}
 	if err := srv.Listen(socketPath); err != nil {
 		return userErr("bind socket: %v", err)
 	}

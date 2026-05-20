@@ -296,6 +296,8 @@ bosun doctor                System health check before bosun goes to work
 bosun mcp [--socket path]   Run the MCP server (foreground)
 bosun tui                   Bubbletea control center
 bosun serve [--port N]      HTTP dashboard with SSE event stream
+bosun audit [--kind spawn|subtask|all] [--tail N] [--session L] [--outcome refused] [--json]
+                            Read the spawn / sub-task audit logs at .bosun/audit/
 ```
 
 ## Requirements

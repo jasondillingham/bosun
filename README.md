@@ -388,6 +388,9 @@ The safety contract holds — bosun never touches `main` except via `bosun merge
 **How do I undo a `bosun merge`?**
 `bosun merge --undo <sha>` resets your base branch to a prior SHA via the reflog, but only when `main` hasn't advanced past it. If you've already pushed or rebased past the merge, recovery is on you — the reflog is the source of truth.
 
+**How does bosun work under the hood?**
+[`docs/architecture.md`](./docs/architecture.md) — one read covering the operating model, state machine, claim graph, spawn tree, MCP protocol, liveness gate, trust model, failure modes, and design principles. Per-subsystem specs live alongside it for depth.
+
 **What happens if a session crashes mid-work?**
 The session goes to CRASHED state. `bosun rescue <session>` snapshots its dirty files to `.bosun/rescues/` so nothing is lost, and can relaunch the window. `bosun doctor` is the first thing to run if anything looks off.
 

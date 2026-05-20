@@ -116,6 +116,39 @@ type initOpts struct {
 // docs/uid-worktree-design.md). Example: "20260518-115400".
 const initRoundTimestampFmt = "20060102-150405"
 
+// looksLikeCrashedAddWorktree reports whether the directory at path
+// matches the shape `git worktree add` leaves behind when it crashes
+// or is killed mid-flight. Two recognized shapes:
+//
+//  1. The directory exists but is empty (mkdir succeeded, AddWorktree
+//     died before writing any git state).
+//  2. The directory contains only a `.git` file/dir (AddWorktree
+//     wrote the git pointer but the linked admin entry was rolled
+//     back, or AddWorktree died before writing the workspace tree).
+//
+// A directory containing any user-visible file (anything not named
+// `.git`) is treated as operator content, NOT auto-cleaned. The
+// resume path falls through to the "use --force" refusal so an
+// operator's hand-fix survives.
+//
+// 2026-05 bug-hunt #97. A non-existent path returns false — callers
+// already gate on os.Stat above.
+func looksLikeCrashedAddWorktree(path string) bool {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return false
+	}
+	if len(entries) == 0 {
+		return true
+	}
+	for _, e := range entries {
+		if e.Name() != ".git" {
+			return false
+		}
+	}
+	return true
+}
+
 // forceCleanupOp captures everything `--force` needs to wipe for one
 // label before init recreates it. Pre-built into a plan slice so the
 // execute step can report progress when something fails partway
@@ -491,6 +524,28 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 		if opts.resume && registeredByPath[path] {
 			// In-progress worktree — git knows about it, we'll reconcile
 			// (and unlock if necessary) inside the per-session loop.
+			continue
+		}
+		// Resume-time orphan reconciliation (2026-05 bug-hunt #97). The
+		// prior init may have crashed mid-`git worktree add` for this
+		// session: the on-disk directory was created (by mkdir or by an
+		// early phase of AddWorktree) but git's worktree-list never
+		// recorded it. The pre-flight refusal that fires below would
+		// then leave the operator stuck without --force.
+		//
+		// We only auto-clean when (a) the state breadcrumb names this
+		// label as the in-progress one AND (b) the dir contains
+		// nothing operator-visible — a crashed AddWorktree leaves
+		// either an empty dir or one with only a partial `.git`
+		// pointer. An operator who hand-mkdir'd and dropped a file
+		// inside gets the refusal below — same safety contract as
+		// before, just narrowed to give the recoverable crash case a
+		// path forward.
+		if opts.resume && istate.CurrentSession == label && looksLikeCrashedAddWorktree(path) {
+			_, _ = fmt.Fprintf(os.Stdout, "bosun: --resume: cleaning orphan worktree dir from previous crash: %s\n", path)
+			if err := os.RemoveAll(path); err != nil {
+				return internalErr("clean orphan worktree dir "+path, err)
+			}
 			continue
 		}
 		if !opts.force {

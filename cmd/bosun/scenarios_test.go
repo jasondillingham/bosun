@@ -4540,6 +4540,119 @@ func TestScenario_InitResumeForceOverwritesStaleDir(t *testing.T) {
 	s.AssertBranchExists("bosun/session-2")
 }
 
+// TestScenario_InitResumeAutoCleansCrashedAddWorktreeOrphan pins the
+// 2026-05 bug-hunt #97 fix: when init crashes mid-`git worktree add`,
+// the on-disk directory exists but isn't registered with git. The
+// previous behavior was to refuse with "already exists" — leaving the
+// operator stuck without --force. Now: if init.state names this
+// label as `current_session` AND the dir contains only crashed-
+// AddWorktree artifacts (empty or just a partial `.git` pointer),
+// resume auto-cleans it and continues.
+//
+// Distinct from `TestScenario_InitResumeRefusesUnregisteredDir` —
+// that test seeds a user-visible `hand-edit.txt` and asserts we
+// still refuse (so operator content survives). Together they pin
+// both sides of the safety contract.
+func TestScenario_InitResumeAutoCleansCrashedAddWorktreeOrphan(t *testing.T) {
+	s := newScenario(t)
+	s.WriteFile("plan.md", "## session-1\nA\n\n## session-2\nB\n")
+
+	// Seed the orphan: directory exists but contains nothing user-
+	// visible — the shape `git worktree add` leaves behind when it
+	// crashes after mkdir but before writing tree content. An empty
+	// dir is the most conservative version of the case the fix
+	// targets.
+	wt2 := s.WorktreePath(2)
+	if err := os.MkdirAll(wt2, 0o755); err != nil {
+		t.Fatalf("seed orphan dir: %v", err)
+	}
+
+	statePath := filepath.Join(s.repo, ".bosun", "init.state")
+	stateJSON := `{
+  "version": "v0.6",
+  "started_at": "2026-01-01T00:00:00Z",
+  "plan_path": "plan.md",
+  "total_sessions": 2,
+  "labels": ["session-1", "session-2"],
+  "completed_sessions": ["session-1"],
+  "current_session": "session-2",
+  "current_step": "git_worktree_add"
+}
+`
+	if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
+		t.Fatalf("mkdir .bosun: %v", err)
+	}
+	if err := os.WriteFile(statePath, []byte(stateJSON), 0o644); err != nil {
+		t.Fatalf("seed state: %v", err)
+	}
+	// Need a real session-1 worktree so the IsCompleted check finds
+	// what it expects.
+	s.GitIn(s.repo, "branch", "bosun/session-1")
+	s.GitIn(s.repo, "worktree", "add", s.WorktreePath(1), "bosun/session-1")
+
+	out := s.Bosun("init", "--resume", "--brief", "plan.md")
+	if !strings.Contains(out, "cleaning orphan worktree dir") {
+		t.Errorf("resume should announce the orphan cleanup:\n%s", out)
+	}
+	if strings.Contains(out, "already exists") {
+		t.Errorf("resume should auto-clean, not refuse:\n%s", out)
+	}
+	s.AssertWorktreeExists(2)
+	s.AssertBranchExists("bosun/session-2")
+}
+
+// TestScenario_InitResumePreservesOrphanWithOperatorContent pins the
+// safety side of the #97 fix: even on the `current_session` orphan
+// path, a directory containing user-visible content (anything not
+// named `.git`) must NOT be auto-cleaned. The operator could have
+// hand-fixed the worktree between the crash and the resume; we
+// refuse instead of clobbering.
+func TestScenario_InitResumePreservesOrphanWithOperatorContent(t *testing.T) {
+	s := newScenario(t)
+	s.WriteFile("plan.md", "## session-1\nA\n\n## session-2\nB\n")
+
+	wt2 := s.WorktreePath(2)
+	if err := os.MkdirAll(wt2, 0o755); err != nil {
+		t.Fatalf("seed orphan dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(wt2, "operator-hand-fix.txt"), []byte("don't touch\n"), 0o644); err != nil {
+		t.Fatalf("seed operator content: %v", err)
+	}
+
+	statePath := filepath.Join(s.repo, ".bosun", "init.state")
+	stateJSON := `{
+  "version": "v0.6",
+  "started_at": "2026-01-01T00:00:00Z",
+  "plan_path": "plan.md",
+  "total_sessions": 2,
+  "labels": ["session-1", "session-2"],
+  "completed_sessions": ["session-1"],
+  "current_session": "session-2",
+  "current_step": "git_worktree_add"
+}
+`
+	if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
+		t.Fatalf("mkdir .bosun: %v", err)
+	}
+	if err := os.WriteFile(statePath, []byte(stateJSON), 0o644); err != nil {
+		t.Fatalf("seed state: %v", err)
+	}
+	s.GitIn(s.repo, "branch", "bosun/session-1")
+	s.GitIn(s.repo, "worktree", "add", s.WorktreePath(1), "bosun/session-1")
+
+	out, err := s.BosunErr("init", "--resume", "--brief", "plan.md")
+	if err == nil {
+		t.Fatalf("resume should refuse when operator content is present:\n%s", out)
+	}
+	if !strings.Contains(out, "already exists") {
+		t.Errorf("expected 'already exists' refusal; got:\n%s", out)
+	}
+	// Operator's file must be untouched.
+	if _, statErr := os.Stat(filepath.Join(wt2, "operator-hand-fix.txt")); statErr != nil {
+		t.Errorf("operator file should remain: %v", statErr)
+	}
+}
+
 // TestScenario_InitResumeEndToEndAfterHang exercises the v0.6.1 trial's
 // recovery path end-to-end: start `bosun init 3` against a fake-git that
 // hangs on the 2nd worktree-add (relying on session-1's per-op timeout

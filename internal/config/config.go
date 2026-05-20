@@ -67,6 +67,12 @@ const (
 	LivenessGateAuto     = "auto"
 	LivenessGateExternal = "external"
 	DefaultLivenessGate  = LivenessGateAuto
+
+	// LauncherDocker is the Strategy value selecting the native Docker
+	// launcher (Phase 2 of docs/sandbox-launcher-design.md). Mirrored
+	// here so config.Validate can check for it without importing the
+	// launcher package (which would create a cycle).
+	LauncherDocker = "docker"
 )
 
 // Config is the resolved bosun config for a repo.
@@ -108,6 +114,11 @@ type Config struct {
 	// smaller than spawn — but the registry still has to record
 	// every call for the audit trail #14 set up.
 	AgentSubtask AgentSubtaskConfig `json:"agent_subtask"`
+	// Docker configures the native Docker launcher (Strategy "docker").
+	// Image is required when Launcher=="docker"; the rest are optional
+	// composition helpers for cache/credential mounts and env
+	// passthrough. See docs/sandbox-launcher-design.md Phase 2.
+	Docker DockerConfig `json:"docker"`
 	// LivenessGate selects how `bosun status` decides whether a WORKING
 	// session has CRASHED:
 	//
@@ -145,6 +156,28 @@ type AgentSpawnConfig struct {
 	// may spawn. Useful for "this one workflow can fan out, others
 	// stay single-shot."
 	AllowedForSessions []string `json:"allowed_for_sessions,omitempty"`
+}
+
+// DockerConfig configures the native Docker launcher (Strategy "docker").
+// Phase 2 of docs/sandbox-launcher-design.md. Operator brings their own
+// image; bosun composes the docker run argv and hands it to the OS
+// terminal launcher to open a window.
+type DockerConfig struct {
+	// Image is the container image to run, e.g.
+	// "ghcr.io/your-org/bosun-agent:latest". Required when
+	// Config.Launcher == "docker"; ignored otherwise. Validate refuses
+	// the combination of launcher=docker and an empty image so a
+	// misconfiguration fails fast at `bosun config validate` rather
+	// than at the first init.
+	Image string `json:"image"`
+	// ExtraMounts is `host:container` pairs added beyond the defaults
+	// (worktree + MCP socket). Each entry is passed verbatim to `-v`.
+	// Useful for shared caches, persistent credential dirs, etc.
+	ExtraMounts []string `json:"extra_mounts,omitempty"`
+	// EnvPassthrough lists host env var names to forward into the
+	// container by name (Docker reads the value from its parent shell
+	// at run time). Typical: ANTHROPIC_API_KEY, OLLAMA_HOST.
+	EnvPassthrough []string `json:"env_passthrough,omitempty"`
 }
 
 // AgentSubtaskConfig governs whether (and how much) agent-driven
@@ -205,6 +238,7 @@ func Defaults() Config {
 			Enabled:       DefaultAgentSubtaskEnabled,
 			MaxConcurrent: DefaultAgentSubtaskMaxConcurrent,
 		},
+		Docker:       DockerConfig{},
 		LivenessGate: DefaultLivenessGate,
 	}
 }
@@ -301,6 +335,15 @@ func Load(repoRoot string) (Config, error) {
 		cfg.LivenessGate = overlay.LivenessGate
 	}
 
+	// Docker: image is a scalar override; the two slices are adopted
+	// wholesale so an operator who clears them in the config file
+	// gets an empty list, not the defaults (defaults are nil anyway).
+	if overlay.Docker.Image != "" {
+		cfg.Docker.Image = overlay.Docker.Image
+	}
+	cfg.Docker.ExtraMounts = overlay.Docker.ExtraMounts
+	cfg.Docker.EnvPassthrough = overlay.Docker.EnvPassthrough
+
 	if err := cfg.Validate(); err != nil {
 		return cfg, err
 	}
@@ -333,8 +376,15 @@ func (c Config) Validate() error {
 	}
 	switch c.Launcher {
 	case "auto", "tmux", "terminal", "print":
+	case LauncherDocker:
+		// Docker launcher requires an image. Catch the misconfig at
+		// validate time so `bosun config validate` flags it before
+		// `bosun init` would crash on the first launch attempt.
+		if strings.TrimSpace(c.Docker.Image) == "" {
+			return fmt.Errorf("launcher=%q requires docker.image to be set", LauncherDocker)
+		}
 	default:
-		return fmt.Errorf("launcher must be one of auto|tmux|terminal|print, got %q", c.Launcher)
+		return fmt.Errorf("launcher must be one of auto|tmux|terminal|print|docker, got %q", c.Launcher)
 	}
 	switch c.LivenessGate {
 	case "", LivenessGateAuto, LivenessGateExternal:

@@ -37,6 +37,7 @@ var configSetKeys = []string{
 	"agent_spawn.enabled",
 	"agent_spawn.max_concurrent_sub_sessions",
 	"agent_spawn.max_depth",
+	"docker.image",
 }
 
 // configListKeys is the order `bosun config list` and `bosun config get` know
@@ -66,6 +67,7 @@ var configRecognizedKeys = []string{
 	"suggest",
 	"agent_spawn",
 	"agent_subtask",
+	"docker",
 }
 
 func newConfigCmd() *cobra.Command {
@@ -593,6 +595,10 @@ func formatConfigValue(cfg config.Config, key string) string {
 		return strconv.Itoa(cfg.AgentSpawn.MaxConcurrentSubSessions)
 	case "agent_spawn.max_depth":
 		return strconv.Itoa(cfg.AgentSpawn.MaxDepth)
+	case "agent_command":
+		return cfg.AgentCommand
+	case "docker.image":
+		return cfg.Docker.Image
 	}
 	return ""
 }
@@ -602,7 +608,7 @@ func formatConfigValue(cfg config.Config, key string) string {
 // user errors rather than silently coercing.
 func encodeConfigValue(key, value string) (json.RawMessage, error) {
 	switch key {
-	case "base_branch", "launcher", "verify_cmd", "session_prefix", "worktree_suffix_pattern", "liveness_gate":
+	case "base_branch", "launcher", "verify_cmd", "session_prefix", "worktree_suffix_pattern", "liveness_gate", "agent_command", "docker.image":
 		return json.Marshal(value)
 	case "default_session_count":
 		n, err := strconv.Atoi(value)

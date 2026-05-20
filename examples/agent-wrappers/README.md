@@ -102,8 +102,16 @@ Known limitations:
 ### `docker-claude.sh`
 
 Runs Claude Code inside a Docker container with the worktree
-bind-mounted. CPU/memory isolation without bosun owning a native
-Docker launcher — the wrapper does the orchestration.
+bind-mounted. CPU/memory isolation via wrapper-script orchestration.
+
+> **Bosun also ships a native Docker launcher** (`launcher=docker`
+> + `docker.image` in config). For most operators that's the
+> simpler path — `bosun init` composes the `docker run` directly,
+> no wrapper script in the loop. Use this wrapper instead when you
+> want custom command-line behavior bosun's native launcher
+> doesn't expose, or as a starting point for non-Claude
+> in-container agents. See the project README for the native
+> launcher syntax.
 
 Env vars:
 

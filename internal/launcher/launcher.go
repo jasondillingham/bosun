@@ -25,6 +25,12 @@ const (
 	StrategyTerminal Strategy = "terminal"
 	StrategyPrint    Strategy = "print"
 	StrategyAuto     Strategy = "auto"
+	// StrategyDocker rewrites opts.Command into a `docker run` invocation
+	// that bind-mounts the worktree + MCP socket, then defers to the OS
+	// terminal launcher to open the window. The host docker CLI's PID is
+	// what proc.Terminate targets on cleanup; signals propagate to the
+	// container automatically. Phase 2 of docs/sandbox-launcher-design.md.
+	StrategyDocker Strategy = "docker"
 )
 
 // Options controls a single launch.
@@ -37,6 +43,20 @@ type Options struct {
 	OpenAsTab     bool              // open as a new tab in the existing terminal instead of a new window (Ghostty only for now)
 	Env           map[string]string // extra env vars to set (e.g. GOCACHE)
 	Out           io.Writer         // where to print fallback commands; defaults to os.Stdout
+	// DockerImage is the container image to run when Strategy=docker.
+	// Required for StrategyDocker; ignored otherwise. Operator brings
+	// their own image — see examples/agent-images/ for a reference
+	// Dockerfile.
+	DockerImage string
+	// DockerExtraMounts is `host:container` pairs added beyond the
+	// default worktree + MCP-socket binds. Useful for shared caches,
+	// credential dirs, etc. Each entry is passed verbatim to `-v`.
+	DockerExtraMounts []string
+	// DockerEnvPassthrough is the list of env var names to forward
+	// from the host into the container. The values come from the
+	// host shell at launch time. Typical entries: ANTHROPIC_API_KEY,
+	// OLLAMA_HOST, OLLAMA_MODEL.
+	DockerEnvPassthrough []string
 }
 
 // Launch runs Options against the chosen strategy. Returns the resolved
@@ -55,6 +75,35 @@ func Launch(opts Options) (Strategy, error) {
 	chosen := opts.Strategy
 	if chosen == "" || chosen == StrategyAuto {
 		chosen = pickAuto()
+	}
+
+	// StrategyDocker is a command-rewrite layer, not a parallel launch
+	// path. We compose `docker run` and substitute it for opts.Command,
+	// then defer to the OS terminal launcher to actually open the
+	// window. Picks Terminal explicitly because tmux-inside-tmux
+	// composition with docker run gets weird (signal delivery, TTY
+	// allocation, etc.) and the operator's stated goal is isolation
+	// in a clearly-separate window anyway.
+	if chosen == StrategyDocker {
+		if opts.DockerImage == "" {
+			return chosen, fmt.Errorf("launcher: docker strategy requires DockerImage")
+		}
+		rewritten, err := dockerInvocation(opts)
+		if err != nil {
+			return chosen, fmt.Errorf("compose docker invocation: %w", err)
+		}
+		opts.Command = rewritten
+		// Run-via-shell mode: the rewritten command is a full shell
+		// pipeline (`env ... docker run ...`), not a bare binary.
+		// Terminal launchers wrap it in `bash -lc`, which interprets
+		// this correctly. tmux's `new-window` doesn't, so we force
+		// terminal mode here.
+		if err := launchTerminal(opts); err != nil {
+			_, _ = fmt.Fprintf(opts.Out, "bosun: docker launch failed for %s: %v — falling back to print\n", opts.SessionName, err)
+			printFallback(opts)
+			return StrategyPrint, nil
+		}
+		return chosen, nil
 	}
 
 	switch chosen {
@@ -514,6 +563,28 @@ func sortedKeys(m map[string]string) []string {
 // Suitable for POSIX shells.
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// shellQuoteIfNeeded wraps s in single quotes only when it contains
+// characters that the shell would otherwise interpret. Used by the
+// docker invocation composer so flags and bare image names stay
+// readable in the operator-visible pipeline. Empty strings get
+// quoted (so they survive as empty arguments rather than vanishing).
+func shellQuoteIfNeeded(s string) string {
+	if s == "" {
+		return "''"
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '_' || r == '-' || r == '.' || r == '/' || r == ':' || r == '=' || r == '+' || r == '@' || r == ',':
+		default:
+			return shellQuote(s)
+		}
+	}
+	return s
 }
 
 // IsolateCacheEnv returns the env-var map for a per-worktree isolated build cache.

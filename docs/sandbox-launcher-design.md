@@ -167,19 +167,49 @@ Non-goals for this proposal:
 
 ## 4. Recommended phasing
 
-1. **Phase 1: agent_command config** (see [agent-command-design.md](agent-command-design.md))
-   — operators can already get most of this via wrapper scripts.
-   `agent_command = "./docker-claude.sh"` where the script wraps
-   `docker run -v ...`. Zero bosun changes for Docker; SSH still
-   needs an MCP-socket-tunnel decision.
+1. **Phase 1: agent_command config — SHIPPED 2026-05-19.**
+   Per-session `agent_command` + the `examples/agent-wrappers/`
+   directory's `docker-claude.sh` and `ollama-aider.sh` cover the
+   wrapper-script path. See
+   [agent-command-design.md](agent-command-design.md).
 
-2. **Phase 2: `StrategyDocker`** with bind-mounted MCP socket.
-   Solves the local CPU isolation case. Defers SSH's harder
-   MCP-socket-across-network problem.
+2. **Phase 2: `StrategyDocker` — SHIPPED 2026-05-19.** Native
+   command-rewrite layer in `internal/launcher/docker.go`:
+   - `StrategyDocker` constant in `launcher.Options.Strategy`.
+   - `dockerInvocation(opts)` composes `docker run --rm -it` with
+     worktree + MCP socket bind mounts, plus operator-configured
+     extra mounts and env passthrough.
+   - The OS terminal launcher (Ghostty / Terminal.app / iTerm2 /
+     tmux / Linux / Windows) still opens the window; Docker is
+     the command running inside.
+   - `config.Docker` struct adds `image`, `extra_mounts`,
+     `env_passthrough`. `bosun config validate` refuses
+     `launcher=docker` with an empty image.
+   - Bosun's existing `proc.Terminate` cleanup hits the host
+     docker CLI, which propagates SIGTERM to the container — no
+     `RunningHandle` generalization required.
+   - In-container env: `BOSUN_MCP_SOCK` is rewritten to the
+     bind-mount path; `BOSUN_SESSION` is forwarded; `BOSUN_BIN`
+     is stripped (host path that doesn't exist in the container).
+   - Container naming: `bosun-<session-label>` so operators can
+     `docker stop` / `docker ps` against a known name.
 
-3. **Phase 3: revisit SSH** once Phase 2 is in production and the
-   `RunningHandle` generalization has landed. Pick a
-   worktree-sync strategy informed by real usage of phase 2.
+   Pinned by:
+   - `TestDockerInvocation_Minimal` / `_RequiresImage` /
+     `_RequiresWorktree` / `_BindsMCPSocket` /
+     `_ForwardsBosunSession` / `_SkipsBosunBin` /
+     `_ExtraMountsForwarded` / `_EnvPassthroughByName`.
+
+   Deferred from Phase 2:
+   - `bosun_attach` MCP tool so in-container agents can self-
+     register (today they need the `bosun` binary mounted into
+     the container; the wrapper README documents the workaround).
+   - Detached mode (`docker run -d`) and corresponding
+     `docker stop` cleanup path. Foreground-via-terminal is the
+     v1 UX; detached can land in a follow-up.
+
+3. **Phase 3: revisit SSH** once Phase 2 has real usage. Pick a
+   worktree-sync strategy informed by it.
 
 ## 5. Decision points to settle before Phase 2
 

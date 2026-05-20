@@ -190,9 +190,24 @@ bosun init 2 --brief plan.md
 Starter wrapper scripts live in [`examples/agent-wrappers/`](examples/agent-wrappers/);
 read the [README there](examples/agent-wrappers/README.md) for the
 contract and known limitations. The design that motivates the
-feature is [`docs/agent-command-design.md`](docs/agent-command-design.md);
-sandboxed launchers (Docker, SSH) get their own design treatment in
-[`docs/sandbox-launcher-design.md`](docs/sandbox-launcher-design.md).
+feature is [`docs/agent-command-design.md`](docs/agent-command-design.md).
+
+For Docker-isolated sessions, bosun ships a native `docker` launcher
+(no wrapper script needed):
+
+```sh
+bosun config set launcher docker
+bosun config set docker.image ghcr.io/your-org/bosun-agent:latest
+bosun init 4   # each session now runs in its own container
+```
+
+Bosun composes `docker run --rm -it -v <worktree>:/work ...` and
+hands it to your OS terminal launcher. Worktree + MCP socket are
+bind-mounted; operator-configured `docker.extra_mounts` and
+`docker.env_passthrough` cover credentials and runtime config. See
+[`docs/sandbox-launcher-design.md`](docs/sandbox-launcher-design.md)
+for the design and the deferred items (detached mode, in-container
+self-registration without mounting `bosun` itself).
 
 ## Commands
 

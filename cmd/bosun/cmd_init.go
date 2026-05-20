@@ -738,6 +738,13 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 				// tabs in the same window. Cleaner than 4 scattered windows.
 				OpenAsTab: i > 0,
 				Env:       env,
+				// Docker launcher fields. Ignored unless Strategy=docker.
+				// Validate() already refused launcher=docker with empty
+				// image at config load, so DockerImage is non-empty here
+				// when the strategy is docker.
+				DockerImage:          rc.cfg.Docker.Image,
+				DockerExtraMounts:    rc.cfg.Docker.ExtraMounts,
+				DockerEnvPassthrough: rc.cfg.Docker.EnvPassthrough,
 			})
 			if err != nil {
 				_, _ = fmt.Fprintf(os.Stderr, "  %s: launch failed: %v\n", c.label, err)

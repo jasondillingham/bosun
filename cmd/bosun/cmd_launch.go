@@ -142,6 +142,10 @@ func runLaunch(sessionArg string, opts launchOpts) error {
 		InitialPrompt: prompt,
 		OpenAsTab:     opts.openAsTab,
 		Env:           env,
+		// Docker launcher fields. Ignored unless Strategy=docker.
+		DockerImage:          rc.cfg.Docker.Image,
+		DockerExtraMounts:    rc.cfg.Docker.ExtraMounts,
+		DockerEnvPassthrough: rc.cfg.Docker.EnvPassthrough,
 	})
 	if err != nil {
 		return internalErr("launch "+s.Label, err)

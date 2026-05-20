@@ -123,6 +123,26 @@ const retryFollowupTemplate = `Your previous response failed validation: %s
 
 Please return a corrected JSON object that conforms to the schema. Output JSON only.`
 
+// overlapRefineTemplate is the Phase 5 #62 follow-up sent when the
+// schema-valid proposal still has cross-lane overlap or a dependency
+// cycle. The model gets the exact offending detail so it can edit
+// surgically (move one file, drop one pattern) instead of rewriting
+// the entire proposal from scratch.
+const overlapRefineTemplate = `Your previous proposal is schema-valid but the lanes are not disjoint: %s
+
+Please return a refined JSON object where the lanes touch strictly
+disjoint sets of files. Adjust ` + "`owned_files`" + ` patterns (split lanes,
+narrow globs, or move overlapping paths to one owner) — do NOT change
+the goal, the lane labels, or the session count. Output JSON only.`
+
+// maxProposeAttempts caps how many round-trips Propose will make
+// before giving up. Three matches the operator's intuition: one for
+// the initial swing, two refinement passes when needed. More attempts
+// rarely converge — the model either fixes the issue in the first
+// refinement or settles into a local minimum where it shuffles the
+// same overlap to different lanes.
+const maxProposeAttempts = 3
+
 // anthropicRequest mirrors the Messages API request body. Only the
 // fields bosun cares about are modeled here; extras would be silently
 // ignored by the API.
@@ -242,9 +262,13 @@ func NewClaudeProposer(opts ClaudeProposerOptions) (*ClaudeProposer, error) {
 }
 
 // Propose runs the goal + intel + N through Claude and returns a
-// validated LaneProposal. On a malformed or schema-invalid first
-// response, retries once with the validation error echoed back to the
-// model. After two failed attempts returns a ProposalError.
+// validated LaneProposal. Phase 5 #62: extends the original one-shot-
+// retry loop with overlap/cycle refinement. The model gets up to
+// maxProposeAttempts swings; each retry feeds the most recent
+// failure (schema OR overlap OR cycle) back so the model can edit
+// surgically. The conversation history is preserved across retries,
+// so the model sees its own previous proposals and is less likely to
+// thrash between two failing shapes.
 func (c *ClaudeProposer) Propose(ctx context.Context, goal string, intel RepoIntel, n int) (LaneProposal, error) {
 	if strings.TrimSpace(goal) == "" {
 		return LaneProposal{}, errors.New("bosun: goal must not be empty")
@@ -259,39 +283,58 @@ func (c *ClaudeProposer) Propose(ctx context.Context, goal string, intel RepoInt
 	}
 
 	userPrompt := fmt.Sprintf(userPromptTemplate, goal, n, string(intelJSON), n)
-
-	// First attempt: system prompt + initial user message.
 	messages := []anthropicMessage{{Role: "user", Content: userPrompt}}
-	firstText, err := c.call(ctx, messages)
-	if err != nil {
-		return LaneProposal{}, err
-	}
 
-	proposal, firstValidationErr := parseAndValidate(firstText, goal, n)
-	if firstValidationErr == nil {
-		return proposal, nil
-	}
+	var (
+		firstErr error
+		lastErr  error
+		lastText string
+	)
+	for attempt := 0; attempt < maxProposeAttempts; attempt++ {
+		text, err := c.call(ctx, messages)
+		if err != nil {
+			return LaneProposal{}, err
+		}
+		lastText = text
 
-	// Retry once. Carry the prior turn as context so the model can see
-	// what it produced and the validation error it triggered.
-	retryMessages := []anthropicMessage{
-		{Role: "user", Content: userPrompt},
-		{Role: "assistant", Content: firstText},
-		{Role: "user", Content: fmt.Sprintf(retryFollowupTemplate, firstValidationErr.Error())},
-	}
-	retryText, err := c.call(ctx, retryMessages)
-	if err != nil {
-		return LaneProposal{}, err
-	}
-	proposal, retryValidationErr := parseAndValidate(retryText, goal, n)
-	if retryValidationErr == nil {
+		proposal, parseErr := parseAndValidate(text, goal, n)
+		if parseErr != nil {
+			lastErr = parseErr
+			if firstErr == nil {
+				firstErr = parseErr
+			}
+			messages = append(messages,
+				anthropicMessage{Role: "assistant", Content: text},
+				anthropicMessage{Role: "user", Content: fmt.Sprintf(retryFollowupTemplate, parseErr.Error())},
+			)
+			continue
+		}
+
+		// Schema passed — now check the lane-level invariants
+		// (overlap, cycle). If those also pass we're done. If not,
+		// feed the detail back as a refinement turn — the prompt
+		// template is intentionally tighter than the schema retry,
+		// asking for a surgical edit rather than a full rewrite.
+		if _, validateErr := Validate(proposal, n); validateErr != nil {
+			lastErr = validateErr
+			if firstErr == nil {
+				firstErr = validateErr
+			}
+			messages = append(messages,
+				anthropicMessage{Role: "assistant", Content: text},
+				anthropicMessage{Role: "user", Content: fmt.Sprintf(overlapRefineTemplate, validateErr.Error())},
+			)
+			continue
+		}
+
+		// Both gates passed.
 		return proposal, nil
 	}
 
 	return LaneProposal{}, &ProposalError{
-		FirstError: firstValidationErr,
-		RetryError: retryValidationErr,
-		Raw:        retryText,
+		FirstError: firstErr,
+		RetryError: lastErr,
+		Raw:        lastText,
 	}
 }
 

@@ -192,9 +192,12 @@ func TestPropose_RetriesOnceOnBadOutput(t *testing.T) {
 }
 
 func TestPropose_FailsAfterRetry(t *testing.T) {
-	// Both replies fail validation (session count mismatch).
+	// All replies fail validation (session count mismatch). Phase 5
+	// #62 widened the loop to maxProposeAttempts (3) — the test
+	// queues three identical bad bodies so the loop exhausts.
 	bad := validProposalJSON("g", 1) // requesting 2, returning 1
 	srv, calls, _ := newStubServer(t, []string{
+		anthropicResponseEnvelope(bad),
 		anthropicResponseEnvelope(bad),
 		anthropicResponseEnvelope(bad),
 	})
@@ -202,17 +205,17 @@ func TestPropose_FailsAfterRetry(t *testing.T) {
 
 	_, err := p.Propose(context.Background(), "g", RepoIntel{}, 2)
 	if err == nil {
-		t.Fatal("expected ProposalError after two bad responses")
+		t.Fatal("expected ProposalError after all attempts failed")
 	}
-	if calls.Load() != 2 {
-		t.Errorf("calls = %d, want 2 (one retry, then give up)", calls.Load())
+	if calls.Load() != int32(maxProposeAttempts) {
+		t.Errorf("calls = %d, want %d (maxProposeAttempts)", calls.Load(), maxProposeAttempts)
 	}
 	var pe *ProposalError
 	if !errors.As(err, &pe) {
 		t.Fatalf("err type = %T, want *ProposalError", err)
 	}
 	if pe.FirstError == nil || pe.RetryError == nil {
-		t.Errorf("ProposalError should carry both first + retry errors: %+v", pe)
+		t.Errorf("ProposalError should carry both first + last errors: %+v", pe)
 	}
 }
 
@@ -226,15 +229,109 @@ func TestPropose_RejectsUnknownFields(t *testing.T) {
      "depends_on":[],"rationale":"r","work_to_do":["x"],"notes":"","extra_field":"nope"}
   ]
 }`
-	// Both calls return the same bad body so the proposer gives up.
-	srv, _, _ := newStubServer(t, []string{
-		anthropicResponseEnvelope(body),
-		anthropicResponseEnvelope(body),
-	})
+	// Queue maxProposeAttempts identical bad bodies so the loop
+	// exhausts. Phase 5 #62 widened the retry budget; this test
+	// proves the unknown-field rejection still surfaces after the
+	// model fails to self-correct.
+	replies := make([]string, maxProposeAttempts)
+	for i := range replies {
+		replies[i] = anthropicResponseEnvelope(body)
+	}
+	srv, _, _ := newStubServer(t, replies)
 	p := newTestProposer(t, srv.URL)
 	_, err := p.Propose(context.Background(), "g", RepoIntel{}, 1)
 	if err == nil {
 		t.Fatal("expected error for unknown fields")
+	}
+}
+
+// overlappingProposalJSON returns a schema-valid proposal where two
+// lanes claim overlapping owned_files patterns. Used to exercise the
+// Phase 5 #62 overlap-refinement path — the proposal must pass
+// parseAndValidate (schema) but fail Validate (lane-level invariants).
+func overlappingProposalJSON(goal string) string {
+	p := LaneProposal{Version: "v1", Goal: goal, Sessions: []Lane{
+		{
+			Label: "session-1", Scope: "auth",
+			OwnedFiles: []string{"internal/auth/**"}, AvoidFiles: []string{},
+			DependsOn: []string{}, Rationale: "r", WorkToDo: []string{"x"},
+		},
+		{
+			Label: "session-2", Scope: "auth (conflict)",
+			OwnedFiles: []string{"internal/auth/**"}, AvoidFiles: []string{},
+			DependsOn: []string{}, Rationale: "r", WorkToDo: []string{"y"},
+		},
+	}}
+	b, _ := json.Marshal(p)
+	return string(b)
+}
+
+// TestPropose_RefinesOnOverlap exercises the Phase 5 #62 path: the
+// first proposal is schema-valid but lanes overlap, so Propose
+// refines once and the second proposal is fully clean. Asserts on
+// both the call count and the body of the refinement turn — the
+// model gets the overlap detail spelled out so it can edit
+// surgically.
+func TestPropose_RefinesOnOverlap(t *testing.T) {
+	srv, calls, captured := newStubServer(t, []string{
+		anthropicResponseEnvelope(overlappingProposalJSON("g")),
+		anthropicResponseEnvelope(validProposalJSON("g", 2)),
+	})
+	p := newTestProposer(t, srv.URL)
+
+	proposal, err := p.Propose(context.Background(), "g", RepoIntel{}, 2)
+	if err != nil {
+		t.Fatalf("Propose: %v", err)
+	}
+	if calls.Load() != 2 {
+		t.Errorf("calls = %d, want 2 (one overlap refinement)", calls.Load())
+	}
+	if len(proposal.Sessions) != 2 {
+		t.Errorf("sessions = %d, want 2", len(proposal.Sessions))
+	}
+	// The refinement body should carry the assistant's first reply
+	// AND a refinement turn explaining the overlap.
+	if len(*captured) < 2 {
+		t.Fatalf("captured %d bodies, want 2", len(*captured))
+	}
+	refineBody := (*captured)[1]
+	if !strings.Contains(refineBody, "schema-valid") {
+		t.Errorf("refinement body should describe overlap as schema-valid: %s", refineBody)
+	}
+	if !strings.Contains(refineBody, "owned_files") {
+		t.Errorf("refinement body should mention owned_files: %s", refineBody)
+	}
+}
+
+// TestPropose_GivesUpAfterOverlapRefinementBudget: if the model
+// keeps producing overlapping proposals, Propose exhausts the
+// maxProposeAttempts budget and surfaces the overlap as a
+// ProposalError. We don't loop forever — three identical-shape
+// failures is plenty of signal that the model is stuck.
+func TestPropose_GivesUpAfterOverlapRefinementBudget(t *testing.T) {
+	replies := make([]string, maxProposeAttempts)
+	for i := range replies {
+		replies[i] = anthropicResponseEnvelope(overlappingProposalJSON("g"))
+	}
+	srv, calls, _ := newStubServer(t, replies)
+	p := newTestProposer(t, srv.URL)
+
+	_, err := p.Propose(context.Background(), "g", RepoIntel{}, 2)
+	if err == nil {
+		t.Fatal("expected ProposalError after exhausting refinement budget")
+	}
+	if calls.Load() != int32(maxProposeAttempts) {
+		t.Errorf("calls = %d, want %d", calls.Load(), maxProposeAttempts)
+	}
+	var pe *ProposalError
+	if !errors.As(err, &pe) {
+		t.Fatalf("err type = %T, want *ProposalError", err)
+	}
+	// Both first and last errors should be overlap errors (lane-level
+	// invariant failures), not schema errors.
+	var overlap *OverlapError
+	if !errors.As(pe.RetryError, &overlap) {
+		t.Errorf("last error should be *OverlapError, got %T: %v", pe.RetryError, pe.RetryError)
 	}
 }
 

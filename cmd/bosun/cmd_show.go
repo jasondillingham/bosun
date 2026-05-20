@@ -194,14 +194,16 @@ func renderShowText(rc *runCtx, s *session.Session) error {
 		}
 	}
 
-	// v0.9 spawn-tree info, if this session is part of one.
-	if tree := spawntree.NewStore(rc.repoRoot); tree != nil {
-		if parent, err := tree.ParentOf(s.Name); err == nil && parent != "" {
-			_, _ = fmt.Fprintf(os.Stdout, "Parent:   %s\n", parent)
-		}
-		if children, err := tree.ChildrenOf(s.Name); err == nil && len(children) > 0 {
-			_, _ = fmt.Fprintf(os.Stdout, "Children: %s\n", strings.Join(children, ", "))
-		}
+	// v0.9 spawn-tree info, if this session is part of one. NewStore
+	// always returns a non-nil *Store — the constructor doesn't have
+	// a failure mode — so the nil check that used to wrap this block
+	// was dead. Cleaned up in the 2026-05 bug hunt.
+	tree := spawntree.NewStore(rc.repoRoot)
+	if parent, err := tree.ParentOf(s.Name); err == nil && parent != "" {
+		_, _ = fmt.Fprintf(os.Stdout, "Parent:   %s\n", parent)
+	}
+	if children, err := tree.ChildrenOf(s.Name); err == nil && len(children) > 0 {
+		_, _ = fmt.Fprintf(os.Stdout, "Children: %s\n", strings.Join(children, ", "))
 	}
 
 	c, err := rc.claims.Read(s.Name)

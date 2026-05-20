@@ -57,9 +57,14 @@ const MaxSocketPathLen = 100
 // to for repoRoot. Prefers `<repoRoot>/.bosun/mcp.sock` (auto-gitignored
 // via the existing `.bosun/` pattern) when that fits inside
 // MaxSocketPathLen; otherwise falls back to a deterministic
-// `/tmp/bosun-<hash>.sock` keyed by the absolute repo path, so the same
-// repo always resolves to the same fallback socket and reconnects after
-// a restart land back on the same address.
+// `<os-temp>/bosun-<hash>.sock` keyed by the absolute repo path, so the
+// same repo always resolves to the same fallback socket and reconnects
+// after a restart land back on the same address.
+//
+// 2026-05 bug-hunt: this used to hardcode "/tmp", which doesn't exist
+// on Windows. os.TempDir() resolves to /tmp on POSIX hosts and
+// C:\Users\<name>\AppData\Local\Temp on Windows, so the fallback now
+// works cross-platform.
 func DefaultSocketPath(repoRoot string) string {
 	primary := filepath.Join(repoRoot, ".bosun", "mcp.sock")
 	if len(primary) <= MaxSocketPathLen {
@@ -70,7 +75,7 @@ func DefaultSocketPath(repoRoot string) string {
 		abs = repoRoot
 	}
 	sum := sha256.Sum256([]byte(abs))
-	return filepath.Join("/tmp", fmt.Sprintf("bosun-%s.sock", hex.EncodeToString(sum[:])[:12]))
+	return filepath.Join(os.TempDir(), fmt.Sprintf("bosun-%s.sock", hex.EncodeToString(sum[:])[:12]))
 }
 
 // Server wraps the MCP server with a Unix-socket listener and the bosun

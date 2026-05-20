@@ -59,10 +59,13 @@ func runTour(w io.Writer, r io.Reader, opts tourOpts) error {
 		return internalErr("locate bosun binary", err)
 	}
 
-	// Sandbox lives under /tmp per issue #15 — iCloud-managed paths
-	// silently strip worktree admin metadata under load and that's the
-	// last shape we want a new user to see during their first round.
-	rawSandbox, err := os.MkdirTemp("/tmp", "bosun-tour-")
+	// Sandbox lives under the OS temp dir per issue #15 — iCloud-managed
+	// paths silently strip worktree admin metadata under load and that's
+	// the last shape we want a new user to see during their first round.
+	// Empty string lets os.MkdirTemp pick os.TempDir() — /tmp on POSIX,
+	// %TEMP% on Windows. 2026-05 bug-hunt: previously hardcoded "/tmp"
+	// which made the tour subcommand unusable on Windows.
+	rawSandbox, err := os.MkdirTemp("", "bosun-tour-")
 	if err != nil {
 		return internalErr("create sandbox", err)
 	}

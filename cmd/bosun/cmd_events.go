@@ -171,6 +171,10 @@ func (p *eventsPrinter) onEvent(ev events.Event) {
 		// keep — round-tripping through bosunmcp.Event drops nothing.
 		out, err := json.Marshal(rec)
 		if err != nil {
+			// Marshal failure on a struct we just decoded successfully
+			// would be a Go runtime bug, but if it happens the operator
+			// shouldn't see output silently stop. 2026-05 bug-hunt fix.
+			_, _ = fmt.Fprintf(os.Stderr, "bosun events: re-marshal %s/%s: %v\n", rec.Session, rec.Kind, err)
 			return
 		}
 		_, _ = fmt.Fprintln(p.out, string(out))

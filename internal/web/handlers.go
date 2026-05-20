@@ -4,8 +4,10 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -195,7 +197,16 @@ func (s *Server) handleShow(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
-	_ = enc.Encode(row)
+	// We can't reset the status code here — headers are already
+	// flushed. The realistic encode-failure modes are (a) the
+	// response writer closed mid-write because the client
+	// disconnected, and (b) a corrupt session shape (vanishingly
+	// rare on Go's json package). Either way the operator should
+	// see SOMETHING in the daemon log instead of bosun silently
+	// shipping a half-formed response. 2026-05 bug-hunt fix.
+	if err := enc.Encode(row); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "bosun web: encode /api/show/%s response: %v\n", found.Name, err)
+	}
 }
 
 // enrichWithSpawnTree populates Parent / Children / Depth on each

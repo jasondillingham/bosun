@@ -145,8 +145,11 @@ func hasTool(tools []*mcpsdk.Tool, name string) bool {
 }
 
 // TestDefaultSocketPath covers both branches: short repo paths use the
-// in-repo `.bosun/mcp.sock`, long ones fall back to `/tmp/bosun-<hash>.sock`
-// with a stable, deterministic hash so reconnects line up after restarts.
+// in-repo `.bosun/mcp.sock`, long ones fall back to
+// `<os.TempDir>/bosun-<hash>.sock` with a stable, deterministic hash
+// so reconnects line up after restarts. 2026-05 bug-hunt: switched
+// from a hardcoded "/tmp" to os.TempDir() for Windows portability —
+// asserting on the OS-actual prefix instead of a literal string.
 func TestDefaultSocketPath(t *testing.T) {
 	// Short path: in-repo socket.
 	got := DefaultSocketPath("/tmp/short-repo")
@@ -158,12 +161,13 @@ func TestDefaultSocketPath(t *testing.T) {
 		t.Errorf("short repo path %q exceeds %d-byte limit", got, MaxSocketPathLen)
 	}
 
-	// Long path: should fall back to /tmp/bosun-<hash>.sock and stay
-	// well under the limit.
+	// Long path: should fall back to <os.TempDir>/bosun-<hash>.sock
+	// and stay well under the limit.
 	longRepo := "/tmp/" + strings.Repeat("a", 200)
 	got = DefaultSocketPath(longRepo)
-	if !strings.HasPrefix(got, "/tmp/bosun-") || !strings.HasSuffix(got, ".sock") {
-		t.Errorf("long repo path: got %q, want /tmp/bosun-<hash>.sock", got)
+	wantPrefix := filepath.Join(os.TempDir(), "bosun-")
+	if !strings.HasPrefix(got, wantPrefix) || !strings.HasSuffix(got, ".sock") {
+		t.Errorf("long repo path: got %q, want %s<hash>.sock", got, wantPrefix)
 	}
 	if len(got) > MaxSocketPathLen {
 		t.Errorf("fallback path %q exceeds %d-byte limit", got, MaxSocketPathLen)

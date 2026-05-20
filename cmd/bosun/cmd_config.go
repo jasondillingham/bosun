@@ -426,7 +426,15 @@ func runConfigInit(force bool) error {
 // key, then the JSON body. It is not valid JSON and is not loaded by
 // bosun — operators copy values out of it into config.json by hand.
 func buildConfigExample(c config.Config) string {
-	body, _ := json.MarshalIndent(c, "", "  ")
+	body, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		// Defensive: the Config struct contains only standard types,
+		// so MarshalIndent realistically cannot fail. If it does,
+		// surface the diagnostic instead of silently emitting an
+		// empty body that would leave the operator with a useless
+		// reference file. 2026-05 bug-hunt fix.
+		body = []byte(fmt.Sprintf("{\n  \"error\": %q\n}", err.Error()))
+	}
 	var b strings.Builder
 	b.WriteString("// bosun config — annotated reference. Documentation only;\n")
 	b.WriteString("// bosun reads .bosun/config.json, never this file. Copy values\n")

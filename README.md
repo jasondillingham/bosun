@@ -192,22 +192,39 @@ read the [README there](examples/agent-wrappers/README.md) for the
 contract and known limitations. The design that motivates the
 feature is [`docs/agent-command-design.md`](docs/agent-command-design.md).
 
-For Docker-isolated sessions, bosun ships a native `docker` launcher
-(no wrapper script needed):
+For **single-host** Docker isolation, bosun ships a native `docker`
+launcher (no wrapper script needed):
 
 ```sh
 bosun config set launcher docker
 bosun config set docker.image ghcr.io/your-org/bosun-agent:latest
-bosun init 4   # each session now runs in its own container
+bosun init 4   # each session runs in its own container, locally
 ```
 
 Bosun composes `docker run --rm -it -v <worktree>:/work ...` and
 hands it to your OS terminal launcher. Worktree + MCP socket are
 bind-mounted; operator-configured `docker.extra_mounts` and
-`docker.env_passthrough` cover credentials and runtime config. See
-[`docs/sandbox-launcher-design.md`](docs/sandbox-launcher-design.md)
-for the design and the deferred items (detached mode, in-container
-self-registration without mounting `bosun` itself).
+`docker.env_passthrough` cover credentials and runtime config.
+
+**Multi-host / remote-docker (offload sessions to one or many other
+machines) is NOT covered by the native launcher** — bind mounts and
+the MCP socket are local-only. That's tracked as Phase 3 in
+[`docs/sandbox-launcher-design.md`](docs/sandbox-launcher-design.md);
+the wrapper-script path (`docker-claude.sh` with SSH glue) is the
+workaround until Phase 3 lands.
+
+### Example config
+
+A fully annotated reference config lives at
+[`examples/config.example.json`](examples/config.example.json) —
+shows every supported key with placeholder values. Copy the JSON
+body (strip the `//` comment lines) into your repo's
+`.bosun/config.json` and edit. `.bosun/config.json` is gitignored
+by bosun itself; only the annotated example file is GitHub-tracked.
+
+Operators can also run `bosun config init` inside a repo to
+generate `.bosun/config.example.json` with current-version
+defaults — that's the same content, generated at runtime.
 
 ## Commands
 

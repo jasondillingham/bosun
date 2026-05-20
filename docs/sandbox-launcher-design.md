@@ -208,8 +208,130 @@ Non-goals for this proposal:
      `docker stop` cleanup path. Foreground-via-terminal is the
      v1 UX; detached can land in a follow-up.
 
-3. **Phase 3: revisit SSH** once Phase 2 has real usage. Pick a
-   worktree-sync strategy informed by it.
+3. **Phase 3: remote / multi-host docker (DEFERRED).** Phase 2's
+   local-only scope surfaced the real operator need within hours:
+   *"docker running on one or many other systems to offload the
+   workload."* The Phase 2 architecture (bind-mount the local
+   worktree, talk to a local MCP socket, kill the host docker CLI
+   PID) doesn't scale across hosts. Phase 3 has to solve four
+   distinct problems together:
+
+   ### 3.1 Connection to a remote daemon
+
+   Docker CLI already supports `DOCKER_HOST=ssh://user@host` and
+   `DOCKER_HOST=tcp://host:port`. The trivial plumbing is: add a
+   `docker.host` config field (or per-session brief clause), set
+   it as an env var in the launcher's Options.Env so the spawned
+   `docker run` resolves against the remote daemon.
+
+   But "trivial plumbing" hides the real architectural choice:
+   **does bosun own the host selection, or does the operator?**
+   Three plausible shapes:
+
+   - **Single static remote.** `docker.host: ssh://thor.local`.
+     Every session goes to thor. Cheapest. Doesn't deliver the
+     "spread across many systems" benefit.
+   - **Pool with operator placement.** `docker.hosts:
+     [ssh://thor, ssh://docker-server]` + brief clause
+     `(host: thor)` per session. Operator-decided.
+   - **Pool with bosun-picked placement.** Same config; bosun
+     round-robins or picks the least-loaded host. Requires
+     liveness + load probes; meaningful new surface area.
+
+   ### 3.2 Worktree availability on the remote host
+
+   Bind-mount `/local/path:/work` only works when `/local/path`
+   exists on the remote docker host. Three sub-options:
+
+   - **Operator pre-syncs.** Each remote host has the repo at a
+     known path; bosun assumes it's there. Brittle, manual.
+   - **Bosun rsyncs at launch + cleanup.** Up-front bandwidth on
+     init; results sync back on `bosun done`. Conflicts (remote
+     edits between syncs) are the operator's problem.
+   - **Remote clones from local, pushes back.** Each remote host
+     clones the repo over SSH at session-start, runs the agent,
+     pushes the session branch back to local on done. Cleanest
+     model — git is the source of truth. Cost: a real
+     `git daemon` or SSH-accessible bare repo on the bosun host.
+
+   Recommend the **remote-clones-then-pushes** approach. It maps
+   cleanly to bosun's existing model (each session is a branch),
+   it handles concurrent writes correctly via git, and the
+   operator already has SSH keys in place if `DOCKER_HOST=ssh://`
+   works.
+
+   ### 3.3 MCP socket across the network
+
+   Local Unix socket → remote container can't reach it. Three
+   sub-options:
+
+   - **SSH-tunnel the socket** at launch. `ssh -L
+     /remote/sock:/local/sock` per session. Auth via the same
+     SSH key DOCKER_HOST uses. Breaks if the SSH connection
+     drops mid-session.
+   - **Bosun listens on TCP** (`bosun mcp --tcp :PORT`) with a
+     shared secret token. Containers connect via
+     `BOSUN_MCP_TCP=host:port` + `BOSUN_MCP_TOKEN=...`. New
+     server-side auth code; net-new attack surface.
+   - **Reverse-proxy through the SSH connection.** `ssh -R
+     :unix:/local/sock:/remote/sock`. Forwards the listening
+     socket via the tunnel docker already uses. Cleanest for
+     ops; depends on OpenSSH version + per-host config.
+
+   Recommend the **reverse-proxy via SSH** approach. It reuses the
+   transport docker already needs, no new auth code on bosun's
+   side, and a dropped SSH session correctly invalidates the
+   socket (session goes CRASHED rather than silently disconnected).
+
+   ### 3.4 Cleanup + agent detection across hosts
+
+   `proc.Terminate` doesn't apply — the agent's PID is in the
+   remote container's PID namespace. Options:
+
+   - **`docker stop <name>` via the remote daemon.** Bosun already
+     names containers `bosun-<label>`. Add a `DockerCleanup`
+     helper that runs `docker stop bosun-<label>` against the
+     session's recorded `docker.host`. Reuses the existing
+     `bosun cleanup` orchestration; just swaps `proc.Terminate`
+     for the docker command when the session was launched on
+     a remote host.
+
+   For agent detection (`bosun status` RUNNING column): the
+   in-container agent self-registers via `bosun_attach` (MCP
+   tool — currently CLI-only, see Phase 2 deferred items). With
+   reverse-proxied MCP, the in-container `bosun_attach` call lands
+   on the host's MCP server and the attached-pid file is written
+   correctly. No process-table scan needed for remote agents.
+
+   ### 3.5 Decision points to settle before Phase 3 starts
+
+   - Single static host vs pool vs bosun-placement (see 3.1).
+   - Worktree-sync strategy: operator-pre-sync vs rsync vs
+     remote-clones-then-pushes (see 3.2; recommend
+     remote-clones).
+   - MCP plumbing: SSH-tunnel vs TCP+auth vs reverse-proxy (see
+     3.3; recommend reverse-proxy).
+   - Schema change: per-session "where did this run?" state. The
+     session state file gains a `docker_host` field; cleanup
+     reads it to know where to send `docker stop`.
+   - Whether `bosun_attach` graduates to a real MCP tool (see
+     Phase 2 deferred items) — Phase 3 depends on it for
+     in-container self-registration to work cleanly.
+
+   ### 3.6 Out of scope for Phase 3 (or any other phase)
+
+   - Sub-host placement (Kubernetes namespaces, Docker
+     Swarm services, etc.) — bosun isn't competing with
+     orchestrators.
+   - Live session migration between hosts. Sessions stay where
+     they were launched.
+   - Cross-host MCP coordination (one MCP daemon per host, vs
+     one global daemon). Default is one global on the bosun
+     host; remote daemons can be a Phase 4 if anyone asks.
+
+   Phase 3 is intentionally a real round of its own — easily
+   2-3 sessions of work + a separate design + planning doc
+   refining 3.1–3.5 before any code lands.
 
 ## 5. Decision points to settle before Phase 2
 

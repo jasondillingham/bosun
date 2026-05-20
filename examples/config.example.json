@@ -1,0 +1,75 @@
+// bosun config — annotated reference. Documentation only;
+// bosun reads .bosun/config.json, never this file. Copy values
+// you want into .bosun/config.json (strip these `//` comment
+// lines first — JSON forbids comments).
+//
+// `bosun config init` generates the same file at
+// `.bosun/config.example.json` inside your repo with current
+// defaults; this checked-in copy is the source-controlled
+// reference operators can read on GitHub before cloning.
+//
+// All keys are optional. Omitted keys keep their documented
+// defaults. `bosun config validate` checks types + known keys.
+//
+// base_branch:             git branch new sessions branch off of.
+// session_prefix:          leading segment for bosun branch names.
+// worktree_suffix_pattern: appended to repo dirname per worktree.
+//                          Must contain {N}; must not start with it.
+// default_session_count:   how many sessions `bosun init` creates by default.
+// isolate_cache_default:   copy build cache into each worktree at init time.
+// launcher:                'auto' (tmux→terminal→print), 'tmux', 'terminal',
+//                          'print', or 'docker' (single-host containerized).
+// verify_cmd:              command brief preamble tells the agent to run
+//                          before `bosun done`. Default: 'make check'.
+// agent_command:           default binary bosun launches per session.
+//                          Override per-session via brief's `(command: ...)`
+//                          clause. Point at examples/agent-wrappers/* for
+//                          Ollama or Docker wrapper-script paths.
+// docker.image:            required when launcher='docker'. The container
+//                          image to run; operator brings their own.
+// docker.extra_mounts:     `host:container` pairs added beyond the defaults
+//                          (worktree + MCP socket). Useful for credentials
+//                          and shared caches.
+// docker.env_passthrough:  host env var names forwarded by name only.
+//                          Docker resolves the value from its parent shell
+//                          at run time. Typical: ANTHROPIC_API_KEY,
+//                          OLLAMA_HOST, OLLAMA_MODEL.
+// suggest:                 brief-authoring assistant config. api_key_env
+//                          names a var, not the key itself.
+// agent_spawn:             gates the v0.9 bosun_spawn MCP tool. Off by
+//                          default; enable to let parent agents fan out.
+// hooks:                   operator-defined shell commands at lifecycle
+//                          moments. Events: pre-init, post-init,
+//                          post-done, pre-merge, post-merge, pre-cleanup,
+//                          post-cleanup.
+//
+{
+  "base_branch": "main",
+  "session_prefix": "bosun",
+  "worktree_suffix_pattern": "-bosun-{N}",
+  "default_session_count": 4,
+  "isolate_cache_default": false,
+  "launcher": "auto",
+  "verify_cmd": "make check",
+  "agent_command": "claude",
+  "docker": {
+    "image": "ghcr.io/your-org/bosun-agent:latest",
+    "extra_mounts": [
+      "~/.claude:/root/.claude"
+    ],
+    "env_passthrough": [
+      "ANTHROPIC_API_KEY"
+    ]
+  },
+  "suggest": {
+    "model": "claude-sonnet-4-6",
+    "max_tokens": 8000,
+    "api_key_env": "ANTHROPIC_API_KEY"
+  },
+  "agent_spawn": {
+    "enabled": false,
+    "max_concurrent_sub_sessions": 3,
+    "max_depth": 1
+  },
+  "hooks": []
+}

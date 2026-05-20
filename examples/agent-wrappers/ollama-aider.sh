@@ -17,7 +17,7 @@
 # Configuration (all env-var-driven so this script stays generic):
 #
 #   OLLAMA_HOST    URL of the Ollama server. Default: http://localhost:11434
-#                  Example: http://thor.local:11434 or http://10.66.0.45:11434
+#                  Example: http://your-ollama-host.local:11434
 #   OLLAMA_MODEL   Model tag served by that host. Default: llama3.1:8b
 #                  Example: qwen2.5-coder:7b, codellama:13b, etc.
 #

@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/jasondillingham/bosun/internal/session"
@@ -317,6 +320,169 @@ func TestPlanCleanup_LivenessGate(t *testing.T) {
 				t.Fatalf("reason %q does not contain %q", p.reason, c.reasonContains)
 			}
 		})
+	}
+}
+
+// recordedDockerStop captures one invocation of the docker-stop seam
+// for assertion in tests. Threadsafe so a future parallel test can
+// hammer stopRemoteContainer without racing on the slice.
+type recordedDockerStop struct {
+	host      string
+	container string
+}
+
+// dockerStopRecorder builds a swap-in for dockerStopFn that records
+// every call and returns the supplied error. Returns the recorded
+// invocations slice via a pointer the test can read after the fact.
+func dockerStopRecorder(returnErr error) (fn func(context.Context, string, string) error, calls *[]recordedDockerStop) {
+	var mu sync.Mutex
+	got := []recordedDockerStop{}
+	calls = &got
+	fn = func(_ context.Context, host, container string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		got = append(got, recordedDockerStop{host: host, container: container})
+		return returnErr
+	}
+	return fn, calls
+}
+
+// withDockerStopFn swaps dockerStopFn for the duration of one test and
+// restores the production implementation on cleanup. Wraps the seam
+// pattern in something t.Cleanup-aware so test bodies don't have to
+// remember the restore step (and don't race on parallel subtests via
+// the package var).
+func withDockerStopFn(t *testing.T, fn func(context.Context, string, string) error) {
+	t.Helper()
+	prev := dockerStopFn
+	dockerStopFn = fn
+	t.Cleanup(func() { dockerStopFn = prev })
+}
+
+// TestStopRemoteContainer_NoHostNoOp pins the local-only path: when a
+// session has no persisted DockerHost, stopRemoteContainer must not
+// invoke the docker-stop seam at all. The shape that protects the
+// today's-default invocation (`bosun cleanup` against local docker)
+// from spurious shell-outs whenever the caller forgets to guard.
+func TestStopRemoteContainer_NoHostNoOp(t *testing.T) {
+	fn, calls := dockerStopRecorder(nil)
+	withDockerStopFn(t, fn)
+	if ok := stopRemoteContainer("", "session-1"); ok {
+		t.Errorf("stopRemoteContainer(host=\"\") = true, want false (no-op)")
+	}
+	if len(*calls) != 0 {
+		t.Errorf("expected 0 docker-stop calls for empty host, got %d: %+v", len(*calls), *calls)
+	}
+}
+
+// TestStopRemoteContainer_HostInvokesStop is the positive path: a
+// session with a persisted DockerHost calls dockerStopFn with the
+// host and the bosun-<label> container name. Lane 4's cleanup-side
+// contract — without this, remote containers leak when the operator
+// runs `bosun cleanup` on the same workstation.
+func TestStopRemoteContainer_HostInvokesStop(t *testing.T) {
+	fn, calls := dockerStopRecorder(nil)
+	withDockerStopFn(t, fn)
+	if ok := stopRemoteContainer("ssh://thor", "session-1"); !ok {
+		t.Fatalf("stopRemoteContainer succeeded path returned false")
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("expected 1 docker-stop call, got %d: %+v", len(*calls), *calls)
+	}
+	got := (*calls)[0]
+	if got.host != "ssh://thor" {
+		t.Errorf("host = %q, want %q", got.host, "ssh://thor")
+	}
+	if got.container != "bosun-session-1" {
+		t.Errorf("container = %q, want %q", got.container, "bosun-session-1")
+	}
+}
+
+// TestStopRemoteContainer_HostInvokesStop_NamedLabel covers the
+// named-session form (`bosun init auth`) so the container-name shape
+// stays `bosun-<label>` rather than accidentally encoding the numeric
+// Session.Number for the named path (which is zero).
+func TestStopRemoteContainer_HostInvokesStop_NamedLabel(t *testing.T) {
+	fn, calls := dockerStopRecorder(nil)
+	withDockerStopFn(t, fn)
+	if ok := stopRemoteContainer("ssh://thor", "auth"); !ok {
+		t.Fatalf("stopRemoteContainer succeeded path returned false")
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("expected 1 docker-stop call, got %d", len(*calls))
+	}
+	if got := (*calls)[0].container; got != "bosun-auth" {
+		t.Errorf("container = %q, want %q", got, "bosun-auth")
+	}
+}
+
+// TestStopRemoteContainer_FailureNonFatal pins the log-and-continue
+// contract: a docker-stop failure (host unreachable, daemon down,
+// container already gone) must not propagate to the caller. The
+// local cleanup must still proceed regardless — the operator can
+// recover the remote state by hand once the host is back.
+func TestStopRemoteContainer_FailureNonFatal(t *testing.T) {
+	fn, calls := dockerStopRecorder(errors.New("ssh: no route to host"))
+	withDockerStopFn(t, fn)
+	if ok := stopRemoteContainer("ssh://offline", "session-1"); ok {
+		t.Errorf("stopRemoteContainer on docker-stop failure = true, want false")
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("expected 1 call even on failure, got %d", len(*calls))
+	}
+}
+
+// TestStopRemoteContainer_RoutedThroughSessionDockerHost ensures the
+// caller pattern used by executeCleanupOne / runRemove (read
+// s.DockerHost, hand it to stopRemoteContainer) produces the expected
+// stop call. This is the "did lane 4 wire the Session field to the
+// stop helper correctly?" guard — without it, a future refactor that
+// swaps the field name silently breaks remote cleanup.
+func TestStopRemoteContainer_RoutedThroughSessionDockerHost(t *testing.T) {
+	fn, calls := dockerStopRecorder(nil)
+	withDockerStopFn(t, fn)
+
+	remoteSession := &session.Session{
+		Label:      "session-3",
+		DockerHost: "ssh://thor",
+	}
+	localSession := &session.Session{
+		Label: "session-4",
+		// DockerHost zero-value — local docker.
+	}
+
+	stopRemoteContainer(remoteSession.DockerHost, remoteSession.Label)
+	stopRemoteContainer(localSession.DockerHost, localSession.Label)
+
+	if len(*calls) != 1 {
+		t.Fatalf("expected exactly 1 docker-stop call (remote only), got %d: %+v",
+			len(*calls), *calls)
+	}
+	want := recordedDockerStop{host: "ssh://thor", container: "bosun-session-3"}
+	if (*calls)[0] != want {
+		t.Errorf("call = %+v, want %+v", (*calls)[0], want)
+	}
+}
+
+// TestStopRemoteContainer_ConcurrentCallsRecorded sanity-checks the
+// dockerStopRecorder helper itself under concurrent invocation, so a
+// future test that exercises stopRemoteContainer from several
+// goroutines doesn't race on the calls slice.
+func TestStopRemoteContainer_ConcurrentCallsRecorded(t *testing.T) {
+	fn, calls := dockerStopRecorder(nil)
+	withDockerStopFn(t, fn)
+	const n = 10
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			stopRemoteContainer("ssh://thor", fmt.Sprintf("session-%d", idx))
+		}(i)
+	}
+	wg.Wait()
+	if len(*calls) != n {
+		t.Errorf("expected %d recorded calls, got %d", n, len(*calls))
 	}
 }
 

@@ -592,7 +592,8 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 		}
 
 		agentCmd := resolveAgentCommand(label)
-		made = append(made, created{label: label, branch: branch, path: path, command: agentCmd, dockerHost: resolveDockerHost(label)})
+		dockerHost := resolveDockerHost(label)
+		made = append(made, created{label: label, branch: branch, path: path, command: agentCmd, dockerHost: dockerHost})
 
 		// Persist the resolved agent command so future bosun commands
 		// (launch, status's proc-scan, cleanup-time IsAgent derivation)
@@ -604,6 +605,20 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 		if agentCmd != rc.cfg.AgentCommand {
 			if err := rc.state.WriteAgentCommand(label, agentCmd); err != nil {
 				return internalErr("persist agent command for "+label, err)
+			}
+		}
+
+		// Phase 3 lane 4: persist the resolved DockerHost so cleanup
+		// and remove can target the right daemon weeks later, without
+		// having to re-resolve the brief + flag + config chain (the
+		// brief may have been edited or deleted by then). Skip the
+		// persist when the resolved host is empty — that means "no
+		// remote override; target local docker," which is the absence-
+		// of-file semantics ReadDockerHost honors. Same shape as the
+		// WriteAgentCommand skip above.
+		if dockerHost != "" {
+			if err := rc.state.WriteDockerHost(label, dockerHost); err != nil {
+				return internalErr("persist docker host for "+label, err)
 			}
 		}
 

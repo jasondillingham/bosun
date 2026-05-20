@@ -258,6 +258,80 @@ func TestAgentCommand_EmptyRejected(t *testing.T) {
 	}
 }
 
+// TestDockerHost_WriteReadClear walks the persistence lifecycle for
+// the per-session Docker host (Phase 3 lane 4 of remote-docker-plan.md):
+// missing → write → read → Clear-includes-it. Mirrors the agent-command
+// pattern so a future reviewer can see the surface is symmetric.
+func TestDockerHost_WriteReadClear(t *testing.T) {
+	dir := t.TempDir()
+	s := NewStore(dir)
+
+	// Missing file: ok=false, no error.
+	if host, ok, err := s.ReadDockerHost(dir, "session-1"); err != nil || ok || host != "" {
+		t.Fatalf("ReadDockerHost(missing) = (%q, %v, %v), want (\"\", false, nil)", host, ok, err)
+	}
+
+	if err := s.WriteDockerHost("session-1", "ssh://thor"); err != nil {
+		t.Fatal(err)
+	}
+	host, ok, err := s.ReadDockerHost(dir, "session-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || host != "ssh://thor" {
+		t.Fatalf("ReadDockerHost after write = (%q, %v), want (%q, true)", host, ok, "ssh://thor")
+	}
+
+	// Clear must drop the docker-host marker alongside done/stuck/
+	// agent-command. Without this, a reaped session's stale host
+	// would resurface the next time a label slot got reused — and
+	// `bosun cleanup` would try to talk to the wrong daemon.
+	if err := s.Clear("session-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := s.ReadDockerHost(dir, "session-1"); ok {
+		t.Errorf("ReadDockerHost after Clear should report ok=false")
+	}
+}
+
+// TestDockerHost_EmptyRejected guards against persisting an empty host
+// — that's a programming error, not "fall back to local docker."
+// Callers wanting the no-override semantics should not call
+// WriteDockerHost at all.
+func TestDockerHost_EmptyRejected(t *testing.T) {
+	dir := t.TempDir()
+	s := NewStore(dir)
+	if err := s.WriteDockerHost("session-1", ""); err == nil {
+		t.Errorf("WriteDockerHost(\"\") returned nil; want error")
+	}
+}
+
+// TestDockerHost_MalformedBodyTreatedAsAbsent mirrors the
+// agent-command pattern: a hand-edited or truncated file shouldn't
+// strand the operator with a poison value. Multi-line bodies in
+// particular get treated as absent so a future format change
+// (multi-line endpoints) doesn't get silently parsed as a single line.
+func TestDockerHost_MalformedBodyTreatedAsAbsent(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := filepath.Join(dir, ".bosun", "state")
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, body := range []string{"", "  \n", "ssh://thor\nssh://other\n"} {
+		if err := os.WriteFile(filepath.Join(stateDir, "session-1.docker-host"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		s := NewStore(dir)
+		host, ok, err := s.ReadDockerHost(dir, "session-1")
+		if err != nil {
+			t.Errorf("ReadDockerHost(body=%q) err = %v, want nil", body, err)
+		}
+		if ok || host != "" {
+			t.Errorf("ReadDockerHost(body=%q) = (%q, %v), want (\"\", false)", body, host, ok)
+		}
+	}
+}
+
 // TestAgentCommand_MalformedBodyTreatedAsAbsent mirrors the
 // attached-pid pattern: a hand-edited or truncated file shouldn't
 // strand the operator with a poison value. Multi-line bodies in

@@ -95,6 +95,15 @@ type Session struct {
 	// Empty when no override was set — callers fall back to
 	// config.AgentCommand. Phase 1 of docs/agent-command-design.md.
 	AgentCommand string
+	// DockerHost is the per-session Docker daemon endpoint persisted
+	// at init time via the brief's `(host: ...)` clause, the
+	// `bosun init --docker-host` flag, or config.Docker.Hosts[0].
+	// Empty when no remote host was resolved — callers target the
+	// local Docker socket. Phase 3 lane 4 of docs/remote-docker-plan.md.
+	// Cleanup/remove consult this to issue a `docker stop` against
+	// the right daemon before pruning the worktree; launch re-exports
+	// it as DOCKER_HOST so a relaunched session lands on the same host.
+	DockerHost string
 }
 
 // GetLabel + SetTreeInfo satisfy spawntree.SessionLike so a
@@ -139,6 +148,14 @@ type StateReader interface {
 	// this on every init so launcher, status, and proc.Running can all
 	// reach the right binary without re-resolving config + brief.
 	ReadAgentCommand(repoRoot, sessionName string) (command string, ok bool, err error)
+	// ReadDockerHost returns the Docker daemon endpoint persisted for
+	// sessionName at init time. `ok` is false when no remote host was
+	// configured for the session and the caller should treat that as
+	// "target local docker." Phase 3 lane 4 of remote-docker-plan.md;
+	// consumed by cleanup/remove (which need it to `docker stop` on
+	// the right daemon) and by `bosun launch` (which re-exports it as
+	// DOCKER_HOST for relaunches).
+	ReadDockerHost(repoRoot, sessionName string) (host string, ok bool, err error)
 }
 
 type ClaimsReader interface {
@@ -226,6 +243,13 @@ func Derive(ctx context.Context, c *git.Client, cfg config.Config, repoRoot stri
 		// state dir.
 		agentCmd, _, _ := sr.ReadAgentCommand(repoRoot, name)
 
+		// Persisted Docker host (Phase 3 lane 4 of remote-docker-plan).
+		// Same best-effort contract: a missing/unreadable file means
+		// "target local docker." Cleanup/remove read s.DockerHost to
+		// know whether to issue a remote `docker stop`; launch re-
+		// exports it as DOCKER_HOST for relaunches.
+		dockerHost, _, _ := sr.ReadDockerHost(repoRoot, name)
+
 		// Liveness gate: in "external" mode the operator has declared
 		// they're driving workers from outside the proc-scan's view
 		// (Claude Code Task sub-agents, CI agents, …). Skip the entire
@@ -312,6 +336,7 @@ func Derive(ctx context.Context, c *git.Client, cfg config.Config, repoRoot stri
 			Stale:           stale,
 			HeartbeatAt:     hbAt,
 			AgentCommand:    agentCmd,
+			DockerHost:      dockerHost,
 		})
 	}
 

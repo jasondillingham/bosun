@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jasondillingham/bosun/internal/git"
 	"github.com/jasondillingham/bosun/internal/history"
@@ -16,6 +19,61 @@ import (
 	"github.com/jasondillingham/bosun/internal/spawntree"
 	"github.com/spf13/cobra"
 )
+
+// remoteDockerStopTimeout caps the `docker stop` invocation cleanup/
+// remove issue when reaping a session whose container lives on a
+// remote daemon. The host may be unreachable (Wi-Fi off, SSH bridge
+// down, daemon stopped); we don't want to wedge the entire cleanup
+// run waiting for it. 30s mirrors Docker's own default stop grace.
+const remoteDockerStopTimeout = 30 * time.Second
+
+// dockerStopFn is the test seam for the remote `docker stop` call
+// issued during cleanup/remove. Production uses dockerStopExec which
+// shells out via exec.Command; tests swap it out to record arguments
+// and return canned errors. Kept a package var (not an interface)
+// because it has exactly one production implementation and the
+// per-call substitution shape is the simplest thing that works.
+var dockerStopFn = dockerStopExec
+
+// dockerStopExec runs `docker stop <container>` against the daemon
+// identified by host (exported as DOCKER_HOST in the child's env).
+// Best-effort: the caller log-and-continues on error because the
+// local cleanup must still proceed even when the remote daemon is
+// unreachable — the operator can recover by running `docker stop`
+// against the host manually once it's back.
+func dockerStopExec(ctx context.Context, host, container string) error {
+	cmd := exec.CommandContext(ctx, "docker", "stop", container)
+	// Inherit the parent env so PATH / SSH agent / etc. carry through,
+	// then layer DOCKER_HOST on top. Without inheriting, docker can't
+	// find the SSH binary (host=ssh://...) or fall back to the
+	// operator's ~/.docker/config.json for credential helpers.
+	cmd.Env = append(os.Environ(), "DOCKER_HOST="+host)
+	return cmd.Run()
+}
+
+// stopRemoteContainer issues the remote `docker stop` for a session
+// being reaped. Returns true on success so the caller can phrase the
+// status line accurately ("terminated remote container ..."). Failure
+// is logged but never returned — cleanup/remove must finish the local
+// teardown regardless of whether the remote daemon was reachable.
+//
+// containerName follows the bosun convention `bosun-<label>` (mirrors
+// what the Docker launcher already produces in
+// internal/launcher/docker.go).
+func stopRemoteContainer(host, label string) bool {
+	if host == "" {
+		return false
+	}
+	container := "bosun-" + label
+	ctx, cancel := context.WithTimeout(context.Background(), remoteDockerStopTimeout)
+	defer cancel()
+	if err := dockerStopFn(ctx, host, container); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "bosun: warning: docker stop %s on %s failed: %v\n", container, host, err)
+		return false
+	}
+	printf("  terminated remote container %s on %s\n", container, host)
+	return true
+}
 
 func newCleanupCmd() *cobra.Command {
 	var (
@@ -324,6 +382,16 @@ func executeCleanupOne(rc *runCtx, p cleanupPlan) error {
 	}); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "bosun: warning: archive history for %s: %v\n", p.s.Name, err)
 	}
+
+	// Phase 3 lane 4: if the session was launched against a remote
+	// Docker daemon, ask that daemon to stop the container BEFORE we
+	// wipe the local PID — the host PID we'd otherwise terminate is
+	// just the SSH/docker-cli wrapper, not the agent itself. A failed
+	// stop is logged-and-continued: the host may be unreachable but
+	// the local cleanup must still proceed (the operator can recover
+	// by running `docker stop` against the host manually once it's
+	// back). Empty DockerHost is the local-only signal — no-op.
+	stopRemoteContainer(p.s.DockerHost, p.s.Label)
 
 	// If a Claude Code agent is still running in this worktree, signal
 	// it before removing the directory. Without this, `bosun cleanup`

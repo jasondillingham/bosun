@@ -219,14 +219,14 @@ func (s *Store) Attached(repoRoot, sessionName string) (int, bool, error) {
 // use — without it, Clear racing MarkDone could remove the marker
 // MarkDone just wrote.
 //
-// Removes: done, stuck, agent-command. Heartbeat and attached-pid are
-// left alone (heartbeat is observability; attached-pid is the operator
-// re-attaching after reap and is handled separately).
+// Removes: done, stuck, agent-command, docker-host. Heartbeat and
+// attached-pid are left alone (heartbeat is observability; attached-pid
+// is the operator re-attaching after reap and is handled separately).
 func (s *Store) Clear(sessionName string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return lockfile.WithLock(filepath.Join(s.dir(), ".lock"), func() error {
-		for _, suffix := range []string{"done", "stuck", "agent-command"} {
+		for _, suffix := range []string{"done", "stuck", "agent-command", "docker-host"} {
 			err := os.Remove(s.path(sessionName, suffix))
 			if err != nil && !errors.Is(err, fs.ErrNotExist) {
 				return fmt.Errorf("remove %s: %w", s.path(sessionName, suffix), err)
@@ -278,6 +278,67 @@ func (s *Store) ReadAgentCommand(repoRoot, sessionName string) (string, bool, er
 		store = NewStore(repoRoot)
 	}
 	body, ok, err := readIfExists(store.path(sessionName, "agent-command"))
+	if err != nil {
+		return "", false, err
+	}
+	if !ok {
+		return "", false, nil
+	}
+	body = strings.TrimSpace(body)
+	if body == "" || strings.ContainsAny(body, "\n\r") {
+		return "", false, nil
+	}
+	return body, true, nil
+}
+
+// WriteDockerHost persists the resolved Docker host endpoint for
+// sessionName to .bosun/state/<sessionName>.docker-host. Body is the
+// host string + newline. Used at `bosun init` time (Phase 3 lane 4 of
+// docs/remote-docker-plan.md) so later `bosun launch`, `bosun cleanup`,
+// and `bosun remove` can target the same remote daemon without
+// re-resolving the brief + config + CLI flag chain.
+//
+// Empty host is rejected — callers should skip the persist entirely
+// when the resolved host is empty (meaning "no override; use local
+// docker"). That keeps the no-file-on-disk state semantically distinct
+// from a write of "".
+//
+// Cross-process safe via the same flock the DONE/STUCK markers use.
+func (s *Store) WriteDockerHost(sessionName, host string) error {
+	if host == "" {
+		return fmt.Errorf("WriteDockerHost: host must not be empty")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := os.MkdirAll(s.dir(), 0o750); err != nil {
+		return fmt.Errorf("mkdir %s: %w", s.dir(), err)
+	}
+	return lockfile.WithLock(filepath.Join(s.dir(), ".lock"), func() error {
+		body := host + "\n"
+		if err := os.WriteFile(s.path(sessionName, "docker-host"), []byte(body), 0o600); err != nil {
+			return fmt.Errorf("write docker-host: %w", err)
+		}
+		return nil
+	})
+}
+
+// ReadDockerHost returns the persisted Docker host endpoint for
+// sessionName. `ok` is false (host="") when no docker-host file is
+// present — callers should treat that as "no remote override; target
+// local docker." A malformed file (binary garbage, multi-line content,
+// empty after trim) is treated as "no registration" rather than an
+// error so a hand-edited file degrades gracefully — same shape as
+// ReadAgentCommand.
+//
+// Used by session.Derive (via StateReader) and by cleanup/remove to
+// know whether they need to issue a remote `docker stop` before
+// pruning the worktree.
+func (s *Store) ReadDockerHost(repoRoot, sessionName string) (string, bool, error) {
+	store := s
+	if repoRoot != s.repoRoot {
+		store = NewStore(repoRoot)
+	}
+	body, ok, err := readIfExists(store.path(sessionName, "docker-host"))
 	if err != nil {
 		return "", false, err
 	}

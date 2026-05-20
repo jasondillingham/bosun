@@ -58,6 +58,12 @@ type fakeState struct {
 	// Tests exercising the Phase 1 per-session override populate this;
 	// legacy tests leave it nil and the reader returns ok=false.
 	agentCommands map[string]string
+	// dockerHosts maps session name → persisted Docker host endpoint
+	// (Phase 3 lane 4). Tests covering the remote-docker plumbing
+	// populate this; legacy tests leave it nil and the reader returns
+	// ok=false (so Session.DockerHost stays "" — the local-docker
+	// signal).
+	dockerHosts map[string]string
 }
 
 func (f *fakeState) Read(_, name string) (State, string, error) {
@@ -89,6 +95,14 @@ func (f *fakeState) ReadAgentCommand(_, name string) (string, bool, error) {
 	}
 	cmd, ok := f.agentCommands[name]
 	return cmd, ok, nil
+}
+
+func (f *fakeState) ReadDockerHost(_, name string) (string, bool, error) {
+	if f.dockerHosts == nil {
+		return "", false, nil
+	}
+	host, ok := f.dockerHosts[name]
+	return host, ok, nil
 }
 
 type fakeClaims struct{ counts map[string]int }
@@ -596,6 +610,58 @@ func TestDerive_ExternalGate_SkipsCrashed(t *testing.T) {
 	}
 	if got[0].Running {
 		t.Errorf("Running = true, want false (external gate skips proc-scan; no PID claimed)")
+	}
+}
+
+// TestDerive_PopulatesDockerHost pins Phase 3 lane 4's contract:
+// when the StateReader reports a persisted Docker host for a session,
+// Derive copies it into Session.DockerHost so cleanup/remove/launch
+// can consult it without re-reading the state file. Sessions without
+// a persisted host get DockerHost="" — the local-docker signal.
+func TestDerive_PopulatesDockerHost(t *testing.T) {
+	r := &fakeRunner{
+		t: t,
+		worktree: strings.Join([]string{
+			"worktree /repo",
+			"HEAD aaa",
+			"branch refs/heads/main",
+			"",
+			"worktree /repo-bosun-1",
+			"HEAD bbb",
+			"branch refs/heads/bosun/session-1",
+			"",
+			"worktree /repo-bosun-2",
+			"HEAD ccc",
+			"branch refs/heads/bosun/session-2",
+			"",
+		}, "\n"),
+		revCount: map[string]string{
+			"/repo-bosun-1": "0\n",
+			"/repo-bosun-2": "0\n",
+		},
+		status: map[string]string{
+			"/repo-bosun-1": "",
+			"/repo-bosun-2": "",
+		},
+	}
+	c := &git.Client{Runner: r}
+	got, err := Derive(context.Background(), c, config.Defaults(), "/repo",
+		&fakeState{dockerHosts: map[string]string{
+			"session-1": "ssh://thor",
+			// session-2 deliberately absent: stays local.
+		}},
+		&fakeClaims{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d sessions, want 2", len(got))
+	}
+	if got[0].DockerHost != "ssh://thor" {
+		t.Errorf("session-1 DockerHost = %q, want %q", got[0].DockerHost, "ssh://thor")
+	}
+	if got[1].DockerHost != "" {
+		t.Errorf("session-2 DockerHost = %q, want \"\" (no persisted host)", got[1].DockerHost)
 	}
 }
 

@@ -213,6 +213,14 @@ func runRemove(cmd *cobra.Command, sessionArg string, force, ignoreRunning bool)
 		}
 	}
 
+	// Phase 3 lane 4: stop the remote container first if the session
+	// was launched against a remote Docker daemon — the local PID
+	// (when present) is just the SSH/docker-cli wrapper, and ignoring
+	// the remote leaves an orphaned container running on the host.
+	// Best-effort: log-and-continue on a failed stop so the local
+	// teardown still proceeds when the host is unreachable.
+	stopRemoteContainer(s.DockerHost, s.Label)
+
 	// Terminate any agent still running in this worktree before the
 	// dir disappears. Mirrors the cleanup path; the operator chose to
 	// remove the session, so a still-running agent should go too.

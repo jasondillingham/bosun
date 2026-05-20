@@ -138,15 +138,20 @@ func runLaunch(sessionArg string, opts launchOpts) error {
 		command = rc.cfg.AgentCommand
 	}
 
-	// Phase 3 lane 1: DOCKER_HOST plumbing. Mirror init's
-	// resolveDockerHost precedence on the launch path so a relaunched
-	// session lands on the same remote daemon: --docker-host CLI flag
-	// > config.docker.hosts[0]. Brief clauses are init-time concerns
-	// (the brief might not exist anymore by relaunch); lane 4 will
-	// persist the chosen host per-session so cleanup can recover it.
-	if opts.dockerHost != "" {
+	// Phase 3 lanes 1 + 4: DOCKER_HOST plumbing. A relaunched session
+	// must land on the same remote daemon it was originally init'd
+	// against, so the precedence ladder is:
+	//   --docker-host CLI flag > persisted Session.DockerHost > config.docker.hosts[0]
+	// Brief clauses are init-time concerns (the brief might not even
+	// exist anymore by relaunch); the persisted DockerHost — populated
+	// by lane 4 from .bosun/state/<label>.docker-host — is what
+	// preserves the operator's per-session intent across the gap.
+	switch {
+	case opts.dockerHost != "":
 		env["DOCKER_HOST"] = opts.dockerHost
-	} else if len(rc.cfg.Docker.Hosts) > 0 {
+	case s.DockerHost != "":
+		env["DOCKER_HOST"] = s.DockerHost
+	case len(rc.cfg.Docker.Hosts) > 0:
 		env["DOCKER_HOST"] = rc.cfg.Docker.Hosts[0]
 	}
 

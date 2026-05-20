@@ -341,6 +341,8 @@ bosun audit [--kind spawn|subtask|all] [--tail N] [--session L] [--outcome refus
                             Read the spawn / sub-task audit logs at .bosun/audit/
 bosun cost [--by session|day] [--since 7d] [--session L] [--json]
                             Roll up LLM cost + tokens across sessions (Phase 4 ledger)
+bosun spawn <parent> --brief <plan.md> [--launch]
+                            Spawn sub-sessions under <parent> from a brief (CLI analogue of bosun_spawn)
 ```
 
 ## Requirements

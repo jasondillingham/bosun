@@ -90,6 +90,7 @@ worktree, with one place to see what every session is doing.`,
 		newHistoryCmd(),
 		newAuditCmd(),
 		newCostCmd(),
+		newSpawnCmd(),
 	)
 
 	return root

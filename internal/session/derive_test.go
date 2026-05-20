@@ -123,6 +123,87 @@ func (f *fakeClaims) CountFor(_ string, name string) (int, error) {
 	return f.counts[name], nil
 }
 
+// TestDerive_SubSessionsWithDots pins the 2026-05 follow-up #99
+// fix: a sub-session created by bosun_spawn lands at
+// `<parent>.<suffix>` (e.g. `session-1.frontend`). Pre-fix, two
+// layers conspired to hide them from Derive:
+//   1. The branch regex `[a-z][a-z0-9-]*` rejected the dot.
+//   2. The numeric-parse `strconv.Atoi("1.frontend")` errored and
+//      the loop hit `continue` — hiding even the labels that did
+//      match a looser regex.
+// Result was sub-sessions silently absent from bosun status / list
+// despite their branches + worktrees existing on disk.
+func TestDerive_SubSessionsWithDots(t *testing.T) {
+	r := &fakeRunner{
+		t: t,
+		worktree: strings.Join([]string{
+			"worktree /repo",
+			"HEAD aaa",
+			"branch refs/heads/main",
+			"",
+			"worktree /repo-bosun-1",
+			"HEAD bbb",
+			"branch refs/heads/bosun/session-1",
+			"",
+			"worktree /repo-bosun-1.frontend",
+			"HEAD ccc",
+			"branch refs/heads/bosun/session-1.frontend",
+			"",
+			"worktree /repo-bosun-1.backend",
+			"HEAD ddd",
+			"branch refs/heads/bosun/session-1.backend",
+			"",
+		}, "\n"),
+		revCount: map[string]string{
+			"/repo-bosun-1":          "0\n",
+			"/repo-bosun-1.frontend": "0\n",
+			"/repo-bosun-1.backend":  "0\n",
+		},
+		status: map[string]string{
+			"/repo-bosun-1":          "",
+			"/repo-bosun-1.frontend": "",
+			"/repo-bosun-1.backend":  "",
+		},
+	}
+	c := &git.Client{Runner: r}
+	got, err := Derive(context.Background(), c, config.Defaults(), "/repo", &fakeState{}, &fakeClaims{})
+	if err != nil {
+		t.Fatalf("Derive: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d sessions, want 3 (parent + 2 sub-sessions): %+v", len(got), got)
+	}
+	wantLabels := map[string]bool{
+		"session-1":          false,
+		"session-1.frontend": false,
+		"session-1.backend":  false,
+	}
+	for _, s := range got {
+		if _, ok := wantLabels[s.Label]; !ok {
+			t.Errorf("unexpected label %q in derived sessions", s.Label)
+		}
+		wantLabels[s.Label] = true
+	}
+	for lbl, seen := range wantLabels {
+		if !seen {
+			t.Errorf("expected label %q missing from derived sessions", lbl)
+		}
+	}
+	// Parent keeps its Number; sub-sessions land as named (Number==0).
+	for _, s := range got {
+		switch s.Label {
+		case "session-1":
+			if s.Number != 1 {
+				t.Errorf("parent Number = %d, want 1", s.Number)
+			}
+		case "session-1.frontend", "session-1.backend":
+			if s.Number != 0 {
+				t.Errorf("sub-session %q Number = %d, want 0 (named-session convention)", s.Label, s.Number)
+			}
+		}
+	}
+}
+
 func TestDerive_SortsAndFilters(t *testing.T) {
 	r := &fakeRunner{
 		t: t,

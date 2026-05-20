@@ -189,10 +189,20 @@ func Derive(ctx context.Context, c *git.Client, cfg config.Config, repoRoot stri
 		return nil, fmt.Errorf("list worktrees: %w", err)
 	}
 
-	// Matches any bosun-managed branch: numeric session-N form or a bare
-	// label. The label charset (lower ASCII, digits, dashes, must start
-	// with a letter) is also enforced on init via ValidateLabel.
-	branchRe := regexp.MustCompile(`^refs/heads/` + regexp.QuoteMeta(cfg.SessionPrefix) + `/([a-z][a-z0-9-]*)$`)
+	// Matches any bosun-managed branch: numeric session-N form, bare
+	// label, OR dot-separated sub-session label (parent.suffix). The
+	// label charset (lower ASCII, digits, dashes, optional dot-joined
+	// segments, must start with a letter) is also enforced on init
+	// via ValidateLabel (labelRe below).
+	//
+	// 2026-05 follow-up grind #99: the pre-fix regex `[a-z][a-z0-9-]*`
+	// rejected sub-session branches like `bosun/session-1.frontend`,
+	// so bosun_spawn-created sub-sessions silently disappeared from
+	// `bosun status` and `bosun list` despite their branches +
+	// worktrees existing. Adding the dot-segment alternation makes
+	// Derive consistent with the labelRe charset that ValidateLabel
+	// has accepted since v0.9.
+	branchRe := regexp.MustCompile(`^refs/heads/` + regexp.QuoteMeta(cfg.SessionPrefix) + `/([a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)*)$`)
 
 	var result []Session
 	for _, wt := range worktrees {
@@ -211,8 +221,16 @@ func Derive(ctx context.Context, c *git.Client, cfg config.Config, repoRoot stri
 		label := m[1]
 		// Numbered sessions populate Number; named sessions leave it at 0
 		// (and ParseLabel rejects "session-0"/"session-" forms upstream).
+		//
+		// 2026-05 follow-up grind #99: sub-sessions land as
+		// `<parent>.<suffix>` (e.g. `session-1.frontend`). The dotted
+		// form isn't itself numeric, so we leave Number at 0 — the
+		// parent-identity lookup happens through the spawn-tree layer,
+		// not via the label's leading-`session-N` prefix. Pre-fix,
+		// `strconv.Atoi("1.frontend")` errored and the loop continued,
+		// hiding every sub-session from `bosun status` / `bosun list`.
 		number := 0
-		if rest, ok := strings.CutPrefix(label, "session-"); ok {
+		if rest, ok := strings.CutPrefix(label, "session-"); ok && !strings.Contains(rest, ".") {
 			if n, err := strconv.Atoi(rest); err == nil && n >= 1 {
 				number = n
 			} else {

@@ -101,6 +101,16 @@ func runLaunch(sessionArg string, opts launchOpts) error {
 	if opts.isolateCache {
 		env = launcher.IsolateCacheEnv(s.Path)
 	}
+	// Export the session label so wrappers can self-register via
+	// `bosun attach $BOSUN_SESSION --pid $$`. Same rationale as the
+	// init --launch path.
+	env["BOSUN_SESSION"] = s.Label
+	// Bosun binary path, so wrappers can find it without depending
+	// on $PATH being configured in the launched shell. See cmd_init
+	// for the rationale.
+	if exe, exeErr := os.Executable(); exeErr == nil {
+		env["BOSUN_BIN"] = exe
+	}
 	if info, err := ensureMcp(rc.repoRoot); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "bosun: warning: MCP autostart failed: %v\n", err)
 	} else {

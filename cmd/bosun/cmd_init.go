@@ -714,6 +714,20 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 			if mcpSocket != "" {
 				env[bosunmcp.SocketEnv] = mcpSocket
 			}
+			// Export the session label so wrappers can self-register
+			// via `bosun attach $BOSUN_SESSION --pid $$`. Without this,
+			// `bosun status` can't detect agents whose basename isn't
+			// in the default allowlist (claude / claude-code / code-cli)
+			// — exactly what every wrapper script produces after exec.
+			env["BOSUN_SESSION"] = c.label
+			// Export the absolute path to the bosun binary that's
+			// running so wrappers can find it without depending on
+			// $PATH being configured for the launched shell. Many
+			// users install via `go install` into ~/go/bin/ which
+			// isn't on a default macOS login PATH.
+			if exe, exeErr := os.Executable(); exeErr == nil {
+				env["BOSUN_BIN"] = exe
+			}
 			strategy, err := launcher.Launch(launcher.Options{
 				Strategy:      launcher.Strategy(rc.cfg.Launcher),
 				WorktreePath:  c.path,

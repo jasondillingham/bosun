@@ -19,11 +19,40 @@ When bosun launches a session, it invokes:
   the Unix socket).
 - **`$BOSUN_SESSION`** is set to the session label (e.g.
   `session-1`).
+- **`$BOSUN_BIN`** is the absolute path to the bosun binary that
+  launched the session. Use this in your wrapper instead of
+  relying on `bosun` being on `$PATH` — `go install` puts the
+  binary in `$GOPATH/bin/` which isn't on a default macOS login
+  shell's PATH.
 - The initial prompt is passed as **`$1`**. It's empty when bosun
   has nothing to seed.
 
 Any executable that respects that contract works. The examples
 here are starting points — copy, edit, point bosun at your fork.
+
+### Self-registration (important for non-claude agents)
+
+If your wrapper `exec`s into a binary whose basename isn't
+`claude` / `claude-code` / `code-cli`, bosun's proc-scan won't
+find it — `bosun status` will show RUNNING as `—` and
+`bosun cleanup` won't terminate the agent on reap.
+
+Both example wrappers self-register via:
+
+```sh
+bosun_bin="${BOSUN_BIN:-$(command -v bosun 2>/dev/null || true)}"
+if [ -n "${BOSUN_SESSION:-}" ] && [ -x "$bosun_bin" ]; then
+    "$bosun_bin" attach "$BOSUN_SESSION" --pid $$ >/dev/null 2>&1 || true
+fi
+exec your-agent ...
+```
+
+The `$$` before `exec` is the PID that the exec'd binary will run
+as (POSIX `exec` preserves the PID). Bosun records that PID in
+`.bosun/state/<session>.attached-pid`, and the liveness gate
+trusts it ahead of the proc-scan. Subsequent `bosun status`
+correctly shows RUNNING; `bosun cleanup` SIGTERMs the right
+process before removing the worktree.
 
 ## Examples in this directory
 

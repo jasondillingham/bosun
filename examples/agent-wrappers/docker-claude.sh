@@ -105,6 +105,16 @@ env_args+=(-e "BOSUN_MCP_SOCK=/work/.bosun/mcp.sock")
 cmd_args=()
 [ -n "$prompt" ] && cmd_args=("$prompt")
 
+# Self-register with bosun so `bosun status` sees the container as
+# the agent for this session and `bosun cleanup` can target it. The
+# registered PID is the docker CLI process — when bosun terminates
+# it, Docker propagates the signal to the container (--init or
+# --signal-proxy default behavior). Best-effort.
+bosun_bin="${BOSUN_BIN:-$(command -v bosun 2>/dev/null || true)}"
+if [ -n "${BOSUN_SESSION:-}" ] && [ -x "$bosun_bin" ]; then
+    "$bosun_bin" attach "$BOSUN_SESSION" --pid $$ >/dev/null 2>&1 || true
+fi
+
 exec docker run --rm -it \
     --name "$container_name" \
     -w /work \

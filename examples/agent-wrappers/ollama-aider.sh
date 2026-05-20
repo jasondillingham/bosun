@@ -90,4 +90,17 @@ if [ -n "$prompt" ]; then
     args+=(--message "$prompt")
 fi
 
+# Self-register with bosun before exec'ing into aider. The PID
+# stays the same across exec, so $$ is the PID aider will run as.
+# Without this, `bosun status` can't see the wrapper-launched agent
+# (aider's process basename is "python", not in the default
+# allowlist) and `bosun cleanup` won't terminate it on reap.
+#
+# Best-effort: failure to register only loses RUNNING-column
+# accuracy + agent-kill on cleanup. The session still works.
+bosun_bin="${BOSUN_BIN:-$(command -v bosun 2>/dev/null || true)}"
+if [ -n "${BOSUN_SESSION:-}" ] && [ -x "$bosun_bin" ]; then
+    "$bosun_bin" attach "$BOSUN_SESSION" --pid $$ >/dev/null 2>&1 || true
+fi
+
 exec aider "${args[@]}"

@@ -14,6 +14,7 @@ package mcp
 // should reference if they need to talk about tools by name in Go code.
 const (
 	ToolAnnounce      = "bosun_announce"
+	ToolAttach        = "bosun_attach"
 	ToolCheck         = "bosun_check"
 	ToolCheckTree     = "bosun_check_tree"
 	ToolClaim         = "bosun_claim"

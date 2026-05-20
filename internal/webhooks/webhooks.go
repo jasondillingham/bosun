@@ -228,9 +228,42 @@ func deliverOne(ctx context.Context, d WebhookDef, event string, env map[string]
 	return nil
 }
 
+// safeEnvelopeKeys is the allowlist of env keys forwarded to
+// FormatPlain webhook bodies. Everything outside this set is
+// deliberately dropped — agent-controlled free-text fields
+// (BOSUN_DONE_MESSAGE, BOSUN_STUCK_MESSAGE) used to ride through
+// the envelope's `env` map, which meant an agent that put a stray
+// API key in `bosun done --message "..."` would ship it to the
+// configured webhook URL. Security audit C1+H1 (2026-05) closed
+// that path by switching to a curated set.
+//
+// New keys added here must be either (a) operator-configured at
+// hook-fire time or (b) structured non-free-text from bosun's own
+// state derivation. Anything an agent can write arbitrary strings
+// into stays off this list — use FormatSlack / FormatDiscord
+// (which only forwards a buildText-shaped one-liner) if you need
+// to surface a message to humans.
+var safeEnvelopeKeys = []string{
+	// Session identity + structure
+	"BOSUN_REPO_ROOT",
+	"BOSUN_SESSION_LABEL",
+	"BOSUN_SESSION_COUNT",
+	"BOSUN_BASE_BRANCH",
+	"BOSUN_BRANCH",
+	// Numeric / enum state
+	"BOSUN_AHEAD",
+	"BOSUN_AHEAD_COUNT",
+	"BOSUN_DIRTY",
+	"BOSUN_DONE_STATUS",   // enum: "DONE" | "STUCK"
+	"BOSUN_MERGE_COMMIT",  // sha
+	"BOSUN_CLEANUP_COUNT", // int
+	"BOSUN_CLEANUP_REASON",
+}
+
 // buildBody produces the JSON payload for the chosen format. Slack
-// and Discord both accept a single text field; FormatPlain emits the
-// full event envelope for operators piping into a custom collector.
+// and Discord both accept a single text field; FormatPlain emits a
+// curated envelope (see safeEnvelopeKeys) for operators piping into
+// a custom collector.
 func buildBody(format Format, event string, env map[string]string) ([]byte, error) {
 	if format == "" {
 		format = FormatPlain
@@ -251,16 +284,33 @@ func buildBody(format Format, event string, env map[string]string) ([]byte, erro
 		text := buildText(event, session, env)
 		return json.Marshal(map[string]string{"content": text})
 	default:
-		// Plain JSON envelope: full event data so operators with
-		// custom collectors can decode it without parsing prose.
+		// Plain JSON envelope: curated event data so operators with
+		// custom collectors can decode without parsing prose. Note
+		// `env` is allowlist-filtered — see safeEnvelopeKeys for the
+		// security-audit rationale.
 		envelope := map[string]any{
 			"event":     event,
 			"session":   env["BOSUN_SESSION_LABEL"],
 			"timestamp": time.Now().UTC().Format(time.RFC3339),
-			"env":       env,
+			"env":       filterEnvelopeEnv(env),
 		}
 		return json.Marshal(envelope)
 	}
+}
+
+// filterEnvelopeEnv returns a new map containing only keys in
+// safeEnvelopeKeys that are present in src. Missing keys are
+// skipped (not emitted as ""), so downstream JSON stays compact and
+// consumers can use key-presence as a "did the event supply this?"
+// signal.
+func filterEnvelopeEnv(src map[string]string) map[string]string {
+	out := make(map[string]string, len(safeEnvelopeKeys))
+	for _, k := range safeEnvelopeKeys {
+		if v, ok := src[k]; ok {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 // buildText is the human-readable single-line message Slack and

@@ -184,6 +184,22 @@ func (s *Server) Listen(socketPath string) error {
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", socketPath, err)
 	}
+	// net.Listen creates the socket file with the process umask, which on
+	// most systems leaves it world-connectable (mode 0o755-equivalent). Any
+	// local user could then connect and invoke every MCP tool. Restrict to
+	// owner-only immediately after bind so the window is zero in practice
+	// (we hold the listener fd but haven't yet entered the Accept loop).
+	//
+	// On Windows AF_UNIX support, Chmod is a no-op; we still call it so
+	// the code path stays uniform — POSIX hosts get the real protection.
+	if err := os.Chmod(socketPath, 0o600); err != nil {
+		// Best-effort: a Chmod failure shouldn't kill the daemon when
+		// the socket is already bound. Close the listener and return so
+		// the operator can investigate (unlikely in practice — same
+		// process that just created the file should be able to chmod it).
+		_ = ln.Close()
+		return fmt.Errorf("chmod socket %s: %w", socketPath, err)
+	}
 	s.listener = ln
 	return nil
 }

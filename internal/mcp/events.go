@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/jasondillingham/bosun/internal/lockfile"
 )
 
 // EventLogRelative is where bosun writes its append-only events log when
@@ -21,6 +23,22 @@ const EventLogRelative = ".bosun/events.log"
 // when the cap is hit. Sized to stay cheap to scan while holding the lock —
 // 200 announcements is a generous ceiling for a single working session.
 const eventBufCap = 200
+
+// eventsLogMaxBytes triggers rotation of .bosun/events.log when an append
+// would push it past this size. Matches the spawn-audit cap (10MB) so the
+// operator's mental model is one rotation policy. Security audit H2
+// (2026-05) flagged unbounded growth as a real DoS vector: an agent
+// calling bosun_announce on a loop would fill the disk over a long round.
+const eventsLogMaxBytes = 10 * 1024 * 1024
+
+// eventsLogMaxFiles caps how many rotated copies are retained
+// (events.log.1 … events.log.5). The active events.log is in addition.
+const eventsLogMaxFiles = 5
+
+// eventsLogMu serializes rotation + append within a single process. The
+// cross-process race is closed by lockfile.WithLock around the same
+// region in appendEventLine.
+var eventsLogMu sync.Mutex
 
 // Event is one operator-visible signal pushed by an agent via bosun_announce.
 // The fields are intentionally flat so the JSONL records on disk stay easy
@@ -108,13 +126,65 @@ func appendEventLine(path string, e Event) error {
 			return fmt.Errorf("mkdir events parent: %w", err)
 		}
 	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
-	if err != nil {
-		return fmt.Errorf("open events log: %w", err)
+
+	line := append(data, '\n')
+	lockPath := path + ".lock"
+
+	// Rotate + append under one lock so the size check, the rename
+	// dance, and the actual O_APPEND write can't race against
+	// concurrent Push() callers in the same or different processes.
+	// The in-process mutex covers goroutine concurrency; the
+	// lockfile.WithLock covers cross-process (CLI tooling that
+	// might also write events).
+	eventsLogMu.Lock()
+	defer eventsLogMu.Unlock()
+
+	return lockfile.WithLock(lockPath, func() error {
+		if err := rotateEventsIfNeeded(path, len(line)); err != nil {
+			return fmt.Errorf("rotate events: %w", err)
+		}
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+		if err != nil {
+			return fmt.Errorf("open events log: %w", err)
+		}
+		defer f.Close()
+		if _, err := f.Write(line); err != nil {
+			return fmt.Errorf("write event: %w", err)
+		}
+		return nil
+	})
+}
+
+// rotateEventsIfNeeded rotates events.log → events.log.1 → … →
+// events.log.5 when appending `incoming` bytes would push events.log
+// past eventsLogMaxBytes. The oldest copy (.5) is dropped. Missing
+// rotated files are skipped — same shape as spawn_audit's rotation
+// so the operator only has one mental model.
+func rotateEventsIfNeeded(logPath string, incoming int) error {
+	info, err := os.Stat(logPath)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
 	}
-	defer f.Close()
-	if _, err := f.Write(append(data, '\n')); err != nil {
-		return fmt.Errorf("write event: %w", err)
+	if err != nil {
+		return fmt.Errorf("stat events log: %w", err)
+	}
+	if info.Size()+int64(incoming) <= eventsLogMaxBytes {
+		return nil
+	}
+	// Drop the oldest, shift the rest down one slot.
+	oldest := fmt.Sprintf("%s.%d", logPath, eventsLogMaxFiles)
+	if err := os.Remove(oldest); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("remove %s: %w", oldest, err)
+	}
+	for i := eventsLogMaxFiles - 1; i >= 1; i-- {
+		src := fmt.Sprintf("%s.%d", logPath, i)
+		dst := fmt.Sprintf("%s.%d", logPath, i+1)
+		if err := os.Rename(src, dst); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("rename %s -> %s: %w", src, dst, err)
+		}
+	}
+	if err := os.Rename(logPath, logPath+".1"); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("rename %s -> %s.1: %w", logPath, logPath, err)
 	}
 	return nil
 }

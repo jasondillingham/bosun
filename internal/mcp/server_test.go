@@ -206,6 +206,38 @@ func (c pipeCloser) Close() error {
 	return c.w.Close()
 }
 
+// TestServer_Listen_SocketOwnerOnly pins the security-audit C1 fix:
+// the Unix socket created by Listen() must be owner-only (0o600) so
+// non-owner local users can't connect to the daemon and call MCP
+// tools against the operator's sessions. Without this, net.Listen
+// would leave the socket at the process umask — typically 0o755-
+// equivalent on a default Linux install, which is world-connectable.
+func TestServer_Listen_SocketOwnerOnly(t *testing.T) {
+	tmp := t.TempDir()
+	cstore := claims.NewStore(tmp)
+	sstore := state.NewStore(tmp)
+	srv := NewServer(cstore, sstore, nil)
+
+	sockPath := filepath.Join("/tmp", "bosun-perm-test.sock")
+	_ = os.Remove(sockPath)
+	t.Cleanup(func() { _ = os.Remove(sockPath); _ = srv.Stop() })
+
+	if err := srv.Listen(sockPath); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+
+	info, err := os.Stat(sockPath)
+	if err != nil {
+		t.Fatalf("stat socket: %v", err)
+	}
+	// Mask off the file-type bits — Stat returns ModeSocket OR'd with
+	// the permission bits, and we only care about the perm bits.
+	got := info.Mode().Perm()
+	if got != 0o600 {
+		t.Errorf("socket mode = %#o, want 0o600 (owner-only)", got)
+	}
+}
+
 // TestServer_Serve_NoGoroutineLeakAfterAcceptError pins the v0.7+ fix:
 // before the fix, Serve's ctx-watcher goroutine waited on ctx.Done()
 // forever when Serve returned via the Accept-error path (listener

@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -231,6 +232,108 @@ func TestEvents_TailMissingFile(t *testing.T) {
 	}
 	if got != nil {
 		t.Errorf("tail missing = %v, want nil", got)
+	}
+}
+
+// TestEvents_RotatesAtMaxBytes pins the security-audit H2 fix:
+// events.log must roll over to events.log.1 (and so on) when it
+// would exceed eventsLogMaxBytes. Without rotation, an agent
+// calling bosun_announce on a loop could fill the disk over a
+// long-running session. We shrink the cap via direct call into
+// rotateEventsIfNeeded so the test doesn't have to write 10MB.
+func TestEvents_RotatesAtMaxBytes(t *testing.T) {
+	ResetEventsForTest()
+	t.Cleanup(ResetEventsForTest)
+
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "events.log")
+
+	// Seed the file with a fake current size by writing 10MB+ of bytes
+	// directly. Rotation triggers at eventsLogMaxBytes (10 MiB).
+	bigContent := make([]byte, eventsLogMaxBytes+1)
+	for i := range bigContent {
+		bigContent[i] = 'x'
+	}
+	if err := os.WriteFile(logPath, bigContent, 0o600); err != nil {
+		t.Fatalf("seed oversize log: %v", err)
+	}
+
+	SetEventsLog(logPath)
+	if err := Push(Event{Session: "s", Kind: "info", Message: "post-rotate"}); err != nil {
+		t.Fatalf("push after oversize: %v", err)
+	}
+
+	// After the rotation, events.log.1 should hold the original
+	// oversize content and the active events.log should be just the
+	// one new entry.
+	rotated, err := os.Stat(logPath + ".1")
+	if err != nil {
+		t.Fatalf("expected events.log.1 after rotation: %v", err)
+	}
+	if rotated.Size() != int64(eventsLogMaxBytes+1) {
+		t.Errorf("events.log.1 size = %d, want %d (the pre-rotation bytes)",
+			rotated.Size(), eventsLogMaxBytes+1)
+	}
+	active, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read active log: %v", err)
+	}
+	if !strings.Contains(string(active), "post-rotate") {
+		t.Errorf("active events.log missing post-rotate entry: %s", string(active))
+	}
+	// Active file should only have one line (just the new entry) —
+	// rotation moved everything else away.
+	lines := strings.Count(strings.TrimRight(string(active), "\n"), "\n") + 1
+	if lines != 1 {
+		t.Errorf("active log has %d lines, want 1 after rotation: %s",
+			lines, string(active))
+	}
+}
+
+// TestEvents_RotationKeepsAtMostNCopies confirms the
+// eventsLogMaxFiles cap — older rotated copies past .5 get
+// dropped, so an infinite stream of rotations doesn't itself grow
+// disk usage unbounded.
+func TestEvents_RotationKeepsAtMostNCopies(t *testing.T) {
+	ResetEventsForTest()
+	t.Cleanup(ResetEventsForTest)
+
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "events.log")
+	SetEventsLog(logPath)
+
+	// Pre-seed all eventsLogMaxFiles rotated slots so the next
+	// rotation has to drop the oldest.
+	for i := 1; i <= eventsLogMaxFiles; i++ {
+		body := []byte(fmt.Sprintf("rotated-slot-%d\n", i))
+		if err := os.WriteFile(fmt.Sprintf("%s.%d", logPath, i), body, 0o600); err != nil {
+			t.Fatalf("seed slot %d: %v", i, err)
+		}
+	}
+	// Plus the active log at oversize so a rotation actually fires.
+	if err := os.WriteFile(logPath, make([]byte, eventsLogMaxBytes+1), 0o600); err != nil {
+		t.Fatalf("seed oversize log: %v", err)
+	}
+
+	if err := Push(Event{Session: "s", Kind: "info", Message: "trigger-rotate"}); err != nil {
+		t.Fatalf("push: %v", err)
+	}
+
+	// Slot N+1 must not exist (drop-the-oldest enforced).
+	beyond := fmt.Sprintf("%s.%d", logPath, eventsLogMaxFiles+1)
+	if _, err := os.Stat(beyond); err == nil {
+		t.Errorf("%s exists; rotation kept too many copies", beyond)
+	}
+	// Slot N must hold what slot N-1 used to hold (the shift went
+	// through). The shifted slot 4 now lives at slot 5.
+	tailBody, err := os.ReadFile(fmt.Sprintf("%s.%d", logPath, eventsLogMaxFiles))
+	if err != nil {
+		t.Fatalf("read final slot: %v", err)
+	}
+	wantTailMarker := fmt.Sprintf("rotated-slot-%d", eventsLogMaxFiles-1)
+	if !strings.Contains(string(tailBody), wantTailMarker) {
+		t.Errorf("slot %d = %q, want it to contain %q (shift didn't happen)",
+			eventsLogMaxFiles, string(tailBody), wantTailMarker)
 	}
 }
 

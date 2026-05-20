@@ -109,8 +109,58 @@ func TestFire_PlainFormat_PostsEnvelope(t *testing.T) {
 	if got.Env["BOSUN_DONE_STATUS"] != "DONE" {
 		t.Errorf("env.BOSUN_DONE_STATUS = %q, want DONE", got.Env["BOSUN_DONE_STATUS"])
 	}
+	// Security audit H1: agent-controlled free-text fields must
+	// NOT ride through the FormatPlain envelope. BOSUN_DONE_MESSAGE
+	// is the canonical risky field — an agent's `bosun done
+	// --message "..."` content. Dropping it closes off the path
+	// where an agent could ship a stray secret to the operator's
+	// configured webhook URL.
+	if _, ok := got.Env["BOSUN_DONE_MESSAGE"]; ok {
+		t.Errorf("BOSUN_DONE_MESSAGE leaked into FormatPlain envelope; agent-controlled text must be excluded")
+	}
 	if _, err := time.Parse(time.RFC3339, got.TS); err != nil {
 		t.Errorf("timestamp = %q, not RFC3339: %v", got.TS, err)
+	}
+}
+
+// TestFire_PlainFormat_FiltersUnknownEnvKeys is the positive lock
+// on the H1 allowlist: keys outside safeEnvelopeKeys are dropped
+// without complaint, so a hook callsite that adds new env keys
+// later doesn't accidentally start leaking them via webhooks. The
+// allowlist is the gate; new keys are an explicit decision.
+func TestFire_PlainFormat_FiltersUnknownEnvKeys(t *testing.T) {
+	var got struct {
+		Env map[string]string `json:"env"`
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	defs := []WebhookDef{{URL: srv.URL, Format: FormatPlain}}
+	env := map[string]string{
+		"BOSUN_SESSION_LABEL":   "session-1", // allowlisted → included
+		"BOSUN_AHEAD":           "3",         // allowlisted → included
+		"BOSUN_DONE_MESSAGE":    "anything",  // free-text → excluded
+		"BOSUN_STUCK_MESSAGE":   "anything",  // free-text → excluded
+		"PRIVATE_DEBUG_TRACE":   "secrets",   // random key → excluded
+		"X-Internal-Auth-Token": "leaked",    // attacker-shaped name → excluded
+	}
+	Fire(context.Background(), defs, "post-done", env).Wait()
+
+	for _, dropped := range []string{
+		"BOSUN_DONE_MESSAGE", "BOSUN_STUCK_MESSAGE",
+		"PRIVATE_DEBUG_TRACE", "X-Internal-Auth-Token",
+	} {
+		if _, ok := got.Env[dropped]; ok {
+			t.Errorf("%s leaked into envelope; allowlist failed", dropped)
+		}
+	}
+	for _, kept := range []string{"BOSUN_SESSION_LABEL", "BOSUN_AHEAD"} {
+		if _, ok := got.Env[kept]; !ok {
+			t.Errorf("%s missing from envelope; allowlist dropped it incorrectly", kept)
+		}
 	}
 }
 

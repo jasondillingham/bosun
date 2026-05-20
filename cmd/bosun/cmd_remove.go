@@ -11,11 +11,11 @@ import (
 	"github.com/jasondillingham/bosun/internal/git"
 	"github.com/jasondillingham/bosun/internal/history"
 	"github.com/jasondillingham/bosun/internal/hooks"
-	"github.com/jasondillingham/bosun/internal/webhooks"
 	"github.com/jasondillingham/bosun/internal/launcher"
 	"github.com/jasondillingham/bosun/internal/proc"
 	"github.com/jasondillingham/bosun/internal/session"
 	"github.com/jasondillingham/bosun/internal/spawntree"
+	"github.com/jasondillingham/bosun/internal/webhooks"
 	"github.com/spf13/cobra"
 )
 

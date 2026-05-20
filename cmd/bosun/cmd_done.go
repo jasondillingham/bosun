@@ -4,8 +4,8 @@ import (
 	"strconv"
 
 	"github.com/jasondillingham/bosun/internal/hooks"
-	"github.com/jasondillingham/bosun/internal/webhooks"
 	"github.com/jasondillingham/bosun/internal/session"
+	"github.com/jasondillingham/bosun/internal/webhooks"
 	"github.com/spf13/cobra"
 )
 

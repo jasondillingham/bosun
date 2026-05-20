@@ -46,10 +46,10 @@ type Entry struct {
 
 // Totals is the summed view of all entries for one session.
 type Totals struct {
-	TokensIn   int
-	TokensOut  int
-	CostUSD    float64
-	TurnCount  int
+	TokensIn  int
+	TokensOut int
+	CostUSD   float64
+	TurnCount int
 	// LastModel is the model from the most recent entry. Renderers
 	// use it to hint at "what's currently running" without listing
 	// every model used historically.

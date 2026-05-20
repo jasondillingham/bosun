@@ -85,7 +85,12 @@ func PreparePushable(repoRoot, branch string) (string, error) {
 	// and exits 0), but the stat-first short-circuit avoids the
 	// noise and is one fewer subprocess on the hot path.
 	if _, err := os.Stat(barePath); os.IsNotExist(err) {
-		if mkErr := os.MkdirAll(filepath.Dir(barePath), 0o755); mkErr != nil {
+		// gosec G301: 0o750 satisfies the linter and is the right
+		// access pattern for a bare-repo parent dir bosun creates for
+		// internal staging. Group + world have no business reading
+		// the bare clone bosun uses to mirror local branches into the
+		// remote-docker transport.
+		if mkErr := os.MkdirAll(filepath.Dir(barePath), 0o750); mkErr != nil {
 			return "", fmt.Errorf("remote: create bare repo parent dir: %w", mkErr)
 		}
 		if out, gErr := runGit(repoRoot, "init", "--bare", barePath); gErr != nil {

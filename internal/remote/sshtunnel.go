@@ -66,10 +66,10 @@ func parseSSHHost(s string) (hostArg string, portArgs []string, err error) {
 type Tunnel struct {
 	cmd *exec.Cmd
 
-	mu     sync.Mutex
-	closed bool
-	exited chan struct{} // closed when the underlying ssh process exits
-	waitErr error        // populated by the watcher goroutine
+	mu      sync.Mutex
+	closed  bool
+	exited  chan struct{} // closed when the underlying ssh process exits
+	waitErr error         // populated by the watcher goroutine
 }
 
 // startupProbe is the post-Start grace period for OpenSSH's banner
@@ -132,7 +132,7 @@ func OpenReverseProxy(localSock, remotePath, host string) (*Tunnel, error) {
 	}
 	args = append(args, portArgs...)
 	args = append(args,
-		"-R", remotePath + ":" + localSock,
+		"-R", remotePath+":"+localSock,
 		hostArg,
 		"sleep infinity",
 	)

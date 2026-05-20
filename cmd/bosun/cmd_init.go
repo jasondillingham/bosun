@@ -16,7 +16,6 @@ import (
 	"github.com/jasondillingham/bosun/internal/doctor"
 	"github.com/jasondillingham/bosun/internal/git"
 	"github.com/jasondillingham/bosun/internal/hooks"
-	"github.com/jasondillingham/bosun/internal/webhooks"
 	initstate "github.com/jasondillingham/bosun/internal/init"
 	"github.com/jasondillingham/bosun/internal/launcher"
 	bosunmcp "github.com/jasondillingham/bosun/internal/mcp"
@@ -26,6 +25,7 @@ import (
 	"github.com/jasondillingham/bosun/internal/spawntree"
 	"github.com/jasondillingham/bosun/internal/state"
 	"github.com/jasondillingham/bosun/internal/suggest"
+	"github.com/jasondillingham/bosun/internal/webhooks"
 	"github.com/spf13/cobra"
 )
 

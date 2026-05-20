@@ -338,6 +338,57 @@ func TestParse_UnknownClauseIgnored(t *testing.T) {
 	}
 }
 
+// TestParse_HostClause pins the per-session DOCKER_HOST override
+// (Phase 3 lane 1 of the remote-docker plan). Each row exercises a
+// different clause shape; the parser is intentionally lenient —
+// anything between the colon and the closing paren is treated as the
+// endpoint, mirroring the (command: …) precedent. URL validity is
+// not enforced at parse time — that lives in config.Validate for the
+// hosts list. Brief clauses are taken verbatim because they may
+// reference endpoints the operator added on the CLI rather than in
+// the config file.
+func TestParse_HostClause(t *testing.T) {
+	cases := []struct {
+		name        string
+		heading     string
+		wantHost    string
+		wantCommand string
+		wantDeps    []string
+	}{
+		{"no clauses", "## session-1", "", "", nil},
+		{"host only ssh", "## session-1 (host: ssh://thor)", "ssh://thor", "", nil},
+		{"host only tcp", "## session-1 (host: tcp://10.0.0.5:2375)", "tcp://10.0.0.5:2375", "", nil},
+		{"host with user", "## session-1 (host: ssh://user@thor:2222)", "ssh://user@thor:2222", "", nil},
+		{"host + command", "## session-2 (host: ssh://thor) (command: my-agent)", "ssh://thor", "my-agent", nil},
+		{"command + host (order flipped)", "## session-2 (command: my-agent) (host: ssh://thor)", "ssh://thor", "my-agent", nil},
+		{"depends + host + command", "## session-3 (depends: session-1) (host: ssh://thor) (command: my-agent)", "ssh://thor", "my-agent", []string{"session-1"}},
+		{"extra whitespace tolerated", "## session-1 (host:    ssh://thor   )", "ssh://thor", "", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			briefs := parseContent(tc.heading + "\nbody\n")
+			if len(briefs) != 1 {
+				t.Fatalf("expected 1 brief, got %d", len(briefs))
+			}
+			if briefs[0].Host != tc.wantHost {
+				t.Errorf("Host = %q, want %q", briefs[0].Host, tc.wantHost)
+			}
+			if briefs[0].Command != tc.wantCommand {
+				t.Errorf("Command = %q, want %q", briefs[0].Command, tc.wantCommand)
+			}
+			gotDeps := briefs[0].Depends
+			if len(gotDeps) != len(tc.wantDeps) {
+				t.Fatalf("Depends = %v, want %v", gotDeps, tc.wantDeps)
+			}
+			for i, d := range tc.wantDeps {
+				if gotDeps[i] != d {
+					t.Errorf("Depends[%d] = %q, want %q", i, gotDeps[i], d)
+				}
+			}
+		})
+	}
+}
+
 func TestWriteToWorktree_IncludesDependsBlock(t *testing.T) {
 	wt := t.TempDir()
 	b := Brief{Session: 3, Label: "session-3", Body: "the assignment", Depends: []string{"session-1", "session-2"}}

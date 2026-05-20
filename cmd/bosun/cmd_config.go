@@ -41,8 +41,10 @@ var configSetKeys = []string{
 }
 
 // configListKeys is the order `bosun config list` and `bosun config get` know
-// about. It's `configSetKeys` plus the read-only `hooks` summary.
-var configListKeys = append(append([]string{}, configSetKeys...), "hooks")
+// about. It's `configSetKeys` plus the read-only `hooks` summary plus the
+// read-only `docker.hosts` list (a slice that's awkward to type via the
+// scalar `config set` CLI — operators edit the JSON file directly).
+var configListKeys = append(append([]string{}, configSetKeys...), "hooks", "docker.hosts")
 
 // configRecognizedKeys is the complete set of top-level JSON keys
 // `.bosun/config.json` may contain. `bosun config validate` rejects any
@@ -238,6 +240,9 @@ func runConfigSet(key, value string) error {
 	}
 	if key == "hooks" {
 		return userErr("hooks is a list — edit %s directly (config set handles scalars only)", config.ConfigRelativePath)
+	}
+	if key == "docker.hosts" {
+		return userErr("docker.hosts is a list — edit %s directly (config set handles scalars only)", config.ConfigRelativePath)
 	}
 	if !isSettableConfigKey(key) {
 		return userErr("unknown config key %q (settable: %s)", key, strings.Join(configSetKeys, ", "))
@@ -438,7 +443,9 @@ func buildConfigExample(c config.Config) string {
 	b.WriteString("//                          Override per-session via the brief's `(command: ...)` clause.\n")
 	b.WriteString("// docker:                  native Docker launcher config (set launcher to \"docker\" to enable).\n")
 	b.WriteString("//                          .image (required), .extra_mounts (list of host:container pairs),\n")
-	b.WriteString("//                          .env_passthrough (list of host env var names forwarded by name).\n")
+	b.WriteString("//                          .env_passthrough (list of host env var names forwarded by name),\n")
+	b.WriteString("//                          .hosts (list of remote endpoints like \"ssh://thor\" or \"tcp://10.0.0.5:2375\";\n")
+	b.WriteString("//                          empty = local docker; per-session brief clause `(host: ...)` overrides).\n")
 	b.WriteString("// git_op_timeout_seconds:  per-operation cap on each `git` subprocess (0 = built-in default).\n")
 	b.WriteString("// hooks:                   list of {event, command, fail_open?, timeout_seconds?} entries.\n")
 	b.WriteString("//                          Events: pre-init, post-init, post-done, pre-merge, post-merge,\n")
@@ -602,6 +609,11 @@ func formatConfigValue(cfg config.Config, key string) string {
 		return cfg.AgentCommand
 	case "docker.image":
 		return cfg.Docker.Image
+	case "docker.hosts":
+		if len(cfg.Docker.Hosts) == 0 {
+			return "[]"
+		}
+		return "[" + strings.Join(cfg.Docker.Hosts, ", ") + "]"
 	}
 	return ""
 }

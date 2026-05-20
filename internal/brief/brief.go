@@ -31,6 +31,14 @@ type Brief struct {
 	// beyond non-emptiness — the launcher resolves the path at spawn
 	// time. Empty means "fall back to CLI flag, then config default."
 	Command string
+	// Host, when non-empty, names the remote Docker endpoint to target
+	// for this session. Parsed from the optional `(host: ssh://thor)`
+	// clause on the heading (Phase 3, lane 1 of the remote-docker
+	// plan). The string is taken verbatim and exported as
+	// DOCKER_HOST in the launcher's env; the docker CLI handles the
+	// transport. Empty means "fall back to --docker-host CLI flag,
+	// then config.docker.hosts[0], then local docker."
+	Host string
 }
 
 // Parse reads a plan markdown file and returns a Brief for every `## session-N`
@@ -116,6 +124,7 @@ func parseContent(s string) []Brief {
 		// in either order is handled identically.
 		var depends []string
 		var command string
+		var host string
 		if m[4] >= 0 && m[5] > m[4] {
 			for _, c := range clauseRe.FindAllStringSubmatch(s[m[4]:m[5]], -1) {
 				key := c[1]
@@ -125,6 +134,8 @@ func parseContent(s string) []Brief {
 					depends = parseDepList(val)
 				case "command":
 					command = val
+				case "host":
+					host = val
 				}
 				// Unknown keys are silently ignored — the parser stays
 				// lenient so future clause additions don't break older
@@ -132,7 +143,7 @@ func parseContent(s string) []Brief {
 			}
 		}
 
-		briefs = append(briefs, Brief{Session: number, Label: label, Body: body, Depends: depends, Command: command})
+		briefs = append(briefs, Brief{Session: number, Label: label, Body: body, Depends: depends, Command: command, Host: host})
 	}
 	return briefs
 }

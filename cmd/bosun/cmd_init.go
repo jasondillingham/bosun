@@ -40,6 +40,7 @@ func newInitCmd() *cobra.Command {
 		resume        bool
 		forceICloud   bool
 		command       string
+		dockerHost    string
 	)
 
 	cmd := &cobra.Command{
@@ -68,6 +69,7 @@ Mixing integers with names in the same invocation is a usage error.`,
 				resume:        resume,
 				forceICloud:   forceICloud,
 				command:       command,
+				dockerHost:    dockerHost,
 			})
 		},
 	}
@@ -84,6 +86,7 @@ Mixing integers with names in the same invocation is a usage error.`,
 	cmd.Flags().BoolVar(&resume, "resume", false, "continue a previously-interrupted bosun init using .bosun/init.state")
 	cmd.Flags().BoolVar(&forceICloud, "force-icloud", false, "proceed even when the repo is under an iCloud-managed path (issue #15: File Provider can strip git worktree admin metadata under load)")
 	cmd.Flags().StringVar(&command, "command", "", "agent command for every session in this round (overrides config.agent_command; per-session brief clause `(command: ...)` overrides this)")
+	cmd.Flags().StringVar(&dockerHost, "docker-host", "", "remote Docker endpoint (e.g. ssh://thor) exported as DOCKER_HOST for every session in this round (overrides config.docker.hosts[0]; per-session brief clause `(host: ...)` overrides this)")
 
 	cmd.GroupID = "setup"
 	return cmd
@@ -102,6 +105,7 @@ type initOpts struct {
 	resume        bool
 	forceICloud   bool
 	command       string
+	dockerHost    string
 }
 
 // initRoundTimestampFmt is the canonical layout for the per-round UTC
@@ -451,10 +455,11 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 
 	// Create branches + worktrees.
 	type created struct {
-		label   string
-		branch  string
-		path    string
-		command string // agent command resolved for this session (Phase 1 of agent-command design)
+		label      string
+		branch     string
+		path       string
+		command    string // agent command resolved for this session (Phase 1 of agent-command design)
+		dockerHost string // DOCKER_HOST endpoint resolved for this session (Phase 3 lane 1)
 	}
 	var made []created
 
@@ -472,6 +477,24 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 		return rc.cfg.AgentCommand
 	}
 
+	// resolveDockerHost applies the Phase 3 precedence:
+	// brief clause > init --docker-host flag > config.Docker.Hosts[0] > "".
+	// Empty result means "no DOCKER_HOST override; target local docker"
+	// — today's behavior. Lane 3 will make the remote case actually
+	// reach a remote daemon; lane 1 only plumbs the env var.
+	resolveDockerHost := func(label string) string {
+		if b := brief.LookupBriefByLabel(briefs, label); b != nil && b.Host != "" {
+			return b.Host
+		}
+		if opts.dockerHost != "" {
+			return opts.dockerHost
+		}
+		if len(rc.cfg.Docker.Hosts) > 0 {
+			return rc.cfg.Docker.Hosts[0]
+		}
+		return ""
+	}
+
 	for i, label := range labels {
 		branch := rc.cfg.BranchForLabel(label)
 		path := session.WorktreePathForLabel(rc.repoRoot, rc.cfg, label, roundTimestamp)
@@ -479,7 +502,7 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 		// Resume short-circuit: already-completed sessions are skipped wholesale.
 		if opts.resume && istate.IsCompleted(label) {
 			_, _ = fmt.Fprintf(os.Stdout, "Skipping %s (already completed in prior run).\n", label)
-			made = append(made, created{label: label, branch: branch, path: path, command: resolveAgentCommand(label)})
+			made = append(made, created{label: label, branch: branch, path: path, command: resolveAgentCommand(label), dockerHost: resolveDockerHost(label)})
 			continue
 		}
 
@@ -569,7 +592,7 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 		}
 
 		agentCmd := resolveAgentCommand(label)
-		made = append(made, created{label: label, branch: branch, path: path, command: agentCmd})
+		made = append(made, created{label: label, branch: branch, path: path, command: agentCmd, dockerHost: resolveDockerHost(label)})
 
 		// Persist the resolved agent command so future bosun commands
 		// (launch, status's proc-scan, cleanup-time IsAgent derivation)
@@ -727,6 +750,14 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 			// isn't on a default macOS login PATH.
 			if exe, exeErr := os.Executable(); exeErr == nil {
 				env["BOSUN_BIN"] = exe
+			}
+			// Phase 3 lane 1: DOCKER_HOST plumbing. When a host was
+			// resolved (brief clause > --docker-host flag > config
+			// docker.hosts[0]), export it so the launcher's docker CLI
+			// targets the remote daemon instead of the local socket.
+			// Empty result preserves today's local-only behavior.
+			if c.dockerHost != "" {
+				env["DOCKER_HOST"] = c.dockerHost
 			}
 			strategy, err := launcher.Launch(launcher.Options{
 				Strategy:      launcher.Strategy(rc.cfg.Launcher),

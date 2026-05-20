@@ -23,6 +23,7 @@ func newLaunchCmd() *cobra.Command {
 		initialPrompt string
 		openAsTab     bool
 		command       string
+		dockerHost    string
 	)
 
 	cmd := &cobra.Command{
@@ -41,6 +42,7 @@ does not create worktrees, branches, or briefs. Use ` + "`bosun init`" + ` for t
 				initialPrompt: initialPrompt,
 				openAsTab:     openAsTab,
 				command:       command,
+				dockerHost:    dockerHost,
 			})
 		},
 	}
@@ -49,6 +51,7 @@ does not create worktrees, branches, or briefs. Use ` + "`bosun init`" + ` for t
 	cmd.Flags().StringVar(&initialPrompt, "initial-prompt", "", "first message passed to the launched session")
 	cmd.Flags().BoolVar(&openAsTab, "tab", false, "open as a tab in an existing window (terminal-dependent)")
 	cmd.Flags().StringVar(&command, "command", "", "agent command to run (defaults to the session's persisted command, or config.agent_command, or `claude`)")
+	cmd.Flags().StringVar(&dockerHost, "docker-host", "", "remote Docker endpoint (e.g. ssh://thor) exported as DOCKER_HOST for the launched session (overrides config.docker.hosts[0])")
 
 	cmd.GroupID = "wiring"
 	return cmd
@@ -59,6 +62,7 @@ type launchOpts struct {
 	initialPrompt string
 	openAsTab     bool
 	command       string
+	dockerHost    string
 }
 
 // runLaunch opens a launcher window for one existing bosun session. It
@@ -132,6 +136,18 @@ func runLaunch(sessionArg string, opts launchOpts) error {
 	}
 	if command == "" {
 		command = rc.cfg.AgentCommand
+	}
+
+	// Phase 3 lane 1: DOCKER_HOST plumbing. Mirror init's
+	// resolveDockerHost precedence on the launch path so a relaunched
+	// session lands on the same remote daemon: --docker-host CLI flag
+	// > config.docker.hosts[0]. Brief clauses are init-time concerns
+	// (the brief might not exist anymore by relaunch); lane 4 will
+	// persist the chosen host per-session so cleanup can recover it.
+	if opts.dockerHost != "" {
+		env["DOCKER_HOST"] = opts.dockerHost
+	} else if len(rc.cfg.Docker.Hosts) > 0 {
+		env["DOCKER_HOST"] = rc.cfg.Docker.Hosts[0]
 	}
 
 	strategy, err := launcher.Launch(launcher.Options{

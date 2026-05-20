@@ -430,3 +430,105 @@ func TestWorktreeSuffixForLabel(t *testing.T) {
 		t.Errorf("WorktreeSuffix(n, ts) wrapper drifted from WorktreeSuffixForLabel(session-N, ts)")
 	}
 }
+
+// TestLoad_DockerHostsOverride exercises round-tripping a Hosts list
+// through the on-disk loader (Phase 3 lane 1). Empty defaults to nil
+// per docs/remote-docker-plan.md; an operator-supplied list survives
+// Load unchanged so cmd_init can pick Hosts[0] as the round default.
+func TestLoad_DockerHostsOverride(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".bosun"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte(`{"docker":{"hosts":["ssh://thor","tcp://10.0.0.5:2375"]}}`)
+	if err := os.WriteFile(filepath.Join(dir, ".bosun/config.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(c.Docker.Hosts) != 2 {
+		t.Fatalf("len(Docker.Hosts) = %d, want 2 (%v)", len(c.Docker.Hosts), c.Docker.Hosts)
+	}
+	if c.Docker.Hosts[0] != "ssh://thor" {
+		t.Errorf("Docker.Hosts[0] = %q, want ssh://thor", c.Docker.Hosts[0])
+	}
+	if c.Docker.Hosts[1] != "tcp://10.0.0.5:2375" {
+		t.Errorf("Docker.Hosts[1] = %q, want tcp://10.0.0.5:2375", c.Docker.Hosts[1])
+	}
+}
+
+// TestLoad_DockerHostsEmptyValid pins the "no hosts configured means
+// local docker" contract — empty list parses cleanly and the loader
+// returns no error.
+func TestLoad_DockerHostsEmptyValid(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".bosun"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte(`{"docker":{"hosts":[]}}`)
+	if err := os.WriteFile(filepath.Join(dir, ".bosun/config.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(c.Docker.Hosts) != 0 {
+		t.Errorf("Docker.Hosts = %v, want empty", c.Docker.Hosts)
+	}
+}
+
+// TestValidate_DockerHosts is the table-driven validation harness for
+// the docker.hosts entries — every supported and rejected shape lives
+// here so the JSON loader's behavior stays observable from one place.
+func TestValidate_DockerHosts(t *testing.T) {
+	cases := []struct {
+		name    string
+		hosts   []string
+		wantErr bool
+	}{
+		{"empty list ok", nil, false},
+		{"empty slice ok", []string{}, false},
+		{"single ssh ok", []string{"ssh://thor"}, false},
+		{"single tcp ok", []string{"tcp://10.0.0.5:2375"}, false},
+		{"ssh with user/port ok", []string{"ssh://operator@thor.lan:2222"}, false},
+		{"multiple mixed ok", []string{"ssh://thor", "tcp://10.0.0.5:2375"}, false},
+		{"empty entry rejected", []string{""}, true},
+		{"whitespace-only entry rejected", []string{"   "}, true},
+		{"missing scheme rejected", []string{"thor"}, true},
+		{"unix scheme rejected", []string{"unix:///var/run/docker.sock"}, true},
+		{"http scheme rejected", []string{"http://thor"}, true},
+		{"https scheme rejected", []string{"https://thor"}, true},
+		{"scheme without host rejected", []string{"ssh://"}, true},
+		{"unparseable url rejected", []string{"ssh://[badport"}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := Defaults()
+			c.Docker.Hosts = tc.hosts
+			err := c.Validate()
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("Validate(Docker.Hosts=%v) err=%v, wantErr=%v", tc.hosts, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestLoad_RejectsBadDockerHost ensures the validate path fires from
+// the file loader too — an operator who hand-edits config.json into a
+// bad shape gets the same refusal as the table-driven Validate call.
+func TestLoad_RejectsBadDockerHost(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".bosun"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte(`{"docker":{"hosts":["unix:///var/run/docker.sock"]}}`)
+	if err := os.WriteFile(filepath.Join(dir, ".bosun/config.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(dir); err == nil {
+		t.Fatal("Load with unix:// docker host should fail")
+	}
+}

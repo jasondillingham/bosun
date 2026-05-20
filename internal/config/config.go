@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -178,6 +179,16 @@ type DockerConfig struct {
 	// container by name (Docker reads the value from its parent shell
 	// at run time). Typical: ANTHROPIC_API_KEY, OLLAMA_HOST.
 	EnvPassthrough []string `json:"env_passthrough,omitempty"`
+	// Hosts is the optional list of remote Docker daemon endpoints
+	// (Phase 3 of docs/sandbox-launcher-design.md). Each entry is a URL
+	// with scheme `ssh` or `tcp`, e.g. "ssh://thor" or
+	// "tcp://10.0.0.5:2375". When empty, bosun targets the local docker
+	// daemon (today's behavior). When set, the brief's per-session
+	// `(host: <endpoint>)` clause picks an entry; otherwise sessions
+	// fall back to Hosts[0]. Resolution precedence is documented on
+	// the cmd_init --docker-host flag. Bosun-picked placement / load
+	// balancing is deliberately deferred (see remote-docker-plan.md §7).
+	Hosts []string `json:"hosts,omitempty"`
 }
 
 // AgentSubtaskConfig governs whether (and how much) agent-driven
@@ -343,6 +354,7 @@ func Load(repoRoot string) (Config, error) {
 	}
 	cfg.Docker.ExtraMounts = overlay.Docker.ExtraMounts
 	cfg.Docker.EnvPassthrough = overlay.Docker.EnvPassthrough
+	cfg.Docker.Hosts = overlay.Docker.Hosts
 
 	if err := cfg.Validate(); err != nil {
 		return cfg, err
@@ -385,6 +397,32 @@ func (c Config) Validate() error {
 		}
 	default:
 		return fmt.Errorf("launcher must be one of auto|tmux|terminal|print|docker, got %q", c.Launcher)
+	}
+	// docker.hosts entries must parse as URLs and use a transport scheme
+	// the docker CLI understands. `ssh` and `tcp` are the only two
+	// schemes that DOCKER_HOST accepts for remote endpoints; `unix://`
+	// would be a local-only socket and is rejected so a misconfig
+	// surfaces at validate time rather than at the first launch.
+	for i, h := range c.Docker.Hosts {
+		trimmed := strings.TrimSpace(h)
+		if trimmed == "" {
+			return fmt.Errorf("docker.hosts[%d]: entry must not be empty", i)
+		}
+		u, err := url.Parse(trimmed)
+		if err != nil {
+			return fmt.Errorf("docker.hosts[%d]: %q is not a parseable URL: %w", i, trimmed, err)
+		}
+		switch u.Scheme {
+		case "ssh", "tcp":
+			// ok — both are valid DOCKER_HOST schemes.
+		case "":
+			return fmt.Errorf("docker.hosts[%d]: %q is missing a scheme (want ssh:// or tcp://)", i, trimmed)
+		default:
+			return fmt.Errorf("docker.hosts[%d]: scheme %q must be ssh or tcp (got %q)", i, u.Scheme, trimmed)
+		}
+		if u.Host == "" {
+			return fmt.Errorf("docker.hosts[%d]: %q has no host component", i, trimmed)
+		}
 	}
 	switch c.LivenessGate {
 	case "", LivenessGateAuto, LivenessGateExternal:

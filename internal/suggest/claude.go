@@ -286,9 +286,10 @@ func (c *ClaudeProposer) Propose(ctx context.Context, goal string, intel RepoInt
 	messages := []anthropicMessage{{Role: "user", Content: userPrompt}}
 
 	var (
-		firstErr error
-		lastErr  error
-		lastText string
+		firstErr      error
+		lastErr       error
+		lastText      string
+		lastValidProp *LaneProposal
 	)
 	for attempt := 0; attempt < maxProposeAttempts; attempt++ {
 		text, err := c.call(ctx, messages)
@@ -310,11 +311,20 @@ func (c *ClaudeProposer) Propose(ctx context.Context, goal string, intel RepoInt
 			continue
 		}
 
-		// Schema passed — now check the lane-level invariants
-		// (overlap, cycle). If those also pass we're done. If not,
-		// feed the detail back as a refinement turn — the prompt
-		// template is intentionally tighter than the schema retry,
-		// asking for a surgical edit rather than a full rewrite.
+		// Schema passed — capture this proposal so `--allow-overlaps`
+		// at the CLI layer can fall through to it if subsequent
+		// overlap refinement fails to converge. We deliberately
+		// overwrite on each schema-valid attempt: the most recent
+		// schema-valid response is also the one the model is
+		// closest to converging on, so it's the better fallback.
+		p := proposal
+		lastValidProp = &p
+
+		// Now check the lane-level invariants (overlap, cycle). If
+		// those also pass we're done. If not, feed the detail back
+		// as a refinement turn — the prompt template is
+		// intentionally tighter than the schema retry, asking for a
+		// surgical edit rather than a full rewrite.
 		if _, validateErr := Validate(proposal, n); validateErr != nil {
 			lastErr = validateErr
 			if firstErr == nil {
@@ -332,9 +342,10 @@ func (c *ClaudeProposer) Propose(ctx context.Context, goal string, intel RepoInt
 	}
 
 	return LaneProposal{}, &ProposalError{
-		FirstError: firstErr,
-		RetryError: lastErr,
-		Raw:        lastText,
+		FirstError:        firstErr,
+		RetryError:        lastErr,
+		LastValidProposal: lastValidProp,
+		Raw:               lastText,
 	}
 }
 
@@ -397,12 +408,21 @@ func (c *ClaudeProposer) call(ctx context.Context, messages []anthropicMessage) 
 	return text.String(), nil
 }
 
-// ProposalError is returned when both the initial response and the
-// retry fail validation. Callers (CLI wiring) can present FirstError +
+// ProposalError is returned when every Propose attempt failed
+// validation. Callers (CLI wiring) can present FirstError +
 // RetryError to the operator with enough context to narrow the goal.
+//
+// LastValidProposal (Phase 5 #62) is the most recent proposal that
+// passed parseAndValidate (schema gate) — populated when the
+// proposer cleared the schema bar but never satisfied the lane-level
+// overlap/cycle invariants. Lets `bosun suggest --allow-overlaps`
+// fall through to the overlapping proposal instead of bailing on
+// the proposer error. Nil when no attempt produced a schema-valid
+// shape (e.g. every reply was malformed).
 type ProposalError struct {
-	FirstError error
-	RetryError error
+	FirstError        error
+	RetryError        error
+	LastValidProposal *LaneProposal
 	// Raw is the unparsed retry text — useful for debugging.
 	Raw string
 }

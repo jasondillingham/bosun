@@ -136,7 +136,20 @@ func runSuggest(ctx context.Context, w io.Writer, repoRoot string, opts suggestO
 
 	proposal, err := deps.proposer.Propose(ctx, opts.goal, intel, opts.sessions)
 	if err != nil {
-		return userErr("propose lanes: %v", err)
+		// Phase 5 #62: the overlap-refinement loop inside Propose can
+		// exhaust its attempt budget when the model can't converge on
+		// disjoint lanes. With --allow-overlaps the operator opted
+		// into accepting the messy proposal, so fall through to the
+		// last schema-valid one (carried on ProposalError). Without
+		// --allow-overlaps the proposer error stays terminal as
+		// before.
+		var pe *suggest.ProposalError
+		if opts.allowOverlaps && errors.As(err, &pe) && pe.LastValidProposal != nil {
+			proposal = *pe.LastValidProposal
+			_, _ = fmt.Fprintf(w, "bosun: --allow-overlaps set, using last schema-valid proposal after refinement failed to converge\n")
+		} else {
+			return userErr("propose lanes: %v", err)
+		}
 	}
 
 	warnings, vErr := suggest.Validate(proposal, opts.sessions)

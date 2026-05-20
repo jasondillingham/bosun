@@ -26,6 +26,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -70,6 +71,36 @@ const stateDirRel = ".bosun/state"
 // sessionName under repoRoot.
 func usagePath(repoRoot, sessionName string) string {
 	return filepath.Join(repoRoot, stateDirRel, sessionName+".usage")
+}
+
+// ListSessions returns the session labels that have a usage ledger
+// in repoRoot, sorted alphabetically. Missing state directory or
+// no .usage files yields an empty slice — not an error.
+//
+// Used by `bosun cost` to roll up across every session bosun has
+// tracked, without having to derive the live session list (which
+// would miss merged/cleaned-up sessions whose ledger still lives
+// in .bosun/state/ until next round).
+func ListSessions(repoRoot string) ([]string, error) {
+	dir := filepath.Join(repoRoot, stateDirRel)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("usage: read state dir: %w", err)
+	}
+	var labels []string
+	for _, e := range entries {
+		name := e.Name()
+		const suffix = ".usage"
+		if !strings.HasSuffix(name, suffix) || e.IsDir() {
+			continue
+		}
+		labels = append(labels, strings.TrimSuffix(name, suffix))
+	}
+	sort.Strings(labels)
+	return labels, nil
 }
 
 // Append records one Entry to the session's ledger. Creates the

@@ -339,6 +339,8 @@ bosun tui                   Bubbletea control center
 bosun serve [--port N]      HTTP dashboard with SSE event stream
 bosun audit [--kind spawn|subtask|all] [--tail N] [--session L] [--outcome refused] [--json]
                             Read the spawn / sub-task audit logs at .bosun/audit/
+bosun cost [--by session|day] [--since 7d] [--session L] [--json]
+                            Roll up LLM cost + tokens across sessions (Phase 4 ledger)
 ```
 
 ## Requirements

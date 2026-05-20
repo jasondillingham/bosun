@@ -454,10 +454,22 @@ func parseAndValidate(text, goal string, n int) (LaneProposal, error) {
 	return proposal, nil
 }
 
-// extractJSON returns the largest balanced JSON object embedded in
-// text. If the model wraps the JSON in prose ("Here's the plan: { ...
-// }"), this walks the runes tracking brace depth and string-literal
-// boundaries to find the outermost object.
+// extractJSON returns the outermost balanced JSON object starting at
+// the first `{` in text. Walks brace depth and string-literal boundaries
+// so JSON containing `{` / `}` inside string values is parsed correctly.
+//
+// If the model wraps the JSON in prose ("Here's the plan: { ... }"),
+// extractJSON skips the prose to the first `{` and stops at its
+// matching close brace — trailing content past that brace is ignored.
+//
+// 2026-05 bug hunt #1: the docstring used to claim this returned the
+// "largest" balanced object. The code never did. If the model ever
+// emits multiple top-level objects (a doc example followed by the real
+// plan, say) extractJSON picks the first one. In practice Claude
+// doesn't, but the docstring now matches the code so future readers
+// don't have to verify.
+//
+//nolint:godot // multi-paragraph docstring; intentional
 func extractJSON(text string) (string, error) {
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" {

@@ -1,6 +1,7 @@
 package brief
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,6 +44,59 @@ func TestParse_NoHeadings(t *testing.T) {
 	briefs := parseContent("just some prose\nnothing structured")
 	if len(briefs) != 0 {
 		t.Fatalf("len(briefs) = %d, want 0", len(briefs))
+	}
+}
+
+// TestParseString_RejectsEmptyBriefs pins the 2026-05 bug-hunt #6
+// fix: ValidateBriefs must refuse a brief that parses to zero
+// sessions, instead of silently returning an empty slice. Operators
+// running `bosun init --brief plan.md` against a file with no valid
+// `## session-N` headings — empty file, all-lowercase typos like
+// `## Session-1`, BOM-corrupted first line — used to get zero
+// worktrees with no error, leaving them wondering why init created
+// nothing.
+func TestParseString_RejectsEmptyBriefs(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"completely empty", ""},
+		{"only whitespace", "\n\n   \n"},
+		{"prose without headings", "this is just text\nwith no structure\n"},
+		{"wrong-case headings", "## Session-1\nbody\n## Session-2\nmore body\n"},
+		{"wrong-case all-caps", "## SESSION-1\nbody\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParseString(tc.body)
+			if err == nil {
+				t.Fatal("expected error from ParseString, got nil")
+			}
+			// Sentinel form so callers like cmd_init can detect this
+			// specific failure mode and present a richer message.
+			if !errors.Is(err, ErrEmptyBriefs) {
+				t.Errorf("err = %v, want errors.Is(err, ErrEmptyBriefs)", err)
+			}
+		})
+	}
+}
+
+// TestParseString_StripsUTF8BOM confirms a brief whose first byte
+// is the UTF-8 BOM (0xEF 0xBB 0xBF) parses successfully. Windows
+// Notepad and several macOS tools prepend a BOM by default; without
+// stripping, the BOM became the first byte of "##" and the heading
+// regex never matched.
+func TestParseString_StripsUTF8BOM(t *testing.T) {
+	bomThenBrief := "\ufeff## session-1\nbody\n"
+	briefs, err := ParseString(bomThenBrief)
+	if err != nil {
+		t.Fatalf("ParseString on BOM-prefixed brief: %v", err)
+	}
+	if len(briefs) != 1 {
+		t.Fatalf("got %d briefs, want 1 (BOM should be stripped)", len(briefs))
+	}
+	if briefs[0].Label != "session-1" {
+		t.Errorf("Label = %q, want session-1", briefs[0].Label)
 	}
 }
 
@@ -465,9 +519,14 @@ func TestValidateBriefs(t *testing.T) {
 		wantErr string // substring of expected error; "" = expect nil
 	}{
 		{
-			name:    "no headings is fine",
+			// 2026-05 bug-hunt #6: ValidateBriefs now refuses an
+			// empty slice via ErrEmptyBriefs. The previous
+			// "no headings is fine" expectation was the bug —
+			// it produced zero sessions silently and left
+			// operators wondering why init created nothing.
+			name:    "empty slice now rejected",
 			briefs:  nil,
-			wantErr: "",
+			wantErr: "no `## <session>` headings",
 		},
 		{
 			name:    "single numeric session ok",

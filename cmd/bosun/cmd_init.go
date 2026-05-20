@@ -282,18 +282,25 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 	if opts.brief != "" {
 		briefs, err = brief.Parse(opts.brief)
 		if err != nil {
+			// Empty-brief case gets the richer "Expected shape"
+			// message — operator-facing UX, the parser sentinel is
+			// terse on purpose so non-init callers don't drag in
+			// init-specific copy. 2026-05 bug-hunt: brief.Parse now
+			// returns ErrEmptyBriefs instead of (nil, nil), so the
+			// post-Parse len()==0 check this used to do is
+			// folded into the errors.Is below.
+			if errors.Is(err, brief.ErrEmptyBriefs) {
+				return userErr(
+					"brief %s is missing `## <label>` sections.\n\n"+
+						"Expected shape:\n"+
+						"  ## label-one\n"+
+						"  body for session 1\n\n"+
+						"  ## label-two (depends: label-one)\n"+
+						"  body for session 2",
+					opts.brief,
+				)
+			}
 			return userErr("parse brief: %v", err)
-		}
-		if len(briefs) == 0 {
-			return userErr(
-				"brief %s is missing `## <label>` sections.\n\n"+
-					"Expected shape:\n"+
-					"  ## label-one\n"+
-					"  body for session 1\n\n"+
-					"  ## label-two (depends: label-one)\n"+
-					"  body for session 2",
-				opts.brief,
-			)
 		}
 	}
 
@@ -701,16 +708,22 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 		"BOSUN_SESSION_COUNT": strconv.Itoa(len(made)),
 		"BOSUN_BASE_BRANCH":   base,
 	}
+	// Discard the resume breadcrumb BEFORE the post-init hook fires.
+	// 2026-05 bug hunt: the previous ordering meant a post-init hook
+	// failure (script exits non-zero, network call times out, …)
+	// left .bosun/init.state on disk, and the operator's next plain
+	// `bosun init` was refused with a misleading "previous init
+	// didn't finish" — even though every worktree had been created
+	// and the round was effectively complete. The post-init hook is
+	// observability; treating it as load-bearing was the wrong call.
+	if err := istate.Clear(rc.repoRoot); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "bosun: warning: clear init state: %v\n", err)
+	}
+
 	if err := hooks.Run(rc.ctx, rc.cfg.Hooks, "post-init", postEnv); err != nil {
 		return userErr("%v", err)
 	}
 	_ = webhooks.Fire(rc.ctx, rc.cfg.Webhooks, "post-init", postEnv)
-
-	// Everything succeeded — discard the resume breadcrumb so the next
-	// plain `bosun init` isn't refused on stale state.
-	if err := istate.Clear(rc.repoRoot); err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "bosun: warning: clear init state: %v\n", err)
-	}
 
 	// Print summary.
 	_, _ = fmt.Fprintf(os.Stdout, "Created %d session(s):\n", len(made))

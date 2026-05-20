@@ -515,6 +515,12 @@ func (c *Client) UnmergedPatches(ctx context.Context, dir, base, branch string) 
 	}
 	n := 0
 	for _, line := range strings.Split(out, "\n") {
+		// Trim trailing CR — git on Windows (or git with autocrlf
+		// configured) can emit \r\n line endings, and the prefix
+		// match would otherwise fail on lines ending in "+ <sha>\r".
+		// Matches the same trim parseWorktreeList does. 2026-05 bug
+		// hunt #1.
+		line = strings.TrimRight(line, "\r")
 		if strings.HasPrefix(line, "+ ") || line == "+" {
 			n++
 		}

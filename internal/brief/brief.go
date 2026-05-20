@@ -91,7 +91,15 @@ var headingRe = regexp.MustCompile(`(?m)^##\s+([a-z][a-z0-9-]*)((?:\s*\([a-z]+:\
 // depends; whole string for command).
 var clauseRe = regexp.MustCompile(`\(([a-z]+):\s*([^)]+)\)`)
 
+// utf8BOM is the byte-order mark some editors (notably Windows Notepad,
+// Excel) prepend to UTF-8 files. Stripping it lets `## session-1` on the
+// first line match headingRe — without this, the BOM is the first byte
+// of "##" and the regex doesn't match. 2026-05 bug hunt #2.
+const utf8BOM = "\ufeff"
+
 func parseContent(s string) []Brief {
+	// Strip UTF-8 BOM before any other processing — see utf8BOM comment.
+	s = strings.TrimPrefix(s, utf8BOM)
 	// Normalize line endings.
 	s = strings.ReplaceAll(s, "\r\n", "\n")
 	matches := headingRe.FindAllStringSubmatchIndex(s, -1)
@@ -195,7 +203,23 @@ var strictLabelRe = regexp.MustCompile(`^[a-z][a-z0-9]*(-[a-z0-9]+)*$`)
 // session and collide with any real "session-0" label), self-dependencies,
 // and multi-step dependency cycles (`a → b → a`) that would otherwise stall
 // `bosun merge` forever.
+// ErrEmptyBriefs is the sentinel returned by Parse / ParseString when
+// the input has zero recognizable `## <label>` headings. Callers like
+// cmd_init wrap it with a richer "Expected shape: …" message tailored
+// to the operator UX; callers that just want to surface the failure
+// can use the default Error() string. errors.Is(err, ErrEmptyBriefs)
+// is the recommended check. 2026-05 bug-hunt #6 — used to silently
+// produce zero briefs instead of failing.
+var ErrEmptyBriefs = errors.New("brief contains no `## <session>` headings — check the file isn't empty, that headings use lowercase labels (e.g. `## session-1`, not `## Session-1`), and that there's no UTF-8 BOM corrupting the first line")
+
+// ValidateBriefs runs the lane-level invariants over a parsed brief
+// slice: empty-not-allowed (returns ErrEmptyBriefs — see comment on
+// that sentinel for the rationale), no duplicate labels, no
+// self-deps, no dep cycles.
 func ValidateBriefs(briefs []Brief) error {
+	if len(briefs) == 0 {
+		return ErrEmptyBriefs
+	}
 	seen := make(map[string]struct{}, len(briefs))
 	depMap := make(map[string][]string, len(briefs))
 	for _, b := range briefs {

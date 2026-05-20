@@ -23,7 +23,7 @@ func TestDockerInvocation_Minimal(t *testing.T) {
 		"--name bosun-session-1",
 		"-v /tmp/work:/work",
 		"-w /work",
-		"-e BOSUN_MCP_SOCK=/work/.bosun/mcp.sock",
+		"-e BOSUN_MCP_SOCK=/run/bosun-mcp.sock",
 		"ghcr.io/example/agent:latest",
 		" claude",
 	} {
@@ -74,7 +74,7 @@ func TestDockerInvocation_BindsMCPSocket(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(got, "-v /tmp/wt/.bosun/mcp.sock:/work/.bosun/mcp.sock") {
+	if !strings.Contains(got, "-v /tmp/wt/.bosun/mcp.sock:/run/bosun-mcp.sock") {
 		t.Errorf("expected MCP socket bind mount, got:\n%s", got)
 	}
 }
@@ -183,31 +183,50 @@ func TestDockerInvocation_RemoteSSHHostDropsWorktreeBind(t *testing.T) {
 	}
 }
 
-// TestDockerInvocation_RemoteSSHHostDropsMCPBind: in remote mode the
-// MCP socket reaches the container via ssh -R reverse forward, not
-// via -v bind. Verify the bind is omitted but BOSUN_MCP_SOCK env
-// still points at the same /work/.bosun/mcp.sock path.
-func TestDockerInvocation_RemoteSSHHostDropsMCPBind(t *testing.T) {
+// TestDockerInvocation_RemoteSSHHostBindsMCPViaRemoteSock: in remote
+// mode the ssh -R tunnel terminates on the docker host's filesystem
+// at BOSUN_MCP_REMOTE_SOCK. The docker invocation must bind THAT
+// path (not the Mac's local BOSUN_MCP_SOCK, which doesn't exist on
+// the docker host) into the container at /run/bosun-mcp.sock.
+//
+// The in-container path is /run/bosun-mcp.sock, NOT /work/.bosun/
+// mcp.sock — putting it under /work makes Docker auto-create
+// /work/.bosun/ as a mountpoint parent, which collides with the
+// remote-mode startup `git clone $BOSUN_ORIGIN /work`.
+func TestDockerInvocation_RemoteSSHHostBindsMCPViaRemoteSock(t *testing.T) {
 	got, err := dockerInvocation(Options{
 		WorktreePath: "/tmp/work",
 		SessionName:  "session-1",
 		Command:      "claude",
 		DockerImage:  "img",
 		Env: map[string]string{
-			"DOCKER_HOST":    "ssh://user@example.com",
-			"BOSUN_ORIGIN":   "ssh://op@host:/r.git",
-			"BOSUN_BRANCH":   "bosun/session-1",
-			"BOSUN_MCP_SOCK": "/host/path/.bosun/mcp.sock",
+			"DOCKER_HOST":           "ssh://user@example.com",
+			"BOSUN_ORIGIN":          "ssh://op@host:/r.git",
+			"BOSUN_BRANCH":          "bosun/session-1",
+			"BOSUN_MCP_SOCK":        "/host/path/.bosun/mcp.sock",
+			"BOSUN_MCP_REMOTE_SOCK": "/tmp/bosun-session-1-mcp.sock",
 		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Mac-side BOSUN_MCP_SOCK must NOT be bind-mounted (not
+	// reachable from the docker host).
 	if strings.Contains(got, "-v /host/path/.bosun/mcp.sock") {
-		t.Errorf("remote host should NOT bind MCP socket, got:\n%s", got)
+		t.Errorf("remote host should NOT bind Mac-side MCP socket, got:\n%s", got)
 	}
-	if !strings.Contains(got, "-e BOSUN_MCP_SOCK=/work/.bosun/mcp.sock") {
-		t.Errorf("expected BOSUN_MCP_SOCK env still set to /work path, got:\n%s", got)
+	// Docker-host-side BOSUN_MCP_REMOTE_SOCK should be bound at
+	// the in-container path /run/bosun-mcp.sock.
+	if !strings.Contains(got, "-v /tmp/bosun-session-1-mcp.sock:/run/bosun-mcp.sock") {
+		t.Errorf("remote host should bind ssh -R socket into container at /run, got:\n%s", got)
+	}
+	if !strings.Contains(got, "-e BOSUN_MCP_SOCK=/run/bosun-mcp.sock") {
+		t.Errorf("expected BOSUN_MCP_SOCK env at /run/bosun-mcp.sock, got:\n%s", got)
+	}
+	// BOSUN_MCP_REMOTE_SOCK is host-only — don't leak it into the
+	// container env where it would confuse in-container clients.
+	if strings.Contains(got, "-e BOSUN_MCP_REMOTE_SOCK") {
+		t.Errorf("BOSUN_MCP_REMOTE_SOCK should NOT be forwarded to container env, got:\n%s", got)
 	}
 }
 

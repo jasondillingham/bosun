@@ -797,13 +797,24 @@ func runInit(cmd *cobra.Command, args []string, opts initOpts) error {
 				// Open the reverse-proxy BEFORE docker run. The
 				// in-container agent expects the MCP socket to be
 				// reachable the moment it tries to register.
+				//
+				// Remote socket path: /tmp/bosun-<label>-mcp.sock on
+				// the docker host's filesystem. ssh -R creates the
+				// socket there (writable, predictable, unique per
+				// session); the container then bind-mounts it at
+				// /work/.bosun/mcp.sock (the in-container path the
+				// agent expects). Plumbed through env so docker.go
+				// can read BOSUN_MCP_REMOTE_SOCK and compose the
+				// matching -v bind mount.
 				if mcpSocket != "" {
-					tun, err := remote.OpenReverseProxy(mcpSocket, "/work/.bosun/mcp.sock", dockerHost)
+					remoteSock := "/tmp/bosun-" + c.label + "-mcp.sock"
+					tun, err := remote.OpenReverseProxy(mcpSocket, remoteSock, dockerHost)
 					if err != nil {
 						_, _ = fmt.Fprintf(os.Stderr, "  %s: open reverse-proxy to %s: %v\n", c.label, dockerHost, err)
 						continue
 					}
 					retainTunnel(tun)
+					env["BOSUN_MCP_REMOTE_SOCK"] = remoteSock
 				}
 			}
 			strategy, err := launcher.Launch(launcher.Options{

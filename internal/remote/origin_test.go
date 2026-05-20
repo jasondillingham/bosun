@@ -87,18 +87,65 @@ func TestPreparePushable_Idempotent(t *testing.T) {
 
 // TestPreparePushable_HonoursBosunRemoteOriginOverride: when
 // BOSUN_REMOTE_ORIGIN is set, the returned URI is the override
-// verbatim. Documented escape hatch for NAT-bound bosun hosts.
+// verbatim AND the session branch is pushed to that URI directly
+// (skipping the local-bare-repo dance). Documented escape hatch
+// for NAT-bound bosun hosts; the in-container clone needs the
+// override URI to actually contain the branch, so PreparePushable
+// has to push there.
 func TestPreparePushable_HonoursBosunRemoteOriginOverride(t *testing.T) {
 	repoRoot := initTestRepo(t, "main")
 
-	t.Setenv(remoteOriginEnv, "ssh://op@public.example.com:/srv/bosun/repo.git")
+	// Stand up a separate bare repo as the "remote" target so the
+	// override push has somewhere real to land. file:// URIs are
+	// honoured by git push and side-step the SSH dependency.
+	remoteBare := filepath.Join(t.TempDir(), "override.git")
+	if _, err := runGit("", "init", "--bare", remoteBare); err != nil {
+		t.Fatalf("init override bare: %v", err)
+	}
+	overrideURI := "file://" + remoteBare
+
+	t.Setenv(remoteOriginEnv, overrideURI)
 
 	uri, err := PreparePushable(repoRoot, "main")
 	if err != nil {
 		t.Fatalf("PreparePushable: %v", err)
 	}
-	if uri != "ssh://op@public.example.com:/srv/bosun/repo.git" {
-		t.Errorf("expected override URI, got %q", uri)
+	if uri != overrideURI {
+		t.Errorf("expected override URI %q, got %q", overrideURI, uri)
+	}
+
+	// Confirm the branch actually landed in the override bare repo —
+	// the whole point of the push in the override path is that the
+	// container's `git clone` finds the session branch waiting for it.
+	if out, err := runGit(remoteBare, "branch", "--list", "main"); err != nil {
+		t.Fatalf("list branches on override: %v\n%s", err, out)
+	} else if !strings.Contains(out, "main") {
+		t.Errorf("override bare missing the pushed branch:\n%s", out)
+	}
+
+	// And the local bare repo should NOT exist — when an override is
+	// set, the local-bare-repo dance is skipped entirely.
+	if _, err := os.Stat(filepath.Join(repoRoot, barePathRel)); err == nil {
+		t.Errorf("local bare repo should NOT exist when BOSUN_REMOTE_ORIGIN is set")
+	}
+}
+
+// TestPreparePushable_OverridePushFailureSurfaces: when the
+// override URI doesn't accept pushes (unreachable host, wrong
+// path, etc.), PreparePushable returns the wrapped git error
+// rather than swallowing it. Operators see the misconfig at init
+// time, not at the container's startup-clone step where the
+// failure is harder to diagnose.
+func TestPreparePushable_OverridePushFailureSurfaces(t *testing.T) {
+	repoRoot := initTestRepo(t, "main")
+	t.Setenv(remoteOriginEnv, "ssh://nonexistent.example.invalid:/no/such/path.git")
+
+	_, err := PreparePushable(repoRoot, "main")
+	if err == nil {
+		t.Fatal("expected error pushing to bogus override URI, got nil")
+	}
+	if !strings.Contains(err.Error(), "BOSUN_REMOTE_ORIGIN") {
+		t.Errorf("error should mention BOSUN_REMOTE_ORIGIN for operator clarity, got: %v", err)
 	}
 }
 

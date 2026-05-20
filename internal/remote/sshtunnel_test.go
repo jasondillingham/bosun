@@ -45,7 +45,9 @@ func TestOpenReverseProxy_BuildsExpectedSSHCommand(t *testing.T) {
 	for _, want := range []string{
 		"ssh",
 		"-R /work/.bosun/mcp.sock:/tmp/host.sock",
-		"ssh://user@example.com",
+		// The ssh:// scheme is stripped by parseSSHHost — ssh CLI's
+		// positional host arg can't carry a URL.
+		"user@example.com",
 		"sleep infinity",
 		"ExitOnForwardFailure=yes",
 		"BatchMode=yes",
@@ -53,6 +55,46 @@ func TestOpenReverseProxy_BuildsExpectedSSHCommand(t *testing.T) {
 		if !strings.Contains(joined, want) {
 			t.Errorf("ssh argv missing %q\nfull: %s", want, joined)
 		}
+	}
+	if strings.Contains(joined, "ssh://") {
+		t.Errorf("ssh argv should NOT contain raw ssh:// scheme:\nfull: %s", joined)
+	}
+}
+
+// TestOpenReverseProxy_AddsPortFlagFromURI: ssh URIs with a non-
+// default port should produce `-p N` in argv (ssh CLI doesn't
+// accept port in the host argument).
+func TestOpenReverseProxy_AddsPortFlagFromURI(t *testing.T) {
+	captured := withFakeSSH(t, "2")
+	tun, err := OpenReverseProxy("/tmp/host.sock", "/work/.bosun/mcp.sock", "ssh://op@example.com:2222")
+	if err != nil {
+		t.Fatalf("OpenReverseProxy: %v", err)
+	}
+	t.Cleanup(func() { _ = tun.Close() })
+
+	joined := strings.Join(*captured, " ")
+	if !strings.Contains(joined, "-p 2222") {
+		t.Errorf("expected -p 2222 in argv, got: %s", joined)
+	}
+	if !strings.Contains(joined, "op@example.com") || strings.Contains(joined, "op@example.com:2222") {
+		t.Errorf("expected host arg as op@example.com (no :port), got: %s", joined)
+	}
+}
+
+// TestOpenReverseProxy_AcceptsBareHost: legacy bare-host form
+// (user@host without ssh:// scheme) still works — parseSSHHost
+// passes it through unchanged.
+func TestOpenReverseProxy_AcceptsBareHost(t *testing.T) {
+	captured := withFakeSSH(t, "2")
+	tun, err := OpenReverseProxy("/tmp/host.sock", "/work/.bosun/mcp.sock", "user@example.com")
+	if err != nil {
+		t.Fatalf("OpenReverseProxy with bare host: %v", err)
+	}
+	t.Cleanup(func() { _ = tun.Close() })
+
+	joined := strings.Join(*captured, " ")
+	if !strings.Contains(joined, "user@example.com") {
+		t.Errorf("expected user@example.com in argv, got: %s", joined)
 	}
 }
 

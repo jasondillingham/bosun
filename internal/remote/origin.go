@@ -63,6 +63,20 @@ func PreparePushable(repoRoot, branch string) (string, error) {
 		return "", fmt.Errorf("remote: PreparePushable: branch is required")
 	}
 
+	// Override path: operator set BOSUN_REMOTE_ORIGIN to a URI the
+	// container can reach (typically a bare repo hosted off-box).
+	// Push the branch directly to that URI and skip the local-bare-
+	// repo dance entirely — the local repo would never be cloned from
+	// in this configuration. Validates that the override URI is a
+	// real, push-receiving git remote up front, so a misconfiguration
+	// fails at init time rather than mid-container-startup.
+	if override := strings.TrimSpace(os.Getenv(remoteOriginEnv)); override != "" {
+		if out, gErr := runGit(repoRoot, "push", "--force", override, branch+":"+branch); gErr != nil {
+			return "", fmt.Errorf("remote: push %s to %s (BOSUN_REMOTE_ORIGIN): %w\n%s", branch, override, gErr, out)
+		}
+		return override, nil
+	}
+
 	barePath := filepath.Join(repoRoot, barePathRel)
 
 	// Create the bare repo if missing. `git init --bare` is itself

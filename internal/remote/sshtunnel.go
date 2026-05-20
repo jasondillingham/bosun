@@ -2,10 +2,57 @@ package remote
 
 import (
 	"fmt"
+	"net/url"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 )
+
+// parseSSHHost extracts the ssh CLI's positional host argument (and
+// optional -p port flag) from a value that may be a bare user@host or
+// a full `ssh://user@host:port[/...]` URI. Callers pass whatever the
+// operator configured (config.docker.hosts entries are validated as
+// ssh:// URIs by config.Validate, so the URI form is the common case;
+// the bare-host form is honoured for parity with the `ssh` CLI).
+//
+// Returns hostArg = `user@host` (or `host` when user is empty) and
+// optionally portArgs = ["-p", "<port>"] when the URI had a non-
+// default port.
+func parseSSHHost(s string) (hostArg string, portArgs []string, err error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", nil, fmt.Errorf("empty host")
+	}
+	if !strings.Contains(s, "://") {
+		// Bare form: pass through as-is, no port extraction.
+		return s, nil, nil
+	}
+	u, parseErr := url.Parse(s)
+	if parseErr != nil {
+		return "", nil, fmt.Errorf("parse %q: %w", s, parseErr)
+	}
+	if u.Scheme != "ssh" {
+		return "", nil, fmt.Errorf("unsupported scheme %q (want ssh://)", u.Scheme)
+	}
+	host := u.Hostname()
+	if host == "" {
+		return "", nil, fmt.Errorf("ssh URI missing host: %q", s)
+	}
+	user := ""
+	if u.User != nil {
+		user = u.User.Username()
+	}
+	if user != "" {
+		hostArg = user + "@" + host
+	} else {
+		hostArg = host
+	}
+	if p := u.Port(); p != "" {
+		portArgs = []string{"-p", p}
+	}
+	return hostArg, portArgs, nil
+}
 
 // Tunnel owns an `ssh -R` reverse-proxy that exposes a local Unix
 // socket to a remote host. Wraps the long-lived ssh child process so
@@ -62,6 +109,14 @@ func OpenReverseProxy(localSock, remotePath, host string) (*Tunnel, error) {
 	if host == "" {
 		return nil, fmt.Errorf("remote: OpenReverseProxy: host is required")
 	}
+	// host may be either a bare user@host or a full ssh:// URI; ssh
+	// CLI only accepts the bare form (and -p for port). Normalise
+	// before constructing argv so an ssh:// URI from config doesn't
+	// reach ssh as a literal "host" arg.
+	hostArg, portArgs, err := parseSSHHost(host)
+	if err != nil {
+		return nil, fmt.Errorf("remote: OpenReverseProxy: %w", err)
+	}
 
 	// -o options disable interactive prompts so an SSH key prompt or
 	// host-key challenge surfaces as a clean failure rather than
@@ -74,10 +129,13 @@ func OpenReverseProxy(localSock, remotePath, host string) (*Tunnel, error) {
 		"-o", "ExitOnForwardFailure=yes",
 		"-o", "ServerAliveInterval=30",
 		"-o", "ServerAliveCountMax=3",
-		"-R", remotePath + ":" + localSock,
-		host,
-		"sleep infinity",
 	}
+	args = append(args, portArgs...)
+	args = append(args,
+		"-R", remotePath + ":" + localSock,
+		hostArg,
+		"sleep infinity",
+	)
 	cmd := execCommand("ssh", args...)
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("remote: start ssh -R: %w", err)

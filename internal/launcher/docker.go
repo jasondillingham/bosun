@@ -90,21 +90,33 @@ func dockerInvocation(opts Options) (string, error) {
 		args = append(args, "-v", m)
 	}
 
-	// MCP socket bind. The host's BOSUN_MCP_SOCK is set by bosun's
-	// launcher when the daemon is up; rewrite to the container path
-	// the agent expects.
+	// MCP socket bind. Local mode: bind the Mac's BOSUN_MCP_SOCK
+	// directly. Remote mode: the ssh -R tunnel terminates on the
+	// docker host's filesystem at BOSUN_MCP_REMOTE_SOCK (a /tmp/
+	// path set by cmd_init), so bind THAT into the container at
+	// the in-container socket path.
 	//
-	// In remote mode the socket reaches the container via an ssh -R
-	// reverse forward (opened by cmd_init), so no -v bind is needed
-	// — the path inside the container exists thanks to the tunnel.
-	if !remote {
+	// In-container path is /run/bosun-mcp.sock, NOT /work/.bosun/
+	// mcp.sock. Putting the socket under /work would force Docker
+	// to auto-create /work/.bosun/ as a parent dir for the
+	// mountpoint, which collides with the remote-mode startup
+	// `git clone $BOSUN_ORIGIN /work` (clone refuses on a
+	// non-empty target, and an active mountpoint can't be rm'd by
+	// the pre-clone scrub). /run is standard FHS for runtime IPC
+	// and is writable in every reasonable base image.
+	const inContainerMCPSock = "/run/bosun-mcp.sock"
+	if remote {
+		if remoteSock, ok := opts.Env["BOSUN_MCP_REMOTE_SOCK"]; ok && remoteSock != "" {
+			args = append(args, "-v", remoteSock+":"+inContainerMCPSock)
+		}
+	} else {
 		if sock, ok := opts.Env["BOSUN_MCP_SOCK"]; ok && sock != "" {
-			args = append(args, "-v", sock+":/work/.bosun/mcp.sock")
+			args = append(args, "-v", sock+":"+inContainerMCPSock)
 		}
 	}
 
 	// Forward useful in-container env.
-	args = append(args, "-e", "BOSUN_MCP_SOCK=/work/.bosun/mcp.sock")
+	args = append(args, "-e", "BOSUN_MCP_SOCK="+inContainerMCPSock)
 	if label, ok := opts.Env["BOSUN_SESSION"]; ok && label != "" {
 		args = append(args, "-e", "BOSUN_SESSION="+label)
 	}
@@ -125,6 +137,11 @@ func dockerInvocation(opts Options) (string, error) {
 	for k, v := range opts.Env {
 		switch k {
 		case "BOSUN_MCP_SOCK", "BOSUN_SESSION", "BOSUN_BIN":
+			continue
+		case "BOSUN_MCP_REMOTE_SOCK":
+			// Host-side path on the docker daemon's filesystem.
+			// Only useful for composing the bind mount above; not
+			// meaningful inside the container.
 			continue
 		}
 		// DOCKER_HOST itself MUST stay on the host side of the

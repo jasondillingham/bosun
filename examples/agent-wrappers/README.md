@@ -134,6 +134,30 @@ Known limitations:
    Claude Code-specific; aider ignores it. The wrapper passes
    `BOSUN_BRIEF.md` directly via aider's `--read` flag instead.
 
+### `codex-cli.sh`
+
+Routes the session through OpenAI's [Codex CLI](https://github.com/openai/codex) — the
+hosted-model analogue of `ollama-aider.sh`. Codex is a real coding
+agent that reads the worktree, edits files, runs commands, and
+follows the brief/claim/done workflow bosun expects.
+
+Env vars:
+
+| Var | Default | Notes |
+|---|---|---|
+| `OPENAI_API_KEY` | *(required)* | Read from host shell. Wrapper forwards without persisting. |
+| `CODEX_MODEL` | *(codex default)* | Optional override (e.g. `gpt-5-codex`, `gpt-5`). |
+| `CODEX_EXTRA_ARGS` | *(empty)* | Space-separated extra argv (e.g. `--approval-mode never`). |
+
+Requirements:
+
+- `codex` on PATH (`npm install -g @openai/codex` or `brew install codex`).
+- `OPENAI_API_KEY` exported.
+
+Limitations: same shape as ollama-aider — bosun_* MCP tools aren't
+wired into codex; use the `bosun claim` / `bosun done` CLI from
+inside the codex session.
+
 ### `docker-claude.sh`
 
 Runs Claude Code inside a Docker container with the worktree
@@ -161,6 +185,36 @@ Requirements:
 - A container image with `claude` installed.
 
 Limitations: see comments in the script itself.
+
+## What about Cursor, Continue, VSCode + Copilot?
+
+GUI editors don't fit the `agent_command` wrapper pattern cleanly.
+Bosun's launcher opens a terminal window per session and invokes
+`<agent_command>` inside it — that model assumes a CLI agent like
+`claude`, `aider`, or `codex` that reads from stdin and edits the
+worktree. Cursor / VSCode / Continue / Copilot Chat are IDE-bound;
+they launch their own window, manage their own context, and don't
+have a "drive me from a terminal" mode that bosun can pipe into.
+
+The honest path with GUI editors:
+
+1. Run `bosun init N` to create the worktrees + branches as usual.
+2. Open each worktree in your editor of choice manually
+   (`cursor -n /path/to/repo-bosun-X` for Cursor; same shape for
+   VSCode).
+3. Use the CLI from any terminal to coordinate: `bosun claim`,
+   `bosun done`, `bosun status`. Each worktree has a
+   `BOSUN_BRIEF.md` the IDE will load like any other file.
+
+This isn't a regression — it's an acknowledgement that bosun
+coordinates *agents that share a worktree contract*, and IDEs
+that ship their own agent ecosystem are best driven by the
+operator directly. If you want the worktree opened automatically
+when bosun init runs, an `agent_command` of `cursor -n .` works
+as a "fire-and-forget" wrapper — the terminal closes immediately
+but the IDE keeps running, and bosun status will show RUNNING as
+`—` for those sessions (the proc-scan can't see the IDE process
+across the launch boundary).
 
 ## Wiring a wrapper into bosun
 

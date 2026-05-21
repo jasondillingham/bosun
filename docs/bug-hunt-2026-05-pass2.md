@@ -11,16 +11,17 @@ Follow-up to `docs/bug-hunt-2026-05.md`. First pass covered bug *classes* (races
 | P2-3 — `init.state` lingers when post-init hook fails | **Fixed** (Clear runs before hook) | Medium |
 | P2-4 — `git.UnmergedPatches` missing `\r` trim on Windows | **Fixed** | Low |
 | P2-5 — `extractJSON` docstring lies about "largest" object | **Fixed** (docstring matches code) | Low |
-| Same-second parallel init collision | **Fixed** (PID appended to round timestamp) | Medium |
-| Suggest retry-template error growth | **Fixed** (`retryErrorByteCap=256`) | Medium |
-| spawn-tree no consistency validation on Load | **Fixed** (`validateTree` rejects self-parent, orphans, cycles) | Medium |
-| `git.BranchExists/TreeEqualsBase/MergeYieldsBase` bypass timeout | **Fixed** (`runAllowExitCode` helper) | Low |
-| Suggest no retry on 429/5xx | **Fixed** (`transientCallError` + exponential backoff) | Medium |
-| HTTP/SSE no connection limit | **Fixed** (`--max-connections` flag, default 64) | Low |
+| Init partial-failure orphan worktrees | **Fixed** in `29b8625` (auto-cleans crashed-AddWorktree orphans on `--resume`) | High |
 | Init `--force` cleanup has no rollback | **Fixed** (plan-then-execute with completed-list reporting) | Medium |
-| Init partial-failure orphan worktrees | **Open** — needs resume-time orphan detection | High |
-| Suggest token-budget unbounded | **Open** — needs token estimation or hard byte cap | Medium |
-| Subtask label collision unclear error message | **Open** — small UX improvement | Low |
+| Same-second parallel init collision | **Fixed** (PID appended to round timestamp via `newRoundTimestamp`) | Medium |
+| spawn-tree no consistency validation on Load | **Fixed** (`validateTree` rejects self-parent, orphans, cycles) | Medium |
+| Suggest no retry on 429/5xx | **Fixed** (`transientCallError` + exponential backoff) | Medium |
+| Suggest token-budget growth from retry-template echoes | **Fixed** (`retryErrorByteCap=256` truncates validation-error strings echoed back) | Medium |
+| `git.BranchExists/TreeEqualsBase/MergeYieldsBase` bypass timeout | **Fixed** (`runAllowExitCode` helper) | Low |
+| HTTP/SSE no connection limit | **Fixed** (`--max-connections` flag, default 64) | Low |
+| Subtask label collision unclear error message | **Fixed** 2026-05-21 (`spawntree.AddChild` now names the label + points at `bosun status` / `bosun cleanup`) | Low |
+
+**Status:** all 14 findings closed. This pass is fully resolved.
 
 ## Findings detail
 
@@ -59,62 +60,63 @@ Fixed by adding `line = strings.TrimRight(line, "\r")` at the top of the loop, m
 
 Fixed the docstring to describe what the code actually does. No code change; in practice Claude never emits multiple top-level objects in a single response, so the existing behavior is what we want.
 
-## Open — bigger work
+## Resolved — bigger work
 
-### Init partial-failure orphan worktrees (High)
+These findings opened larger than P2-1…P2-5 and were resolved in follow-up commits rather than in the initial pass. Listed here for the historical trail.
 
-If `bosun init 4` succeeds at creating worktrees for sessions 1–2 and then fails on session 3 (disk full, git lock contention, anything), `istate.MarkComplete` is never called for session 3. On `--resume`, the resume logic skips completed sessions (1 and 2) but doesn't know to also clean up the *partial* state of session 3. The loop re-attempts `git worktree add` for that path, hits "already exists," and refuses.
+### Init partial-failure orphan worktrees (High) — Fixed in `29b8625`
 
-Fix path (not done): when init detects a partially-created session at resume time, prompt-or-auto-clean the orphan worktree before retrying. Or rework the per-session state machine so partial creation has a "rollback in progress" state distinct from "complete."
+If `bosun init 4` succeeded at creating worktrees for sessions 1–2 and then failed on session 3 (disk full, git lock contention, anything), `istate.MarkComplete` was never called for session 3. On `--resume`, the resume logic skipped completed sessions (1 and 2) but didn't clean up the *partial* state of session 3 — the loop re-attempted `git worktree add` for that path, hit "already exists," and refused.
 
-### `--force` cleanup has no rollback (Medium)
+**Fixed by** `cmd_init.go:529-547` — resume-time orphan reconciliation. When `--resume` detects a partially-created worktree dir from a previous crash (empty dir, or one with only a partial `.git` link), it cleans the dir before retrying. Surfaces to stderr so the operator sees what happened.
 
-When `bosun init --force` is run, the cleanup loop removes existing worktrees and branches one-by-one. If removal of worktree 2 fails mid-loop, worktree 1 is already deleted but worktree 3 still exists. There's no rollback. The operator has to fix the state manually.
+### `--force` cleanup has no rollback (Medium) — Fixed
 
-Fix path (not done): collect the cleanup plan first, validate everything is removable, then perform the cleanup transactionally (or at least surface a clear "partial cleanup, you're at state X" message at the end).
+When `bosun init --force` was run, the cleanup loop removed existing worktrees and branches one-by-one. If removal of worktree 2 failed mid-loop, worktree 1 was already deleted but worktree 3 still existed. No rollback; manual recovery only.
 
-### Parallel init same-second collision (Medium)
+**Fixed by** `buildForceCleanupPlan` (`cmd_init.go:168`) — plan-then-execute. The cleanup operations are collected first, then run with explicit progress accounting so a partial failure surfaces a clear "X of N done, here's what's left" message instead of leaving the operator guessing.
 
-The round timestamp is captured at second precision. Two `bosun init` runs in the same UTC second from the same repo produce identical worktree directory names. The second invocation either overwrites the first (under `--force`) or fails on "already exists."
+### Parallel init same-second collision (Medium) — Fixed
 
-Fix path (not done): include the PID, or millisecond precision, or a small random nonce in the timestamp. The current behavior is documented in a test as expected, but it's documentation of a bug, not a feature.
+Round timestamps were captured at second precision. Two `bosun init` runs in the same UTC second from the same repo produced identical worktree directory names — second invocation overwrote the first (under `--force`) or failed on "already exists."
 
-### spawn-tree no consistency validation on Load (Medium)
+**Fixed by** `newRoundTimestamp` (`cmd_init.go:249-256`) — appends `os.Getpid()` to the timestamp suffix. Two same-second invocations from different PIDs now produce distinct paths. Tests inject a deterministic PID via `initPIDFn`.
 
-`spawntree.Store.Load` decodes the JSON file and checks the schema version, but doesn't validate parent-child consistency:
-- Orphaned children (parent label doesn't exist in `Sessions`)
-- Self-references (`Sessions["session-1"].Parent == "session-1"`)
-- Cycles in the parent chain
+### spawn-tree no consistency validation on Load (Medium) — Fixed
 
-Real-world incidence is low — the file is operator-controlled and bosun's own writers maintain consistency. But a corrupt JSON or hand-edited file can land bosun in a state where `ParentOf` walks indefinitely or `EnrichSessions` crashes on a missing entry.
+`spawntree.Store.Load` decoded the JSON file and checked the schema version, but didn't validate parent-child consistency: orphaned children, self-references, cycles. A corrupt or hand-edited file could land bosun in a state where `ParentOf` walked indefinitely or `EnrichSessions` crashed on a missing entry.
 
-Fix path (not done): add a `validateTree` pass at Load time. Could be lazy (validate-on-walk) instead of eager.
+**Fixed by** `validateTree` (`spawntree.go:131-163`) — runs unconditionally on Load. Rejects self-parent links, orphaned children whose parent isn't in the Sessions map, and cycles (via parent-chain walk with revisit detection, bounded by `cycleHopLimit=32`).
 
-### Suggest no retry on transient HTTP errors (Medium)
+### Suggest no retry on transient HTTP errors (Medium) — Fixed
 
-`internal/suggest/claude.go:374` doesn't distinguish 429 (rate-limit, retry-worthy) from 4xx (auth-error, terminal). Any non-2xx response fails the whole call. Anthropic's own SDK auto-retries 429s with exponential backoff.
+`internal/suggest/claude.go` didn't distinguish 429 (rate-limit, retry-worthy) from 4xx (auth-error, terminal). Any non-2xx response failed the whole call.
 
-Fix path (not done): classify the response status; retry transient errors with capped backoff, fail-fast on terminal ones. Reuse `maxProposeAttempts` budget or add a separate transport-retry budget.
+**Fixed by** `transientCallError` (`claude.go:387-393`) — wrapper type for retry-worthy failures. `callOnce` returns it on 429/5xx + transport-layer errors; the outer call loop checks `errors.As` and retries with exponential backoff inside the `maxProposeAttempts` budget.
 
-### Suggest token-budget unbounded (Medium)
+### Suggest token-budget growth from retry-template echoes (Medium) — Fixed
 
-Each Propose retry appends 2 messages (assistant + user) to the conversation. After 3 attempts the conversation can be 5KB+ of context. The Anthropic API will charge for it and may clip if it hits the context window. There's no cap or warning.
+Each Propose retry appended 2 messages (assistant + user) to the conversation. After 3 attempts the conversation could be 5KB+ — Anthropic would charge for it and could clip if the context window was hit. The dominant growth source was validation-error strings being echoed back into the retry follow-up template.
 
-Fix path (not done): track input bytes (or token estimate), warn at 50% of a sensible budget (say 50K tokens), fail gracefully past 80%. Or just truncate validation-error strings echoed back to ~256 chars to bound growth.
+**Fixed by** `retryErrorByteCap = 256` (`claude.go:146-152`) — `truncate(parseErr.Error(), retryErrorByteCap)` and `truncate(validateErr.Error(), retryErrorByteCap)` bound the echoed-error portion of each retry. The full conversation can still grow to several KB across 3 attempts, but no single retry inflates it by an unbounded validation-error dump.
 
-### HTTP/SSE no connection limit (Low)
+### HTTP/SSE no connection limit (Low) — Fixed
 
-`bosun serve` accepts unbounded concurrent SSE connections. Each spawns a goroutine + an event-poll timer. An attacker (or curious script) opening 10K connections creates 10K goroutines.
+`bosun serve` accepted unbounded concurrent SSE connections. Each spawned a goroutine + event-poll timer; 10K connections meant 10K goroutines.
 
-Mitigation in place: the default bind is `127.0.0.1`, so the attack surface is localhost-only by default. Operators who set `--bind 0.0.0.0` opt into the larger surface.
+**Fixed by** `--max-connections` flag (`cmd_serve.go:51`) — default 64, `0` disables the cap. Default bind is still `127.0.0.1`, so the practical attack surface is localhost; operators binding `0.0.0.0` get bounded resource use without further config.
 
-Fix path (not done): add a `--max-connections` flag, or document that operators exposing the dashboard should put nginx in front with connection limits.
+### `git.BranchExists/TreeEqualsBase/MergeYieldsBase` bypass timeout (Low) — Fixed
 
-### `git.BranchExists/TreeEqualsBase/MergeYieldsBase` bypass timeout (Low)
+These three methods called `c.Runner.Run(ctx, ...)` directly instead of `c.run()`, skipping the configured timeout. `TreeEqualsBase`'s `git diff` and `MergeYieldsBase`'s merge-tree work could legitimately exceed the timeout on large repos.
 
-These three methods call `c.Runner.Run(ctx, ...)` directly instead of `c.run()`, which applies the configured timeout. `BranchExists` is fine (sub-millisecond `show-ref`), but `TreeEqualsBase` calls `git diff` and `MergeYieldsBase` does merge-tree work — both legitimately slow on large repos. Could hang past the configured timeout.
+**Fixed by** `runAllowExitCode` (`git.go:197-209`) — runs git through the timeout path while returning the process exit code, so exit-code-1 (the "differs"/"not present" signal) can be classified without being treated as an error. The three call sites route through it (`git.go:345, 576, 610`).
 
-Fix path (not done): refactor to use `c.run()`, with exit-code-1 special-cased instead of returned as error. Small refactor.
+### Subtask label collision unclear error message (Low) — Fixed 2026-05-21
+
+`spawntree.AddChild`'s collision error read `child session %q already exists in spawn tree` — technical, no next-step guidance. After wrapping through `spawn.Run`'s `record spawn tree:` prefix, the operator saw a doubly-confusing message.
+
+**Fixed by** the message now naming the offending label and pointing at `bosun status` (to inspect) / `bosun cleanup` (to remove if stale). Test pinned in `TestAddChild_RefusesDuplicateChild`.
 
 ## Agent overcalls (verified safe, listed so they don't get re-flagged)
 

@@ -42,6 +42,44 @@ in this repo:
 
 If you're tempted to add something not in the v0.1 spec, write a TODO in `docs/v0.2-deferred.md` and keep moving.
 
+## Ground truth: Leonard
+
+This repo is wired to **Leonard** — a local-first MCP server that
+keeps you honest against the live codebase. Use it. The store lives
+at `.leonard/` (gitignored), the symbol index is built from
+`leonard index`, and the post-edit hook runs `go vet ./...` after
+every `Edit`/`Write` and logs the result.
+
+Three surfaces exposed under the `mcp__leonard__*` tool namespace:
+
+- **Symbol index** — `find_symbol(query)` / `verify_symbol(name)`
+  resolve a name against the actual source tree, not your memory of
+  it. Names in handoff docs and auto-memory rot; verify before you
+  recommend or edit.
+- **Decision log** — `record_decision`, `get_decisions`,
+  `supersede_decision`, `get_stale_decisions`. Capture non-trivial
+  calls (deferrals, "tried X, picked Y because…", scope cuts) so
+  the next session reads them instead of re-litigating.
+- **Claim ledger** — every `Edit`/`Write` triggers the verifier and
+  the pass/fail gets recorded as a claim. `get_unverified_claims()`
+  surfaces edits whose verifier didn't confirm.
+
+When to call which tool:
+
+- **At session start, and when a doc references a symbol you plan to
+  lean on:** `verify_symbol` it. If it fails, the doc is stale —
+  trust the live code and update or remove the stale reference.
+- **After a non-trivial decision:** `record_decision` with topic,
+  rationale, and related files/symbols. Future-you will thank
+  present-you.
+- **Before closing out a coding session:** `get_unverified_claims()`
+  to catch edits the verifier flagged that you missed.
+
+If a future session needs to change the verifier (e.g., add
+`golangci-lint`), edit `.leonard/config.toml`'s `[post_edit.verify]`
+block, then re-trust via `leonard config trust` — Leonard refuses to
+run an unauthorized command.
+
 ## Conventions
 
 - **Go 1.23+**, idiomatic Go style (gofmt, golangci-lint default rules)

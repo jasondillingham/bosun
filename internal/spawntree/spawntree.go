@@ -205,7 +205,7 @@ func (s *Store) AddChild(parent, child string) error {
 			return fmt.Errorf("parent session %q not in spawn tree", parent)
 		}
 		if _, exists := t.Sessions[child]; exists {
-			return fmt.Errorf("child session %q already exists in spawn tree", child)
+			return fmt.Errorf("sub-session label %q already exists (a previous spawn already created it; inspect with `bosun status` or remove with `bosun cleanup` if stale)", child)
 		}
 		now := time.Now().UTC().Format(time.RFC3339)
 		t.Sessions[child] = Node{

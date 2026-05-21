@@ -193,6 +193,14 @@ func TestAddChild_RefusesDuplicateChild(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error on duplicate child")
 	}
+	// Message should name the offending label and point operators at
+	// the next step. Tightened 2026-05-21 (bug-hunt pass-2 follow-up).
+	msg := err.Error()
+	for _, want := range []string{`"session-1.auth"`, "already exists", "bosun status", "bosun cleanup"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error message missing %q\n  got: %s", want, msg)
+		}
+	}
 }
 
 func TestAddChild_DepthAccumulates(t *testing.T) {

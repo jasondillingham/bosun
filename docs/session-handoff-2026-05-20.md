@@ -41,9 +41,9 @@ Started with my own gap analysis claiming 10 items needed work; turned out 3 wer
 
 ## Current state
 
-- **`origin/main` is at `45ab145`** as of session close.
-- **All 31 packages green under `go test -race`** including the new tests added this round.
-- **CI both jobs green** (`test` + `lint`).
+- **`origin/main` is at `4034ffa`** (handoff doc `8e4eba9` + a follow-up `4034ffa` that fixed lint — see postscript at bottom).
+- **All 33 packages green under `go test -race`** including the new tests added this round.
+- **CI both jobs green** (`test` + `lint`) as of `4034ffa`.
 - **0 High-severity findings open** from either security audit or bug hunt.
 - **Cross-compiles to GOOS=windows clean.**
 - **v0.11.1 release** on GitHub with 7 platform binaries (darwin/linux/windows × amd64/arm64 + checksums).
@@ -70,16 +70,19 @@ Jason has built a new MCP server: **`tracecast-mcp`** — purpose-built for reco
 - What output format the recording should land in — asciinema cast? GIF? mp4?
 - Where the resulting demo should land in the repo — replace `demo.gif`? sit alongside?
 
-**Suggested demo script** (vetted against current code via the smoke test earlier this session):
+**Suggested demo script** (illustrative — vetted against current code via the smoke test earlier this session, but the per-session worktree path is a placeholder; resolve it from `bosun list --json` or the configured base dir at recording time):
 
 ```sh
 # In a fresh temp repo, with a brief.md authored:
 bosun init 4 --brief plan.md
 bosun status
 
-# Simulate a small change in each session, claim + done:
+# Simulate a small change in each session, claim + done.
+# `bosun status --json` exposes each session's worktree path —
+# the post-init paths look like `<repo>-bosun-<timestamp>-<pid>-<n>`.
 for i in 1 2 3 4; do
-  (cd "$SMOKE-bosun-...-$i" && touch new-$i.go && git add . && git commit -q -m "session-$i")
+  WT=$(bosun status --json | jq -r ".sessions[] | select(.name==\"session-$i\") | .path")
+  (cd "$WT" && touch new-$i.go && git add . && git commit -q -m "session-$i")
   bosun claim session-$i new-$i.go
   bosun done session-$i -m "smoke"
 done
@@ -107,3 +110,20 @@ If you're a new Claude Code session opening this repo:
 This session's grind was preceded by extensive context-discovery: a Phase 4 round, all of Phase 5, two security audits, three bug-hunt passes, and the smoke-test verification that everything still works end-to-end. The codebase is in materially better shape than it was 24 hours ago — every High-severity finding closed, every Medium that's been triaged either fixed or explicitly deferred with rationale, and the README finally reflects what the code does.
 
 Bosun is in shipping shape. Next session's work is mostly polish (demo, blog posts, more dogfood) — not more correctness fixes.
+
+## Postscript — `4034ffa`
+
+After this doc was committed (`8e4eba9`), a review surfaced that
+the lint job had been red on `main` since `14ef37a` — gofmt drift
+in `cmd/bosun/cmd_cost.go` (struct field alignment in the cost
+payload) and `internal/session/derive_test.go` (comment block
+indentation). Both files were added in *this* session, so the
+"CI green" claim above was wrong at the moment of writing.
+
+`4034ffa` ran `gofmt -w` on both files and pushed. CI is now
+genuinely green on `main`. Pure formatting; no behavior change.
+Worth flagging because one of this session's earlier commits
+(`220cc9e`, item #91) was literally "unbreak the lint job" — the
+same failure mode recurred two commits later. A pre-commit
+`gofmt` hook (or `make fmt` in the contrib flow) would catch this
+class of regression at write time.

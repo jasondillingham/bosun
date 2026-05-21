@@ -58,6 +58,54 @@ type Config struct {
 // flood obvious in `bosun serve`'s log.
 const DefaultMaxConnections = 64
 
+// maxRequestBytes caps the inbound HTTP body the dashboard handlers
+// will read. Every handler today is GET, so this is defense-in-depth
+// — a misconfigured client (or a future POST endpoint) can't drive
+// unbounded allocator pressure via Content-Length. 1 MiB is far above
+// anything legitimate.
+const maxRequestBytes = 1 << 20
+
+// maxHeaderBytes caps inbound HTTP header size. Default Go behaviour
+// is 1 MiB; the explicit constant matches and pins it against any
+// future stdlib default change.
+const maxHeaderBytes = 1 << 20
+
+// dashboardCSP is the Content-Security-Policy header value the
+// security middleware emits. The embedded index.html uses inline
+// <style> and <script> blocks (no external resources), so
+// script-src / style-src must allow 'unsafe-inline'. Everything else
+// is locked to 'self': no external scripts, no framing, no
+// connections to anywhere but the bosun server itself.
+//
+// 'unsafe-inline' is a real CSP-strength regression compared to
+// nonce-based CSP, but bosun's dashboard renders zero untrusted
+// content — there's no XSS sink — so the practical risk is bounded.
+// frame-ancestors 'none' + X-Frame-Options: DENY are the
+// load-bearing protections against the malicious-browser-tab vector
+// for an operator who hits bosun serve while another tab is open.
+const dashboardCSP = "default-src 'self'; " +
+	"script-src 'self' 'unsafe-inline'; " +
+	"style-src 'self' 'unsafe-inline'; " +
+	"img-src 'self' data:; " +
+	"connect-src 'self'; " +
+	"base-uri 'none'; " +
+	"frame-ancestors 'none'"
+
+// securityHeaders is the middleware that fronts every dashboard
+// handler. Sets defense-in-depth headers and caps request bodies.
+// Applied once in Start so the handler chain stays simple.
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("Content-Security-Policy", dashboardCSP)
+		h.Set("Referrer-Policy", "no-referrer")
+		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBytes)
+		next.ServeHTTP(w, r)
+	})
+}
+
 // Server wraps an *http.Server with the bosun-specific handler set and
 // owns the listener lifecycle. Start blocks until ctx is cancelled.
 type Server struct {
@@ -158,11 +206,12 @@ func (s *Server) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
 	s.registerHandlers(mux)
 	s.srv = &http.Server{
-		Handler: mux,
+		Handler: securityHeaders(mux),
 		// SSE clients hold the connection open; no read/write timeouts
 		// here on purpose. The handler exits when the request context
 		// is cancelled (client disconnect or server shutdown).
 		ReadHeaderTimeout: 10 * time.Second,
+		MaxHeaderBytes:    maxHeaderBytes,
 	}
 
 	// Run Serve in a goroutine so we can race it against ctx cancellation.

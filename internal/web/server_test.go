@@ -75,6 +75,35 @@ func TestServer_RoutesEndToEnd(t *testing.T) {
 	}
 }
 
+// TestServer_SecurityHeaders pins the v0.12 M6 fix: every dashboard
+// response carries the defense-in-depth headers (frame-ancestors,
+// nosniff, CSP, referrer policy). Drift in the middleware gets
+// caught here. Checks both the HTML root and the JSON API surface so
+// future changes to one path don't silently regress the other.
+func TestServer_SecurityHeaders(t *testing.T) {
+	repo := newTestRepo(t)
+	srv := startTestServer(t, repo)
+
+	for _, path := range []string{"/", "/api/status"} {
+		resp, err := http.Get("http://" + srv.Addr() + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		_ = resp.Body.Close()
+		want := map[string]string{
+			"X-Frame-Options":         "DENY",
+			"X-Content-Type-Options":  "nosniff",
+			"Referrer-Policy":         "no-referrer",
+			"Content-Security-Policy": dashboardCSP,
+		}
+		for k, v := range want {
+			if got := resp.Header.Get(k); got != v {
+				t.Errorf("path %s: header %s = %q, want %q", path, k, got, v)
+			}
+		}
+	}
+}
+
 // TestServer_Show_Present boots a real Server against a repo with one
 // initialized bosun session, claims a path, writes a BOSUN_BRIEF.md, and
 // proves /api/show/<session> returns the expected JSON: identifying

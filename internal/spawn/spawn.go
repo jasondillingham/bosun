@@ -16,6 +16,7 @@ package spawn
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/jasondillingham/bosun/internal/brief"
@@ -143,11 +144,22 @@ func Run(ctx context.Context, client *git.Client, tree *spawntree.Store, req Req
 		}
 
 		// Record in the spawn tree BEFORE launching so a launcher
-		// failure doesn't leave a child untracked. AddChild's
-		// idempotency check also serves as a collision detector — if
-		// the label is already tracked, the spawn aborts cleanly.
-		if err := tree.AddChild(req.ParentLabel, full); err != nil {
-			res.Failed = append(res.Failed, Failure{Label: full, Reason: fmt.Sprintf("record spawn tree: %v", err)})
+		// failure doesn't leave a child untracked. AddChildIfUnderQuota
+		// atomically counts + checks + adds inside the flock, so the
+		// per-parent quota cannot be bypassed by concurrent callers or
+		// by a multi-brief request whose total exceeds the cap (the
+		// gate-level CountChildren check in toolSpawn is a fast-path
+		// optimization; this is the authoritative check). Quota
+		// failures surface to the operator's Failed[] list with a
+		// quota-specific reason; the idempotency check also serves as
+		// a collision detector for already-tracked labels.
+		maxKids := req.Cfg.AgentSpawn.MaxConcurrentSubSessions
+		if err := tree.AddChildIfUnderQuota(req.ParentLabel, full, maxKids); err != nil {
+			reason := fmt.Sprintf("record spawn tree: %v", err)
+			if errors.Is(err, spawntree.ErrQuotaExceeded) {
+				reason = fmt.Sprintf("quota exceeded: parent %q has reached agent_spawn.max_concurrent_sub_sessions=%d", req.ParentLabel, maxKids)
+			}
+			res.Failed = append(res.Failed, Failure{Label: full, Reason: reason})
 			_ = client.RemoveWorktree(ctx, req.RepoRoot, path, true)
 			_ = client.DeleteBranch(ctx, req.RepoRoot, branch, true)
 			continue

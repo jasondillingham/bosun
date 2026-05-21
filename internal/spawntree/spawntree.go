@@ -186,6 +186,13 @@ func (s *Store) AddTopLevel(label string) error {
 	})
 }
 
+// ErrQuotaExceeded is returned by AddChildIfUnderQuota when the
+// parent has already reached the supplied per-parent cap. Callers
+// distinguish it from other AddChild errors via errors.Is so the
+// MCP layer can surface a quota-specific message without sniffing
+// error text.
+var ErrQuotaExceeded = errors.New("max_concurrent_sub_sessions exceeded")
+
 // AddChild records a parent→child relationship. The parent must
 // already exist in the tree (top-level sessions are added via
 // AddTopLevel; sub-sessions land via AddChild from their parent's
@@ -194,7 +201,28 @@ func (s *Store) AddTopLevel(label string) error {
 // Returns an error if the parent doesn't exist or the child label is
 // already in the tree (collision indicates a caller bug — the
 // MCP tool should refuse with a clear message before getting here).
+//
+// Equivalent to AddChildIfUnderQuota(parent, child, 0) — quota
+// disabled. Callers that want quota enforcement (the MCP spawn
+// pipeline) must use AddChildIfUnderQuota directly so the
+// count-and-add is atomic against concurrent writers.
 func (s *Store) AddChild(parent, child string) error {
+	return s.AddChildIfUnderQuota(parent, child, 0)
+}
+
+// AddChildIfUnderQuota atomically counts the parent's current
+// children, checks that adding one more would not exceed maxChildren,
+// and records the new child — all inside the same flock acquisition.
+// This closes the TOCTOU race the MCP spawn gate's separate
+// CountChildren-then-AddChild sequence used to leave open: two
+// concurrent spawn calls could both pass a gate-level count check and
+// both succeed in AddChild, bypassing the cap.
+//
+// maxChildren == 0 disables the quota — the call behaves like
+// AddChild. Positive maxChildren returns ErrQuotaExceeded (via
+// errors.Is) when the parent already has that many children. Negative
+// values are treated as zero.
+func (s *Store) AddChildIfUnderQuota(parent, child string, maxChildren int) error {
 	return lockfile.WithLock(s.lock(), func() error {
 		t, err := s.Load()
 		if err != nil {
@@ -203,6 +231,9 @@ func (s *Store) AddChild(parent, child string) error {
 		pnode, ok := t.Sessions[parent]
 		if !ok {
 			return fmt.Errorf("parent session %q not in spawn tree", parent)
+		}
+		if maxChildren > 0 && len(pnode.Children) >= maxChildren {
+			return ErrQuotaExceeded
 		}
 		if _, exists := t.Sessions[child]; exists {
 			return fmt.Errorf("sub-session label %q already exists (a previous spawn already created it; inspect with `bosun status` or remove with `bosun cleanup` if stale)", child)

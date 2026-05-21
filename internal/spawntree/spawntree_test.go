@@ -2,6 +2,8 @@ package spawntree
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -200,6 +202,84 @@ func TestAddChild_RefusesDuplicateChild(t *testing.T) {
 		if !strings.Contains(msg, want) {
 			t.Errorf("error message missing %q\n  got: %s", want, msg)
 		}
+	}
+}
+
+func TestAddChildIfUnderQuota_RefusesAtCap(t *testing.T) {
+	dir := t.TempDir()
+	s := NewStore(dir)
+	_ = s.AddTopLevel("session-1")
+	if err := s.AddChildIfUnderQuota("session-1", "session-1.a", 2); err != nil {
+		t.Fatalf("first child under cap 2: %v", err)
+	}
+	if err := s.AddChildIfUnderQuota("session-1", "session-1.b", 2); err != nil {
+		t.Fatalf("second child under cap 2: %v", err)
+	}
+	err := s.AddChildIfUnderQuota("session-1", "session-1.c", 2)
+	if !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("third child at cap 2: got err=%v, want ErrQuotaExceeded", err)
+	}
+}
+
+func TestAddChildIfUnderQuota_ZeroDisablesQuota(t *testing.T) {
+	dir := t.TempDir()
+	s := NewStore(dir)
+	_ = s.AddTopLevel("session-1")
+	// Cap 0 means quota disabled — match historical AddChild behavior.
+	for _, label := range []string{"session-1.a", "session-1.b", "session-1.c"} {
+		if err := s.AddChildIfUnderQuota("session-1", label, 0); err != nil {
+			t.Fatalf("quota=0 should not reject %s: %v", label, err)
+		}
+	}
+}
+
+// TestAddChildIfUnderQuota_ConcurrentRespectsCap exercises the
+// race the TOCTOU fix targets: N goroutines all racing to add a
+// distinct child under the same parent with cap K. Only K can win;
+// the rest must come back with ErrQuotaExceeded. Pre-fix code (a
+// gate-level count check followed by a separate AddChild call)
+// would let more than K through under contention.
+func TestAddChildIfUnderQuota_ConcurrentRespectsCap(t *testing.T) {
+	const cap = 3
+	const racers = 12
+	dir := t.TempDir()
+	s := NewStore(dir)
+	_ = s.AddTopLevel("session-1")
+
+	var (
+		wg        sync.WaitGroup
+		mu        sync.Mutex
+		successes int
+		quotaHits int
+	)
+	wg.Add(racers)
+	start := make(chan struct{})
+	for i := 0; i < racers; i++ {
+		label := fmt.Sprintf("session-1.r%d", i)
+		go func() {
+			defer wg.Done()
+			<-start
+			err := s.AddChildIfUnderQuota("session-1", label, cap)
+			mu.Lock()
+			defer mu.Unlock()
+			switch {
+			case err == nil:
+				successes++
+			case errors.Is(err, ErrQuotaExceeded):
+				quotaHits++
+			default:
+				t.Errorf("unexpected error from racer: %v", err)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if successes != cap {
+		t.Errorf("successes = %d, want %d (cap held under contention)", successes, cap)
+	}
+	if quotaHits != racers-cap {
+		t.Errorf("quotaHits = %d, want %d", quotaHits, racers-cap)
 	}
 }
 

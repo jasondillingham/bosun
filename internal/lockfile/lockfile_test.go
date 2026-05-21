@@ -5,6 +5,7 @@ package lockfile
 import (
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -47,6 +48,90 @@ func TestWithLockResult_ReturnsPayload(t *testing.T) {
 	}
 	if v != 42 {
 		t.Fatalf("got %d, want 42", v)
+	}
+}
+
+// TestWithLock_TimeoutSurfacesLockTimeoutError pins the v0.12 M5 fix:
+// when the lock is held longer than DefaultTimeout, the second
+// caller gets a *LockTimeoutError instead of blocking indefinitely.
+// The error also unwraps to ErrLockTimeout so sentinel-style checks
+// work.
+func TestWithLock_TimeoutSurfacesLockTimeoutError(t *testing.T) {
+	prev := DefaultTimeout
+	DefaultTimeout = 150 * time.Millisecond
+	t.Cleanup(func() { DefaultTimeout = prev })
+
+	dir := t.TempDir()
+	lockPath := filepath.Join(dir, "timeout.lock")
+
+	holderInside := make(chan struct{})
+	releaseHolder := make(chan struct{})
+	holderDone := make(chan error, 1)
+	go func() {
+		holderDone <- WithLock(lockPath, func() error {
+			close(holderInside)
+			<-releaseHolder
+			return nil
+		})
+	}()
+	<-holderInside
+	defer func() { close(releaseHolder); <-holderDone }()
+
+	start := time.Now()
+	err := WithLock(lockPath, func() error {
+		t.Fatal("contended fn should not have run")
+		return nil
+	})
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, ErrLockTimeout) {
+		t.Fatalf("err = %v, want errors.Is == ErrLockTimeout", err)
+	}
+	var timeoutErr *LockTimeoutError
+	if !errors.As(err, &timeoutErr) {
+		t.Fatalf("err = %v, want *LockTimeoutError via errors.As", err)
+	}
+	if timeoutErr.Path != lockPath {
+		t.Errorf("Path = %q, want %q", timeoutErr.Path, lockPath)
+	}
+	if timeoutErr.Timeout != DefaultTimeout {
+		t.Errorf("Timeout = %v, want %v", timeoutErr.Timeout, DefaultTimeout)
+	}
+	// The holder writes its PID inside the locked section. Same-process
+	// holder means the reported PID equals os.Getpid().
+	if timeoutErr.HolderPID == 0 {
+		t.Error("HolderPID = 0, want a real PID (writeLockHolder should have stamped the lock file)")
+	}
+	// Sanity: total elapsed should be within an order of magnitude of
+	// the timeout. Wide tolerance to keep this stable under CI load.
+	if elapsed < DefaultTimeout {
+		t.Errorf("elapsed = %v, want >= %v", elapsed, DefaultTimeout)
+	}
+	if elapsed > 5*time.Second {
+		t.Errorf("elapsed = %v, want < 5s (timeout shouldn't take that long)", elapsed)
+	}
+}
+
+// TestWithLock_TimeoutErrorMessage pins the operator-facing message
+// shape — the error string must mention the lock path, holder PID,
+// and a duration. Future drift in the formatter gets caught.
+func TestWithLock_TimeoutErrorMessage(t *testing.T) {
+	err := &LockTimeoutError{
+		Path:      "/repo/.bosun/state/.lock",
+		Timeout:   30 * time.Second,
+		HolderPID: 12345,
+		HeldFor:   42 * time.Second,
+	}
+	msg := err.Error()
+	for _, want := range []string{"/repo/.bosun/state/.lock", "PID 12345", "30s"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("message missing %q\n  got: %s", want, msg)
+		}
+	}
+	// No-holder branch should still surface the path + timeout.
+	noHolder := &LockTimeoutError{Path: "/x.lock", Timeout: 10 * time.Second}
+	if !strings.Contains(noHolder.Error(), "contended") {
+		t.Errorf("no-holder branch should say 'contended'; got: %s", noHolder.Error())
 	}
 }
 

@@ -6,6 +6,9 @@
 # Local config (runtime version)
 /.bosun/config.json
 
+# Claude Code internal worktree state (per-session scratch, never committed)
+.claude/
+
 # OS noise
 .DS_Store
 Thumbs.db

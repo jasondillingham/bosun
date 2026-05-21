@@ -67,6 +67,29 @@ type Totals struct {
 // need to grow yet another method to expose the path).
 const stateDirRel = ".bosun/state"
 
+// maxLineBytes caps the marshaled ledger line (including the
+// trailing '\n') at a value safely below macOS's PIPE_BUF=512.
+// POSIX guarantees atomic append-mode writes only under PIPE_BUF;
+// on macOS that's 512 bytes (vs 4096 on Linux). A long Model or
+// TurnLabel could push a single entry past 512 and tear across
+// concurrent appenders. Append truncates Model and TurnLabel
+// (favouring the numeric token / cost fields, which are load-
+// bearing for cost rollups) to keep the encoded line under this
+// cap.
+//
+// 480 = 512 - 32 bytes of headroom. The headroom covers JSON-
+// quote-escape inflation (a stray '"' or '\' in TurnLabel) plus
+// the trailing newline.
+const maxLineBytes = 480
+
+// minFieldLen is the smallest each truncatable field will retain
+// during enforcement. If Model and TurnLabel together still exceed
+// the cap at this floor, the call returns an error rather than
+// silently dropping the entry — that path indicates a malformed
+// caller (token counts or cost so large they don't fit), not normal
+// operation.
+const minFieldLen = 32
+
 // usagePath returns the absolute path of the ledger file for
 // sessionName under repoRoot.
 func usagePath(repoRoot, sessionName string) string {
@@ -136,11 +159,10 @@ func Append(repoRoot, sessionName string, e Entry) error {
 		return fmt.Errorf("usage: mkdir %s: %w", dir, err)
 	}
 
-	line, err := json.Marshal(e)
+	line, err := encodeLineUnderCap(e)
 	if err != nil {
-		return fmt.Errorf("usage: marshal entry: %w", err)
+		return fmt.Errorf("usage: %w", err)
 	}
-	line = append(line, '\n')
 
 	path := usagePath(repoRoot, sessionName)
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
@@ -153,6 +175,54 @@ func Append(repoRoot, sessionName string, e Entry) error {
 		return fmt.Errorf("usage: write %s: %w", path, err)
 	}
 	return nil
+}
+
+// encodeLineUnderCap marshals e to a single JSON line (with trailing
+// '\n') guaranteed to be <= maxLineBytes, so the POSIX atomic-append
+// guarantee holds even on macOS where PIPE_BUF is 512 bytes.
+//
+// Strategy: marshal once; if already under the cap, done. Otherwise
+// shrink the two free-form string fields (TurnLabel first, then
+// Model) toward minFieldLen until either the line fits or both
+// fields are at the floor. If still over after that, return an
+// error — the numeric fields plus the JSON skeleton must fit
+// unconditionally, and a caller that triggers this is malformed.
+func encodeLineUnderCap(e Entry) ([]byte, error) {
+	line, err := json.Marshal(e)
+	if err != nil {
+		return nil, fmt.Errorf("marshal entry: %w", err)
+	}
+	if len(line)+1 <= maxLineBytes {
+		return append(line, '\n'), nil
+	}
+
+	// Shrink TurnLabel first — Model is more useful for cost rollups
+	// (PerModel groups by it) so we retain it longer.
+	for _, field := range []*string{&e.TurnLabel, &e.Model} {
+		for len(*field) > minFieldLen {
+			over := len(line) + 1 - maxLineBytes
+			cut := over + 8 // small overshoot to avoid re-marshaling for every byte
+			if cut > len(*field)-minFieldLen {
+				cut = len(*field) - minFieldLen
+			}
+			if cut <= 0 {
+				break
+			}
+			*field = (*field)[:len(*field)-cut]
+			line, err = json.Marshal(e)
+			if err != nil {
+				return nil, fmt.Errorf("re-marshal after truncate: %w", err)
+			}
+			if len(line)+1 <= maxLineBytes {
+				return append(line, '\n'), nil
+			}
+		}
+	}
+
+	if len(line)+1 <= maxLineBytes {
+		return append(line, '\n'), nil
+	}
+	return nil, fmt.Errorf("entry encoded to %d bytes; cannot fit under PIPE_BUF cap (%d) even after truncating Model/TurnLabel to %d each", len(line)+1, maxLineBytes, minFieldLen)
 }
 
 // Read returns all entries for sessionName in append order. Missing

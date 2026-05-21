@@ -1,6 +1,7 @@
 package usage
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -277,17 +278,36 @@ func sliceEq(a, b []string) bool {
 // TestRead_HandlesAtypicallyLongLine confirms the bufio.Scanner buffer
 // override accommodates very-large entries (e.g. agent wrapper that
 // includes a verbose turn_label). 1MB cap is more than reasonable.
-func TestRead_HandlesAtypicallyLongLine(t *testing.T) {
+// TestAppend_TruncatesOversizedFieldsForPIPEBUF pins the v0.12 M7
+// fix: macOS PIPE_BUF is 512 bytes, so each ledger line must encode
+// to <= maxLineBytes for the POSIX atomic-append guarantee to hold
+// across concurrent appenders. Append must truncate TurnLabel /
+// Model (favouring Model since PerModel groups by it) to keep the
+// encoded line under the cap. A caller passing a giant label still
+// gets a successful Append — the read-back just shows truncated
+// fields.
+func TestAppend_TruncatesOversizedFieldsForPIPEBUF(t *testing.T) {
 	dir := t.TempDir()
 	longLabel := strings.Repeat("x", 100*1024) // 100KB label
+	longModel := strings.Repeat("m", 100*1024) // 100KB model
 	if err := Append(dir, "session-1", Entry{
 		TokensIn:  10,
 		CostUSD:   0.01,
-		Model:     "x",
+		Model:     longModel,
 		TurnLabel: longLabel,
 	}); err != nil {
-		t.Fatal(err)
+		t.Fatalf("Append should accept oversized fields by truncating; got: %v", err)
 	}
+
+	// On-disk line must be <= cap so POSIX atomic-append holds.
+	raw, err := os.ReadFile(filepath.Join(dir, ".bosun/state", "session-1.usage"))
+	if err != nil {
+		t.Fatalf("read ledger: %v", err)
+	}
+	if got := len(raw); got > maxLineBytes {
+		t.Errorf("on-disk line = %d bytes, want <= %d (PIPE_BUF cap)", got, maxLineBytes)
+	}
+
 	entries, err := Read(dir, "session-1")
 	if err != nil {
 		t.Fatal(err)
@@ -295,7 +315,47 @@ func TestRead_HandlesAtypicallyLongLine(t *testing.T) {
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 entry, got %d", len(entries))
 	}
-	if len(entries[0].TurnLabel) != len(longLabel) {
-		t.Errorf("long turn_label truncated: got %d chars, want %d", len(entries[0].TurnLabel), len(longLabel))
+	// Both free-form fields must have been shrunk; the numeric fields
+	// must be preserved exactly (they're load-bearing for rollups).
+	if len(entries[0].TurnLabel) >= len(longLabel) {
+		t.Errorf("TurnLabel not truncated: still %d chars", len(entries[0].TurnLabel))
+	}
+	if len(entries[0].Model) >= len(longModel) {
+		t.Errorf("Model not truncated: still %d chars", len(entries[0].Model))
+	}
+	if entries[0].TokensIn != 10 || entries[0].CostUSD != 0.01 {
+		t.Errorf("numeric fields corrupted by truncation path: TokensIn=%d CostUSD=%f", entries[0].TokensIn, entries[0].CostUSD)
+	}
+}
+
+// TestEncodeLineUnderCap_NormalEntryUnchanged is the regression guard
+// against the cap accidentally truncating ordinary entries — a
+// realistic Model name + TurnLabel must round-trip without any
+// mutation.
+func TestEncodeLineUnderCap_NormalEntryUnchanged(t *testing.T) {
+	original := Entry{
+		Timestamp: time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC),
+		TokensIn:  1234,
+		TokensOut: 567,
+		CostUSD:   0.0234,
+		Model:     "claude-sonnet-4.6",
+		TurnLabel: "design-phase",
+	}
+	line, err := encodeLineUnderCap(original)
+	if err != nil {
+		t.Fatalf("encodeLineUnderCap: %v", err)
+	}
+	if len(line) > maxLineBytes {
+		t.Errorf("normal entry overflowed cap: %d > %d", len(line), maxLineBytes)
+	}
+	// Decode and verify nothing was truncated.
+	trimmed := strings.TrimSuffix(string(line), "\n")
+	var decoded Entry
+	if err := json.Unmarshal([]byte(trimmed), &decoded); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if decoded.Model != original.Model || decoded.TurnLabel != original.TurnLabel {
+		t.Errorf("normal entry mutated by encoder: got Model=%q TurnLabel=%q, want %q / %q",
+			decoded.Model, decoded.TurnLabel, original.Model, original.TurnLabel)
 	}
 }

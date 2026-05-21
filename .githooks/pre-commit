@@ -1,0 +1,37 @@
+#!/bin/sh
+# Block commits that introduce gofmt drift.
+#
+# Why a hook: CI's lint job catches gofmt drift via golangci-lint v2,
+# but only after a push. The same regression has shipped to main twice
+# in close succession (see the postscript in docs/session-handoff-
+# 2026-05-20.md). Catching it at write time costs ~50ms; catching it
+# in CI costs a red build, a follow-up commit, and a force-push or
+# merge to fix.
+#
+# Scope: gofmt only. The hook intentionally does NOT run the full
+# golangci-lint set — that requires the binary installed and takes
+# 10+ seconds. Run `make lint` (if you have golangci-lint) or `make
+# check` for the heavier gates.
+#
+# Install via `make install-hooks` (sets core.hooksPath to .githooks).
+# Per CONTRIBUTING.md, `--no-verify` is forbidden on this repo.
+
+set -e
+
+# `go list ./...` excludes vendor/, testdata/, .claude/ etc. by Go's
+# own rules, so the scope matches what CI actually enforces. Fall
+# back to a permissive walk if `go` isn't on PATH — we'd rather miss
+# a few non-Go directories than block the hook entirely.
+if command -v go >/dev/null 2>&1; then
+  dirs=$(go list -f '{{.Dir}}' ./... 2>/dev/null) || dirs=""
+fi
+if [ -z "${dirs:-}" ]; then
+  dirs="."
+fi
+
+drift=$(gofmt -l $dirs 2>/dev/null || true)
+if [ -n "$drift" ]; then
+  printf 'bosun: pre-commit: gofmt drift in:\n%s\n\n' "$drift" >&2
+  printf 'Run `make fmt` to auto-fix, then re-stage:\n  make fmt && git add %s\n' "$(echo "$drift" | tr '\n' ' ')" >&2
+  exit 1
+fi

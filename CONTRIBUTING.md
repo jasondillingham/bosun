@@ -88,9 +88,29 @@ That builds all six platform archives (darwin / linux / windows × amd64 / arm64
 
 ## Pre-commit hooks
 
-**Do not skip hooks.** `--no-verify` is forbidden on this repo.
-If a hook fails, fix the underlying issue. The hooks exist to keep
-`main` clean; bypassing them defeats the purpose.
+Bosun ships a tracked hooks dir at `.githooks/`. Wire it into your
+clone once:
+
+```sh
+make install-hooks
+```
+
+That sets `core.hooksPath` to `.githooks/` so the in-repo hooks run on
+every commit. Right now there's one hook: `pre-commit` blocks gofmt
+drift before it lands. CI's `golangci-lint` would catch it too, but
+catching it locally saves a red CI run and a follow-up commit.
+
+If the hook fires, run:
+
+```sh
+make fmt    # auto-fix
+git add <files>
+git commit  # retry
+```
+
+**Do not skip hooks.** `--no-verify` is forbidden on this repo. If a
+hook fails, fix the underlying issue. The hooks exist to keep `main`
+clean; bypassing them defeats the purpose.
 
 ## Submitting a change
 

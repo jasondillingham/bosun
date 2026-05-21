@@ -102,6 +102,15 @@ type Server struct {
 	// require spawning real claude processes.
 	runningFn func(worktreePath string) (pid int, ok bool)
 
+	// pidCwdFn returns a process's working directory. Production wires
+	// proc.Cwd which returns ErrCwdUnsupported on macOS/Windows; tests
+	// override to assert the bosun_attach cwd-validation gate without
+	// shelling out to a real worker. The bosun_attach handler treats
+	// ErrCwdUnsupported as a soft signal — fall back to writing the
+	// attached-pid without cwd validation on platforms that can't
+	// inspect it.
+	pidCwdFn func(pid int) (string, error)
+
 	mu       sync.Mutex
 	connWG   sync.WaitGroup
 	stopping bool
@@ -147,6 +156,7 @@ func NewServer(claimsStore *claims.Store, stateStore *state.Store, gitClient *gi
 		state:     stateStore,
 		gitClient: gitClient,
 		runningFn: defaultRunningFn,
+		pidCwdFn:  proc.Cwd,
 	}
 	s.mcp = mcp.NewServer(&mcp.Implementation{
 		Name:    ServerName,

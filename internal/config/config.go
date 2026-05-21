@@ -242,6 +242,19 @@ type AgentSubtaskConfig struct {
 //   - Command must be an explicit []string (no shell-string parsing) so
 //     "; rm -rf /" injected via brief contents can't be exec'd.
 //   - Timeout has a hard ceiling so an agent can't pin a session.
+//
+// Env inheritance (v0.12 L3): the executed command inherits the
+// bosun daemon's full environment via the default exec.Cmd behaviour
+// in internal/mcp/tools_custom.go. That means ANTHROPIC_API_KEY,
+// AWS credentials, GITHUB_TOKEN, and any other secrets in the
+// operator's shell at the time `bosun mcp` was started will be
+// visible to the custom tool. This is intentional — most useful
+// custom tools (a linter shelling out to an LLM, a deploy script
+// hitting a cloud API) need those credentials. But operators
+// defining a custom tool that hands argv to an unrelated process
+// they don't fully trust should set the tool's `command` to a
+// wrapper script that scrubs the env before invoking the real
+// binary. There is no per-def env allowlist today.
 type MCPToolDef struct {
 	// Name is the tool name agents see (e.g. "bosun_lint"). Must
 	// start with "bosun_". Validate refuses anything else, including

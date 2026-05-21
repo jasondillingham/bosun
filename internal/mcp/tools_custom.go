@@ -88,6 +88,13 @@ func makeCustomToolHandler(def config.MCPToolDef, timeoutSec int) func(context.C
 		defer cancel()
 
 		//nolint:gosec // G204: argv[0] is an operator-defined binary path; argv tail comes from the operator's config + agent-supplied positional args. This is the documented extension surface.
+		// Env: inherits the bosun daemon's full environment, including
+		// any ANTHROPIC_API_KEY / AWS / GITHUB_TOKEN secrets that were
+		// set when `bosun mcp` started. Intentional — most useful
+		// custom tools need those credentials — but documented in
+		// config.MCPToolDef so operators defining a tool that hands
+		// argv to an untrusted subprocess know to wrap it in an env-
+		// scrubbing script. v0.12 L3.
 		cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 		var stdout, stderr bytes.Buffer
 		cmd.Stdout = &stdout

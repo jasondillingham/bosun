@@ -9,7 +9,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jasondillingham/bosun/internal/claims"
 	"github.com/jasondillingham/bosun/internal/git"
+	"github.com/jasondillingham/bosun/internal/proc"
+	"github.com/jasondillingham/bosun/internal/state"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -152,11 +155,17 @@ func TestServer_AttachToolInvalidPIDRefuses(t *testing.T) {
 	client := startInProcServer(t, tmp, c)
 
 	cases := []struct {
-		name string
-		pid  int
+		name      string
+		pid       int
+		wantMatch string
 	}{
-		{"zero", 0},
-		{"negative", -1},
+		{"zero", 0, "positive integer"},
+		{"negative", -1, "positive integer"},
+		// v0.12 L2: PID 1 (init/launchd) is refused even though it's
+		// "positive and alive" — bosun workers are never PID 1, and
+		// proc.IsAlive can't disprove PID 1 so the false-positive
+		// would be permanent.
+		{"init_pid", 1, "init/launchd"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -176,7 +185,107 @@ func TestServer_AttachToolInvalidPIDRefuses(t *testing.T) {
 			if _, err := os.Stat(filepath.Join(tmp, ".bosun", "state", "session-1.attached-pid")); err == nil {
 				t.Errorf("invalid pid=%d should not have written attached-pid", tc.pid)
 			}
+			if tc.wantMatch != "" && !strings.Contains(toolResultText(result), tc.wantMatch) {
+				t.Errorf("error message missing %q\n  got: %s", tc.wantMatch, toolResultText(result))
+			}
 		})
+	}
+}
+
+// TestCwdInsideWorktree pins the helper's contract. Lives close to
+// the function it tests; the integration-level check below
+// exercises the call site indirectly.
+func TestCwdInsideWorktree(t *testing.T) {
+	cases := []struct {
+		name     string
+		cwd      string
+		worktree string
+		want     bool
+	}{
+		{"exact match", "/repo/wt-1", "/repo/wt-1", true},
+		{"descendant", "/repo/wt-1/sub", "/repo/wt-1", true},
+		{"deep descendant", "/repo/wt-1/a/b/c", "/repo/wt-1", true},
+		{"trailing slash in worktree", "/repo/wt-1/sub", "/repo/wt-1/", true},
+		{"sibling false-match guard", "/repo/wt-10", "/repo/wt-1", false},
+		{"unrelated path", "/other", "/repo/wt-1", false},
+		{"parent of worktree", "/repo", "/repo/wt-1", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := cwdInsideWorktree(tc.cwd, tc.worktree); got != tc.want {
+				t.Errorf("cwdInsideWorktree(%q, %q) = %v, want %v", tc.cwd, tc.worktree, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestServer_AttachToolCwdValidationRefusesMismatch pins the v0.12
+// L2 fix: when proc.Cwd can resolve the registered PID's working
+// directory (Linux today; macOS/Windows return ErrCwdUnsupported and
+// bypass the check), the handler refuses if the cwd doesn't sit
+// inside the session worktree. Whitebox-style — fakes pidCwdFn so
+// the test doesn't need a real worker process and works on macOS CI.
+func TestServer_AttachToolCwdValidationRefusesMismatch(t *testing.T) {
+	tmp := t.TempDir()
+	c := &git.Client{Runner: &fakeDoneRunner{
+		worktrees: "worktree " + tmp + "\nHEAD aaa\nbranch refs/heads/main\n\n" +
+			"worktree " + tmp + "-bosun-1\nHEAD bbb\nbranch refs/heads/bosun/session-1\n\n",
+		revCount: "0\n",
+	}}
+	cstore := claims.NewStore(tmp)
+	sstore := state.NewStore(tmp)
+	srv := NewServer(cstore, sstore, c)
+	srv.pidCwdFn = func(pid int) (string, error) {
+		return "/somewhere/else/entirely", nil
+	}
+
+	args := AttachArgs{Session: "session-1", PID: 4242}
+	result, _, err := srv.toolAttach(context.Background(), nil, args)
+	if err != nil {
+		t.Fatalf("toolAttach returned a Go error: %v", err)
+	}
+	if !isErrToolResult(result) {
+		t.Fatal("expected error tool result for cwd-outside-worktree; got success")
+	}
+	msg := toolResultText(result)
+	for _, want := range []string{"4242", "not inside", "worktree"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error message missing %q\n  got: %s", want, msg)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(tmp, ".bosun", "state", "session-1.attached-pid")); err == nil {
+		t.Error("cwd-mismatch refusal should not have written attached-pid")
+	}
+}
+
+// TestServer_AttachToolCwdValidationSkipsWhenUnsupported pins the
+// fallback path: macOS and Windows return ErrCwdUnsupported and the
+// handler must NOT refuse — the check is best-effort by design.
+func TestServer_AttachToolCwdValidationSkipsWhenUnsupported(t *testing.T) {
+	tmp := t.TempDir()
+	c := &git.Client{Runner: &fakeDoneRunner{
+		worktrees: "worktree " + tmp + "\nHEAD aaa\nbranch refs/heads/main\n\n" +
+			"worktree " + tmp + "-bosun-1\nHEAD bbb\nbranch refs/heads/bosun/session-1\n\n",
+		revCount: "0\n",
+	}}
+	cstore := claims.NewStore(tmp)
+	sstore := state.NewStore(tmp)
+	srv := NewServer(cstore, sstore, c)
+	srv.pidCwdFn = func(pid int) (string, error) {
+		return "", proc.ErrCwdUnsupported
+	}
+
+	args := AttachArgs{Session: "session-1", PID: 4242}
+	result, _, err := srv.toolAttach(context.Background(), nil, args)
+	if err != nil {
+		t.Fatalf("toolAttach returned a Go error: %v", err)
+	}
+	if isErrToolResult(result) {
+		t.Fatalf("ErrCwdUnsupported should fall through, not refuse; got: %s", toolResultText(result))
+	}
+	// Attached-pid file should have been written despite the unsupported lookup.
+	if _, err := os.Stat(filepath.Join(tmp, ".bosun", "state", "session-1.attached-pid")); err != nil {
+		t.Errorf("attached-pid missing after ErrCwdUnsupported fall-through: %v", err)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/jasondillingham/bosun/internal/config"
@@ -58,6 +59,17 @@ func (s *Server) toolAttach(ctx context.Context, _ *mcp.CallToolRequest, args At
 	if args.PID <= 0 {
 		return errResult(fmt.Errorf("pid must be a positive integer, got %d", args.PID)), AttachResult{}, nil
 	}
+	// v0.12 L2: PID 1 is init/launchd on every supported platform —
+	// never a real bosun worker, and the exemplar from the security
+	// audit (an agent registering PID 1 as its liveness PID gets a
+	// permanently-alive false-positive because proc.IsAlive can't
+	// disprove PID 1). Refuse explicitly. Higher reserved PIDs vary by
+	// platform (kernel threads on Linux, kernel_task at 0 on macOS) so
+	// we don't draw a broader floor — the cwd check below catches the
+	// rest where the platform supports it.
+	if args.PID == 1 {
+		return errResult(errors.New("pid 1 is init/launchd, not a bosun worker — refuse")), AttachResult{}, nil
+	}
 
 	// Re-validate the session against the live worktree set — the same
 	// "no orphan state files" gate cmd_attach.go uses. Without this gate
@@ -84,6 +96,26 @@ func (s *Server) toolAttach(ctx context.Context, _ *mcp.CallToolRequest, args At
 		return errResult(fmt.Errorf("%s not found", label)), AttachResult{}, nil
 	}
 
+	// v0.12 L2: best-effort cwd validation. If the platform supports
+	// reading a process's working directory (Linux today, via
+	// /proc/<pid>/cwd), confirm the registered PID is actually running
+	// inside the session's worktree. ErrCwdUnsupported (macOS,
+	// Windows) is a soft signal — degrade to writing the attached-pid
+	// without the cwd check rather than refusing on every non-Linux
+	// host. Any other error (PID not alive, permission denied) is also
+	// soft — the IsAlive check at liveness-gate time will catch a dead
+	// PID; a permission failure says we lack visibility, not that the
+	// PID is wrong.
+	if s.pidCwdFn != nil {
+		if cwd, err := s.pidCwdFn(args.PID); err == nil {
+			if !cwdInsideWorktree(cwd, sess.Path) {
+				return errResult(fmt.Errorf("pid %d cwd %q is not inside session worktree %q; bosun_attach refuses cross-worktree PID registration", args.PID, cwd, sess.Path)), AttachResult{}, nil
+			}
+		}
+		// errors (including ErrCwdUnsupported) intentionally swallowed
+		// — the validation is best-effort by design.
+	}
+
 	if err := s.state.WriteAttachedPID(label, args.PID); err != nil {
 		return errResult(fmt.Errorf("write attached-pid: %w", err)), AttachResult{}, nil
 	}
@@ -91,4 +123,37 @@ func (s *Server) toolAttach(ctx context.Context, _ *mcp.CallToolRequest, args At
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{&mcp.TextContent{Text: summary}},
 	}, AttachResult{Session: label, PID: args.PID}, nil
+}
+
+// cwdInsideWorktree reports whether cwd is at or under worktreePath.
+// Both inputs go through filepath.Clean so trailing slashes and
+// redundant separators don't break the comparison. EvalSymlinks is
+// best-effort — on macOS t.TempDir() roots like /var/folders/...
+// symlink to /private/var/folders/... and the kernel-reported cwd
+// resolves through the symlink; trying both sides keeps the
+// comparison robust without making symlink failures fatal.
+func cwdInsideWorktree(cwd, worktreePath string) bool {
+	candidates := func(path string) []string {
+		cleaned := filepath.Clean(path)
+		out := []string{cleaned}
+		if resolved, err := filepath.EvalSymlinks(cleaned); err == nil && resolved != cleaned {
+			out = append(out, resolved)
+		}
+		return out
+	}
+	cwds := candidates(cwd)
+	worktrees := candidates(worktreePath)
+	for _, c := range cwds {
+		for _, w := range worktrees {
+			if c == w {
+				return true
+			}
+			// Descendant check: append a separator to w so
+			// "/work/session-1" doesn't false-match "/work/session-10".
+			if strings.HasPrefix(c, w+string(filepath.Separator)) {
+				return true
+			}
+		}
+	}
+	return false
 }

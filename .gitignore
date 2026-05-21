@@ -9,6 +9,10 @@
 # Claude Code internal worktree state (per-session scratch, never committed)
 .claude/
 
+# Per-session brief — written into each bosun worktree's root; may contain
+# inline operator context that should never reach the public repo.
+BOSUN_BRIEF.md
+
 # OS noise
 .DS_Store
 Thumbs.db

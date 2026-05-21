@@ -370,6 +370,12 @@ func (c *ClaudeProposer) Propose(ctx context.Context, goal string, intel RepoInt
 // hiccup without burning the budget on a genuine outage.
 const maxCallRetries = 2
 
+// maxAnthropicResponseBytes caps how much of the Messages API
+// response body we'll read. Anthropic responses are kilobytes in
+// normal operation; the cap is defense-in-depth against a
+// compromised or proxied endpoint sending GB-scale data.
+const maxAnthropicResponseBytes = 10 << 20 // 10 MiB
+
 // callRetryBaseDelay is the first sleep before retry; subsequent
 // retries double it. 500ms + 1000ms = total 1.5s extra on the worst
 // case, well under any reasonable per-Propose budget. var (not const)
@@ -464,20 +470,25 @@ func (c *ClaudeProposer) callOnce(ctx context.Context, messages []anthropicMessa
 	}
 	defer resp.Body.Close()
 
-	raw, err := io.ReadAll(resp.Body)
+	// io.LimitReader caps response size at 10MB. Anthropic responses
+	// are kilobytes in normal operation; the cap is defense-in-depth
+	// against a compromised/proxied endpoint sending GB-scale data.
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxAnthropicResponseBytes))
 	if err != nil {
 		// Mid-read failure is likely a connection drop; retry-worthy.
 		return "", &transientCallError{Err: fmt.Errorf("bosun: read anthropic response: %w", err)}
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		// Try to surface the structured error message; fall back to raw.
+		// Surface only the structured error message — never the raw
+		// body. Anthropic error responses can echo request headers,
+		// auth metadata, or other fields we don't want in logs.
 		var apiErr anthropicErrorResponse
 		var inner error
 		if json.Unmarshal(raw, &apiErr) == nil && apiErr.Error.Message != "" {
 			inner = fmt.Errorf("bosun: anthropic %d: %s", resp.StatusCode, apiErr.Error.Message)
 		} else {
-			inner = fmt.Errorf("bosun: anthropic %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+			inner = fmt.Errorf("bosun: anthropic %d (no parseable error.message in response)", resp.StatusCode)
 		}
 		if isTransientStatus(resp.StatusCode) {
 			return "", &transientCallError{Err: inner}

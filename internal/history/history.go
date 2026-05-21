@@ -134,7 +134,7 @@ func Archive(ctx context.Context, in ArchiveInput) (string, error) {
 		commits = out
 	}
 	if commits != "" {
-		if err := os.WriteFile(filepath.Join(archDir, "commits.log"), []byte(commits), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(archDir, "commits.log"), []byte(commits), 0o600); err != nil {
 			warn("commits.log: %v", err)
 		}
 	}
@@ -145,7 +145,7 @@ func Archive(ctx context.Context, in ArchiveInput) (string, error) {
 		if !strings.HasSuffix(body, "\n") {
 			body += "\n"
 		}
-		if err := os.WriteFile(filepath.Join(archDir, "merged.txt"), []byte(body), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(archDir, "merged.txt"), []byte(body), 0o600); err != nil {
 			warn("merged.txt: %v", err)
 		}
 	}
@@ -168,7 +168,7 @@ func Archive(ctx context.Context, in ArchiveInput) (string, error) {
 	if err != nil {
 		return archDir, fmt.Errorf("marshal metadata: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(archDir, "metadata.json"), data, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(archDir, "metadata.json"), data, 0o600); err != nil {
 		return archDir, fmt.Errorf("write metadata.json: %w", err)
 	}
 
@@ -437,7 +437,10 @@ func copyFileIfExists(src, dst string) error {
 		return err
 	}
 	defer in.Close()
-	out, err := os.Create(dst)
+	// 0o600 — history archives may contain operator-visible brief
+	// contents; on multi-user hosts group/world-readable defaults
+	// would leak.
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
 	}

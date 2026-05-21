@@ -65,6 +65,39 @@ func TestSpawn_DisabledRefuses(t *testing.T) {
 	}
 }
 
+// TestSpawn_OversizedBriefRefuses pins the v0.12 M1 fix: bosun_spawn
+// caps the brief argument at maxBriefBytes (256KB) before any other
+// gate. An agent (malicious or merely confused) passing a multi-MB
+// brief gets refused with a clear message instead of allocating it
+// into the spawn pipeline.
+func TestSpawn_OversizedBriefRefuses(t *testing.T) {
+	tmp := t.TempDir()
+	cstore := claims.NewStore(tmp)
+	sstore := state.NewStore(tmp)
+	srv := NewServer(cstore, sstore, nil)
+
+	cfg := config.Defaults()
+	cfg.AgentSpawn.Enabled = true
+	srv.WithSpawnSupport(cfg, spawntree.NewStore(tmp))
+
+	// 1 byte over the cap is enough to trigger refusal.
+	oversized := strings.Repeat("a", maxBriefBytes+1)
+	args := SpawnArgs{Parent: "session-1", Brief: oversized, Launch: false}
+	result, _, err := srv.toolSpawn(context.Background(), nil, args)
+	if err != nil {
+		t.Fatalf("toolSpawn returned a Go error: %v", err)
+	}
+	if !isErrToolResult(result) {
+		t.Fatal("expected error tool result for oversized brief; got success")
+	}
+	msg := toolResultText(result)
+	for _, want := range []string{"brief exceeds", "byte cap"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error message missing %q\n  got: %s", want, msg)
+		}
+	}
+}
+
 // TestSpawn_WhitelistRefusesNonAllowed pins the per-session
 // whitelist when configured. If allowed_for_sessions is set and the
 // caller's parent isn't in it, the tool refuses before any tree or

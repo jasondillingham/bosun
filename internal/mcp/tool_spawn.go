@@ -48,6 +48,14 @@ func init() {
 	})
 }
 
+// maxBriefBytes caps the size of the brief argument an agent can
+// pass to bosun_spawn. 256KB is well above realistic operator-shaped
+// briefs (typically <10KB) and gives the MCP server a hard upper
+// bound on allocator pressure from a malicious or merely confused
+// caller. Refused requests still get audited with
+// spawnGateInvalidArgs.
+const maxBriefBytes = 256 << 10
+
 // SpawnArgs is the input schema for bosun_spawn. See
 // docs/v0.9-spawn-spec.md for full semantics.
 type SpawnArgs struct {
@@ -106,6 +114,9 @@ func (s *Server) toolSpawn(_ context.Context, _ *mcp.CallToolRequest, args Spawn
 
 	if parentRaw == "" {
 		return refuse(spawnGateInvalidArgs, errors.New("parent is required"))
+	}
+	if len(args.Brief) > maxBriefBytes {
+		return refuse(spawnGateInvalidArgs, fmt.Errorf("brief exceeds %d-byte cap (got %d bytes); real briefs are typically <10KB", maxBriefBytes, len(args.Brief)))
 	}
 	parent, err := session.ParseLabel(parentRaw)
 	if err != nil {

@@ -90,8 +90,15 @@ func TestArchive_CapturesBriefClaimsCommits(t *testing.T) {
 		t.Fatalf("dir = %s, want %s", archDir, want)
 	}
 	for _, f := range []string{"brief.md", "claims.json", "commits.log", "merged.txt", "metadata.json"} {
-		if _, err := os.Stat(filepath.Join(archDir, f)); err != nil {
+		fi, err := os.Stat(filepath.Join(archDir, f))
+		if err != nil {
 			t.Errorf("missing %s: %v", f, err)
+			continue
+		}
+		// History archives may contain operator-visible brief contents;
+		// must be operator-only on multi-user hosts. (v0.12 M4 fix.)
+		if mode := fi.Mode().Perm(); mode != 0o600 {
+			t.Errorf("%s mode = %o, want 0600", f, mode)
 		}
 	}
 	commits, _ := os.ReadFile(filepath.Join(archDir, "commits.log"))

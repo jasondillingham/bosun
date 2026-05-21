@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/bosun-logo.png" alt="Bosun" width="600">
+</p>
+
 # Bosun
 
 > *"The bosun runs the work crew on deck while the captain charts the course."*

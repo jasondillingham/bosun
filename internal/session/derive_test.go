@@ -127,10 +127,11 @@ func (f *fakeClaims) CountFor(_ string, name string) (int, error) {
 // fix: a sub-session created by bosun_spawn lands at
 // `<parent>.<suffix>` (e.g. `session-1.frontend`). Pre-fix, two
 // layers conspired to hide them from Derive:
-//   1. The branch regex `[a-z][a-z0-9-]*` rejected the dot.
-//   2. The numeric-parse `strconv.Atoi("1.frontend")` errored and
-//      the loop hit `continue` — hiding even the labels that did
-//      match a looser regex.
+//  1. The branch regex `[a-z][a-z0-9-]*` rejected the dot.
+//  2. The numeric-parse `strconv.Atoi("1.frontend")` errored and
+//     the loop hit `continue` — hiding even the labels that did
+//     match a looser regex.
+//
 // Result was sub-sessions silently absent from bosun status / list
 // despite their branches + worktrees existing on disk.
 func TestDerive_SubSessionsWithDots(t *testing.T) {

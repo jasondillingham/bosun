@@ -88,11 +88,11 @@ type costRow struct {
 // costPayload is the JSON shape `--json` emits. Wraps the rows
 // with a round-wide total so a collector doesn't have to re-sum.
 type costPayload struct {
-	By         string    `json:"by,omitempty"`     // "session" | "day" | "" for round-wide-only
-	Since      string    `json:"since,omitempty"`  // echo of --since
+	By          string    `json:"by,omitempty"`    // "session" | "day" | "" for round-wide-only
+	Since       string    `json:"since,omitempty"` // echo of --since
 	GeneratedAt time.Time `json:"generated_at"`
-	Total      costRow   `json:"total"`
-	Rows       []costRow `json:"rows,omitempty"`
+	Total       costRow   `json:"total"`
+	Rows        []costRow `json:"rows,omitempty"`
 }
 
 func runCost(opts costOpts) error {

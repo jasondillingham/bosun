@@ -62,8 +62,22 @@ jobs:
           if (-not $version) { $version = "dev" }
           go build -ldflags="-X main.version=$version" -o bosun.exe ./cmd/bosun
 
-      - name: go test -race
+      - name: go test -race (POSIX)
+        # Race detector requires cgo. Linux runners have a C toolchain
+        # installed by default; the Linux runner is where races would
+        # actually surface in concurrent tests, so single-platform race
+        # coverage is sufficient.
+        if: runner.os != 'Windows'
         run: go test -race ./... -count=1
+
+      - name: go test (Windows)
+        # Windows Go installs ship without a C toolchain (no MinGW) so
+        # -race fails with "race requires cgo". Plain go test confirms
+        # correctness on Windows; race-condition coverage rides on the
+        # Linux runner. Adding cgo on Windows would mean installing
+        # MinGW for no incremental coverage we don't already get.
+        if: runner.os == 'Windows'
+        run: go test ./... -count=1
 
   lint:
     # Lint findings don't depend on OS, so we run on a single runner

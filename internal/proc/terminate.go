@@ -30,6 +30,18 @@ func Terminate(pid int, grace time.Duration) error {
 	if pid <= 0 {
 		return fmt.Errorf("invalid pid: %d", pid)
 	}
+	// Already-gone short-circuit. Documented contract is "already-gone
+	// is success (no-op)". On POSIX, os.FindProcess always succeeds so
+	// the contract used to fall out of the SIGTERM-returns-ErrProcessDone
+	// branch below; on Windows, os.FindProcess calls OpenProcess and
+	// fails outright with "The parameter is incorrect" when the PID is
+	// gone — the error then leaked through wrapped as
+	// `find process N: ...`, breaking the contract. The IsAlive check
+	// makes both platforms behave identically (and saves a syscall on
+	// the common case). Trial finding 2026-05-22.
+	if !IsAlive(pid) {
+		return nil
+	}
 	p, err := os.FindProcess(pid)
 	if err != nil {
 		return fmt.Errorf("find process %d: %w", pid, err)

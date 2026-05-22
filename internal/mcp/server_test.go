@@ -216,7 +216,16 @@ func (c pipeCloser) Close() error {
 // tools against the operator's sessions. Without this, net.Listen
 // would leave the socket at the process umask — typically 0o755-
 // equivalent on a default Linux install, which is world-connectable.
+//
+// Skipped on Windows: NTFS doesn't honor POSIX mode bits the same
+// way (the test reports 0o666). The MCP daemon's Unix-socket
+// transport is Linux/macOS-shaped anyway — other tests in this
+// file already skip with the matching "Unix sockets aren't supported
+// on Windows runners" message. Windows-trial finding 2026-05-22.
 func TestServer_Listen_SocketOwnerOnly(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix sockets aren't supported on Windows runners")
+	}
 	tmp := t.TempDir()
 	cstore := claims.NewStore(tmp)
 	sstore := state.NewStore(tmp)

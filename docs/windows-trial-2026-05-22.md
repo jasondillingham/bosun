@@ -138,18 +138,7 @@ wide install (no user-scope option) — the dockur image's `Docker` user
 is admin so this is silent; on a non-admin Windows user it would
 prompt for elevation.
 
-## What we still haven't trialed
-
-| Item | Why deferred | Likely outcome |
-|---|---|---|
-| `bosun init --launch` opening real `wt.exe` windows | SSH session has no GUI desktop attached, so spawned windows would have nowhere to render | Should work when run interactively; argv unit-tested |
-| `cmd.exe` fallback path | Same — needs interactive console | Same |
-| `bosun_attach` PID validation behavior | Touched on test-skip; the L2 cwd validation is documented no-op on Windows, but real-world flow needs verification | Should fall through cleanly; tests pass |
-| `bosun tui` rendering | TTY-dependent | Bubbletea should render fine in Windows Terminal |
-| `bosun serve` HTTP dashboard | Not blocked, just not exercised | Should work; net/http is cross-platform |
-| `claude` MCP integration | Claude binary not installed; this trial was bosun-only | Anthropic's installer ships `claude.cmd`, exec.LookPath resolves; should work |
-
-## Findings to fix
+## Findings to fix (first-pass — SSH-only)
 
 | # | Severity | Where | Fix |
 |---|---|---|---|
@@ -159,7 +148,147 @@ prompt for elevation.
 | 4 | Low | `internal/remote/sshtunnel_test.go` | Same — skip sleep-dependent tests on Windows. |
 | 5 | Low | `internal/mcp/server_test.go` `TestServer_Listen_SocketOwnerOnly` | Add the existing "Unix sockets aren't supported on Windows" skip pattern. |
 
-Items 2-5 are bounded and can ship in one commit. Item 1 deserves its
-own commit with proper test coverage of the fix (which the existing
-`TestTerminate_AlreadyGone` already provides — it currently fails on
-Windows, will pass after the fix).
+Items 1-5 all shipped same day (commits `ce7dc8f` and `b33f037`).
+Items 2-5 bundled; item 1 was its own commit. The existing
+`TestTerminate_AlreadyGone` test now passes on Windows after the fix.
+
+## Second-round validation — VNC console (2026-05-22 evening)
+
+The first-pass run was over SSH, which has no interactive Windows
+desktop session. AppX-aliased binaries (`wt.exe`) silently refuse to
+surface a window without one — so the SSH run produced inconclusive
+launcher results (TEST 1 reported success but no terminal processes
+spawned; TEST 2 surfaced cmd windows but markers couldn't validate
+end-to-end).
+
+Repeated the trial from the **VNC console** with a richer instrumented
+PowerShell script (`bosun-trial.ps1` left on the Desktop):
+
+- fresh `git init`, plan with 2 sub-sessions
+- `marker.cmd` committed to the repo so every worktree inherits it
+- `.bosun/config.json` sets `agent_command` to `marker.cmd` — pure
+  batch, no nested quoting, so it survives the launcher's `cmd /K …`
+  invocation chain
+- each launched window's marker.cmd writes `launched-marker.txt` with
+  its `%CD%` and timestamp, giving us machine-verifiable proof that
+  the launcher cd'd into the right worktree before invoking the agent
+
+### Result matrix
+
+| Test | Exit | New procs | Markers | Verdict |
+|---|---|---|---|---|
+| 1 — `wt.exe` launcher | 0 | 2 (`cmd`) | **2/2** | **PASS** |
+| 2 — `cmd.exe` fallback (wt.exe renamed away) | 0 | 4 (2× `cmd`, 2× `conhost`) | **0/2** | **PARTIAL — windows opened but agent_command didn't run** |
+| 3 — `bosun tui --help` | 0 | n/a | n/a | PASS |
+
+The `wt.exe` path is end-to-end verified. The fallback path opens
+windows but the inner `cd /D … && marker.cmd` doesn't actually run
+the agent. See finding C below.
+
+## Findings — second round
+
+### A. `wt.exe` launcher verified end-to-end ✓
+
+Headline: the path documented in `README.md` ("Terminal launcher
+prefers `wt.exe`…") now has empirical backing on a real Win11 25H2
+host. windows opened, `cd` landed in the correct worktree, agent
+command executed in that worktree, marker file landed where expected.
+
+### B. `bosun cleanup --force` fails on open launched terminals — Low/Med
+
+When a `bosun cleanup --force` runs while the launched terminal
+windows are still open, git's worktree removal fails with the bare
+operator-facing error:
+
+```
+bosun: remove worktree C:/…: git worktree remove …: exit status 255:
+error: failed to delete 'C:/…': Permission denied
+```
+
+Windows refuses to delete a directory any process has open as its
+cwd. Each launched terminal window holds its worktree dir open via
+its `cmd` cwd, so cleanup pinions on them.
+
+**Fix path (not done):** when `bosun cleanup` hits this Windows-shape
+error, walk `Win32_Process` for cmd/conhost processes whose
+command-line mentions the worktree path, surface them by PID and
+name in the error ("worktree pinned by PID 1234 (cmd.exe) — close
+the launched terminal and retry"). Aggressive alternative: with a
+`--terminate-blockers` flag, kill them automatically before retrying.
+
+### C. `cmd.exe` fallback launcher: `cd /D … && agent_command` quoting collapses — Med
+
+`internal/launcher/launcher.go`'s `cmdExeArgs` constructs:
+
+```
+cmd /c start "" cmd /K cd /D "<worktree>" && <agent_command>
+```
+
+Go's `exec.Command` then wraps the whole `cd /D "<worktree>" &&
+<agent_command>` block as a single argv element. When cmd.exe parses
+that on the way into the inner `/K`, its complex
+"more-than-two-quotes-with-special-chars" rule (`cmd /?` describes
+it) strips the outer quotes and leaves the embedded `\"` as literal
+chars. The launched window's cmd then sees:
+
+```
+cd /D \"C:\path\to\worktree\" && marker.cmd
+```
+
+It interprets `cd /D \` as cd to drive root (taking the
+backslash-quote as garbage), the `&& marker.cmd` then runs from
+drive root where `marker.cmd` isn't on PATH, and the window sits
+at a useless prompt at `C:\`.
+
+Effect:
+- A window DOES open (4 new processes in the diff: 2 cmd + 2
+  conhost) so naive testing says "launcher worked"
+- But the cd didn't land in the worktree, AND the agent_command
+  never ran
+- A grep across the entire filesystem for `launched-marker.txt`
+  after the run found zero files — concrete proof the agent never
+  executed
+
+Practical impact:
+- On Win11 25H2 wt.exe is built-in, so virtually every operator
+  hits the wt.exe path (which works). The fallback is invoked only
+  when an operator explicitly removes wt.exe, OR on Win10 without
+  the Windows Terminal opt-in install.
+- For operators who DO hit the fallback, `bosun init --launch`
+  appears to work (windows pop up) but agent sessions never start
+  and the operator wonders why their agents aren't showing up in
+  `bosun status` as RUNNING.
+
+**Fix path (not done):** stop chaining `cd /D && agent_command` as
+a single argv element through cmd.exe's parser. Options:
+1. Write a per-launch `.bosun/launch-<session>.cmd` helper inside
+   the worktree that does the cd-and-run, and invoke it via
+   `cmd /K <path-to-helper>`. The helper file's contents stay
+   inside the file system, no shell-argv quoting in the picture.
+   This is what `marker.cmd` already proved works.
+2. Use `wt.exe` (which works) when available; refuse to fall back
+   to cmd.exe with a clear "Windows Terminal required" error.
+3. Investigate the documented "use backslashes to escape inside
+   /K" pattern; brittle and version-dependent.
+
+Option 1 is most robust and matches the marker.cmd pattern.
+
+### D. PowerShell 5.1 console mangles `·` (cosmetic) — Low
+
+`bosun tui --help` prints key bindings separated by `·` (Unicode
+U+00B7 middle-dot). PowerShell 5.1's console renders this as `-+`
+because its default code page (cp437/cp1252) doesn't have a
+single-glyph mapping for it. The same character renders correctly
+in Windows Terminal (UTF-8 aware) and in PowerShell 7. Likely also
+visible in the actual Bubbletea TUI's status line. README's Windows
+notes section should mention that PS 5.1 console rendering is
+suboptimal and recommend Windows Terminal / PS7.
+
+## What we still haven't trialed
+
+| Item | Why deferred | Likely outcome |
+|---|---|---|
+| `bosun tui` rendering (actual full-screen Bubbletea) | Needs human eyeballs in VNC; the script can only `--help` smoke-test | Bubbletea should render correctly in Windows Terminal; PS 5.1 console will mangle Unicode glyphs (finding D) |
+| `bosun serve` HTTP dashboard | Not blocked, just not exercised | Should work; `net/http` and the embedded static asset path are cross-platform |
+| `claude` MCP integration | Claude binary not installed; this trial was bosun-only | Anthropic's installer ships `claude.cmd`, exec.LookPath resolves; should work |
+| `bosun_attach` cwd validation behavior | The L2 cwd validation is documented no-op on Windows; real-world flow not exercised but tests pass | Should fall through cleanly |

@@ -7,17 +7,22 @@ on:
 
 jobs:
   test:
-    # Ubuntu-only by default. Public-repo Linux runners are free with
-    # no minute counting; macOS (10× multiplier) and Windows (2×) burn
-    # quota fast on a busy day. Cross-OS regressions are validated by
-    # operator-side local runs (bosun is macOS-primary, Linux-tested,
-    # Windows officially not-yet-supported in v0.10/v0.11).
+    # Matrix: ubuntu + windows for every push. macOS is intentionally
+    # off the default matrix — its 10× minute multiplier burns quota
+    # fast and macOS-specific regressions are caught locally on the
+    # maintainer's primary box. Public-repo Linux runners are free,
+    # and Windows (2×) is the cost we pay for the platform claim in
+    # README's "Supported platforms" — without this CI signal that
+    # claim has no evidence.
     #
-    # If/when this changes — external contributors arrive, Windows
-    # support lands, etc. — re-add the matrix:
+    # If macOS-specific CI becomes important later (external macOS
+    # contributors, an Apple-Silicon-only bug surface), add it back:
     #   os: [ubuntu-latest, macos-latest, windows-latest]
-    #   runs-on: ${{ matrix.os }}
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
 
@@ -35,13 +40,27 @@ jobs:
       - name: go vet
         run: go vet ./...
 
-      - name: go build
+      - name: go build (POSIX)
         # Inject the git-derived version so `bosun --version` reports something
         # meaningful even on CI-built binaries. Mirrors `make build`. Falls
         # back to "dev" if git describe fails (shallow clones etc.).
+        if: runner.os != 'Windows'
         run: |
           VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo dev)
           go build -ldflags="-X main.version=$VERSION" -o bosun ./cmd/bosun
+
+      - name: go build (Windows)
+        # PowerShell flavour of the same step — bash isn't the default
+        # shell on windows-latest. Outputs bosun.exe to match the
+        # convention. The test runner doesn't depend on the built binary
+        # so this step is purely about confirming the build path stays
+        # clean on Windows.
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = (git describe --tags --always --dirty 2>$null)
+          if (-not $version) { $version = "dev" }
+          go build -ldflags="-X main.version=$version" -o bosun.exe ./cmd/bosun
 
       - name: go test -race
         run: go test -race ./... -count=1

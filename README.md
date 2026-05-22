@@ -377,9 +377,11 @@ bosun spawn <parent> --brief <plan.md> [--launch]
 |---|---|---|
 | **macOS** (Intel + Apple Silicon) | ✓ primary development target | iCloud-path refusal in `bosun init`; see below |
 | **Linux** (x86_64) | ✓ tested on Ubuntu 25.04 (kernel 6.14) | `bosun tour` + `bosun doctor` + full init/merge/cleanup cycle validated end-to-end |
-| **Windows** | ⚠ not yet supported in v0.10 | Builds compile but the terminal launcher only knows about Ghostty / Terminal.app / gnome-terminal. Windows Terminal / cmd.exe / WSL integration is post-v0.10 work. Compile-only CI may land sooner. |
+| **Windows** | ✓ supported — see Windows notes | Terminal launcher prefers `wt.exe` (Windows Terminal, default on Win11, opt-in on Win10) with tab support; falls back to `cmd /c start` for windows. Lockfile uses real `LockFileEx`; process detection uses gopsutil. Live trial coverage is narrower than macOS / Linux — please open an issue if you hit something on real-world Windows work. |
 
 **macOS users:** keep the bosun project **out of** `~/Documents/`, `~/Desktop/`, and `~/Library/Mobile Documents/` — all are iCloud-synced by default, and iCloud File Provider strips git's worktree admin metadata under load. `bosun init` refuses these paths by default (override with `--force-icloud` if you've disabled iCloud sync for the dir). `bosun doctor` catches and recovers the corruption shape if you hit it. See [`docs/macos-setup.md`](./docs/macos-setup.md) for the full guide and the recipe to relocate an existing repo out of iCloud.
+
+**Windows users:** the launcher uses `wt.exe` when present (real tab support via `wt -w 0 new-tab`), `cmd /c start "" cmd /K …` otherwise. Set your `agent_command` in `.bosun/config.json` to `claude` (PATH-resolved — Anthropic's installer ships `claude.cmd` and Go's `exec.LookPath` finds it). One known difference from POSIX: `bosun_attach`'s best-effort PID-cwd validation is a no-op on Windows because per-process cwd isn't cleanly exposed without a new dependency — the gate degrades to "register the PID, trust the next liveness check" rather than refusing. Repos with spaces in the path (`C:\Users\Some User\repos\…`) should work — the launcher quotes paths for both `wt.exe` and `cmd.exe` — but exercise it once before relying on it.
 
 ## Comparison
 
@@ -403,7 +405,7 @@ Bosun is agent-agnostic. The CLI surface (`init`, `status`, `merge`, …) works 
 No. The safety contract is explicit: bosun never pushes, fetches, or talks to a forge. Worktrees, branches, and squash-merges are all local. You push when *you* push.
 
 **Can I use bosun on Windows?**
-Not in v0.10. Builds compile, but the terminal launcher only knows Ghostty / Terminal.app / gnome-terminal — Windows Terminal / cmd.exe / WSL integration is post-v0.10 work. See the [Supported platforms](#supported-platforms) table.
+Yes. The launcher prefers `wt.exe` (Windows Terminal, default on Win11, opt-in on Win10) for tab-aware launching and falls back to `cmd /c start "" cmd /K …` otherwise; the lockfile uses real `LockFileEx`; process detection uses gopsutil. Live trial coverage is narrower than macOS / Linux — please open an issue if you hit something. See the [Supported platforms](#supported-platforms) table for the operator-facing notes (no-op `bosun_attach` cwd validation, path quoting, `claude.cmd` discovery).
 
 **Is bosun safe for production codebases?**
 The safety contract holds — bosun never touches `main` except via `bosun merge`, never pushes, never modifies global git config. It's been trialed end-to-end through SIGBUS, CRASHED state, corrupted-gitdir recovery, and `merge --undo` reflog reset ([`docs/v0.8-trial-findings.md`](./docs/v0.8-trial-findings.md), [`docs/v0.9-trial-3c-findings.md`](./docs/v0.9-trial-3c-findings.md)). Honest caveat: zero external users so far — try it on a side project first.

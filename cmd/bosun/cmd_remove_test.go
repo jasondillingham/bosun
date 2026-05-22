@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -61,6 +62,15 @@ func TestCopyWorktreeBestEffort_SkipsDotGit(t *testing.T) {
 // `return nil`'d on each error and the caller saw a copied-count that
 // pretended the snapshot was complete.
 func TestCopyWorktreeBestEffort_RecordsSkipped(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// NTFS doesn't honor POSIX mode bits the same way as ext4/HFS+:
+		// chmod 0o000 doesn't actually make the file unreadable to the
+		// current process (the file's ACL still grants the owner access
+		// regardless of the mode bits the syscall sets). Without a real
+		// unreadable file we can't drive the copy-failure branch this
+		// test exists to pin. Windows-trial finding 2026-05-22.
+		t.Skip("can't produce an unreadable file on NTFS via os.Chmod")
+	}
 	wt := t.TempDir()
 	// Two readable files (should copy cleanly).
 	if err := os.WriteFile(filepath.Join(wt, "ok.txt"), []byte("ok"), 0o644); err != nil {

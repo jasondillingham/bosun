@@ -14,9 +14,18 @@ import (
 // seedUsageLedgers writes deterministic usage ledgers across multiple
 // sessions so the cost tests have a stable corpus to assert against.
 // Returns a map of session→sum for cross-checks.
+//
+// Most callers pass a fixed `now` so date-based assertions (e.g.
+// --by=day output) are deterministic. TestRunCost_SinceFilter
+// alone passes time.Now() so its --since cutoff math holds as
+// the wall clock advances past the fixed-date entries' window.
 func seedUsageLedgers(t *testing.T, repo string) map[string]float64 {
 	t.Helper()
-	now := time.Date(2026, 5, 20, 14, 0, 0, 0, time.UTC)
+	return seedUsageLedgersAt(t, repo, time.Date(2026, 5, 20, 14, 0, 0, 0, time.UTC))
+}
+
+func seedUsageLedgersAt(t *testing.T, repo string, now time.Time) map[string]float64 {
+	t.Helper()
 
 	type seed struct {
 		session string
@@ -141,7 +150,12 @@ func TestRunCost_ByDayBreakdown(t *testing.T) {
 // when --since=2d is set.
 func TestRunCost_SinceFilter(t *testing.T) {
 	repo := initBosunRepo(t)
-	seedUsageLedgers(t, repo)
+	// Seed relative to wall-clock now (not the fixture's fixed 2026-05-20
+	// date) — otherwise the test calendar-rolls and starts failing once
+	// real time moves more than 2 days past 2026-05-20. The --since
+	// filter compares against time.Now() at runtime; the seed entries
+	// must be in the same time frame.
+	seedUsageLedgersAt(t, repo, time.Now().UTC())
 	chdir(t, repo)
 
 	// --since=2d filter math: cutoff is now()-2d, and the filter uses

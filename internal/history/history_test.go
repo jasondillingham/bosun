@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -97,8 +98,15 @@ func TestArchive_CapturesBriefClaimsCommits(t *testing.T) {
 		}
 		// History archives may contain operator-visible brief contents;
 		// must be operator-only on multi-user hosts. (v0.12 M4 fix.)
-		if mode := fi.Mode().Perm(); mode != 0o600 {
-			t.Errorf("%s mode = %o, want 0600", f, mode)
+		// Skip the mode-bit assertion on Windows — NTFS reports 0o666
+		// regardless of what os.WriteFile / os.OpenFile passed, because
+		// POSIX mode bits don't translate to the underlying ACL model.
+		// Multi-user safety on Windows would need a Windows-specific
+		// ACL grant via x/sys/windows/security; that's separate scope.
+		if runtime.GOOS != "windows" {
+			if mode := fi.Mode().Perm(); mode != 0o600 {
+				t.Errorf("%s mode = %o, want 0600", f, mode)
+			}
 		}
 	}
 	commits, _ := os.ReadFile(filepath.Join(archDir, "commits.log"))

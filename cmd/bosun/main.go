@@ -12,6 +12,14 @@ const (
 	exitUserErr  = 1
 	exitGitErr   = 2
 	exitInternal = 3
+	// exitConflict signals a workflow that halted because a session
+	// couldn't be applied automatically — most commonly `bosun merge`
+	// hitting an unresolved git conflict that needs the operator to
+	// pick a resolution. Distinct from exitUserErr so CI scripts can
+	// branch on "needs hands" vs "the invocation was wrong." Added per
+	// Bughunt-1 F032: pre-fix `bosun merge` returned exit 0 on conflict
+	// and CI scripts marched on top of a wedged working tree.
+	exitConflict = 4
 )
 
 // errKind lets a command return a sentinel error class so main can map it to
@@ -22,6 +30,7 @@ const (
 	kindUser errKind = iota
 	kindGit
 	kindInternal
+	kindConflict
 )
 
 type bosunError struct {
@@ -51,6 +60,16 @@ func internalErr(msg string, err error) error {
 	return &bosunError{kind: kindInternal, msg: msg, wrap: err}
 }
 
+// conflictErr signals that a workflow couldn't proceed because of an
+// unresolved conflict that needs operator intervention (typically a
+// merge conflict in `bosun merge`). The command that returns this is
+// expected to have already printed the operator-visible recovery
+// message — main translates it to exitConflict (4) and the command
+// silences Cobra's err-print to avoid duplicating that message.
+func conflictErr(msg string) error {
+	return &bosunError{kind: kindConflict, msg: msg}
+}
+
 func exitCodeFor(err error) int {
 	if err == nil {
 		return exitOK
@@ -62,6 +81,8 @@ func exitCodeFor(err error) int {
 			return exitGitErr
 		case kindInternal:
 			return exitInternal
+		case kindConflict:
+			return exitConflict
 		}
 	}
 	return exitUserErr

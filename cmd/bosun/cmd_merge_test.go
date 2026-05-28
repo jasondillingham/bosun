@@ -130,3 +130,47 @@ func TestReadMergeLog_MissingFileIsNotAnError(t *testing.T) {
 		t.Errorf("readMergeLog on missing file: got %v, want nil", entries)
 	}
 }
+
+// TestConflictErr_MapsToExitConflict pins the Bughunt-1 F032 fix: a
+// merge that halts on conflict returns conflictErr, which exitCodeFor
+// translates to exit code 4 (exitConflict). Pre-fix the merge returned
+// nil and CI scripts kept marching with a wedged working tree.
+func TestConflictErr_MapsToExitConflict(t *testing.T) {
+	err := conflictErr("merge halted at conflict")
+	if err == nil {
+		t.Fatal("conflictErr returned nil")
+	}
+	if code := exitCodeFor(err); code != exitConflict {
+		t.Errorf("exitCodeFor(conflictErr) = %d, want %d (exitConflict)", code, exitConflict)
+	}
+	// The error message must surface "bosun: " prefix so any operator
+	// who DOES see it (e.g. SilenceErrors=false at the command level)
+	// recognizes the source.
+	if msg := err.Error(); !strings.HasPrefix(msg, "bosun:") {
+		t.Errorf("conflictErr.Error() = %q, want bosun: prefix", msg)
+	}
+}
+
+// TestExitCodeFor_KindCoverage pins the full kind→exit-code map so the
+// next person adding an errKind notices they need to add an exit code
+// (and a test row).
+func TestExitCodeFor_KindCoverage(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"nil", nil, exitOK},
+		{"user", userErr("bad"), exitUserErr},
+		{"git", gitErr("op", nil), exitGitErr},
+		{"internal", internalErr("op", nil), exitInternal},
+		{"conflict", conflictErr("merge halted"), exitConflict},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := exitCodeFor(tc.err); got != tc.want {
+				t.Errorf("exitCodeFor(%s) = %d, want %d", tc.name, got, tc.want)
+			}
+		})
+	}
+}

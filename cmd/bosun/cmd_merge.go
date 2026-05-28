@@ -57,10 +57,25 @@ func newMergeCmd() *cobra.Command {
 				listUndo:      listUndo,
 				noLoadCheck:   noLoadCheck,
 			}
+			var err error
 			if tree != "" {
-				return runMergeTree(cmd, tree, opts)
+				err = runMergeTree(cmd, tree, opts)
+			} else {
+				err = runMerge(cmd, args, opts)
 			}
-			return runMerge(cmd, args, opts)
+			// Conflict errors are exit-code-only — runMerge already
+			// printed the operator-visible recovery message. Silence
+			// Cobra's "Error: ..." line for this command so the conflict
+			// message stays the last thing the operator sees. Cobra
+			// reads SilenceErrors after RunE returns, so this is safe
+			// to set here. Bughunt-1 F032.
+			if err != nil {
+				var be *bosunError
+				if errors.As(err, &be) && be.kind == kindConflict {
+					cmd.SilenceErrors = true
+				}
+			}
+			return err
 		},
 	}
 
@@ -234,6 +249,12 @@ func runMerge(cmd *cobra.Command, args []string, opts mergeOpts) error {
 
 	if conflictHit {
 		println("\nbosun: stopped at first conflict. Resolve, commit, then re-run `bosun merge`.")
+		// Exit nonzero so CI scripts using `bosun merge && next-step`
+		// or `set -e` halt on a wedged working tree instead of marching
+		// on with a half-applied merge. The conflict-recovery message
+		// above is the operator's actionable signal; the exit code is
+		// the machine signal. Bughunt-1 F032 (HIGH).
+		return conflictErr("merge halted at conflict")
 	}
 	return nil
 }
@@ -907,7 +928,13 @@ func runMergeTree(cmd *cobra.Command, parentLabel string, opts mergeOpts) error 
 			skipped = append(skipped, label)
 		case mergeStatusConflict:
 			_, _ = fmt.Fprintf(os.Stderr, "  ✗ %s: %s\n", label, reason)
-			return userErr("merge --tree aborted at %s due to conflict; resolve manually and re-run with --tree to continue", label)
+			_, _ = fmt.Fprintf(os.Stderr, "\nbosun: merge --tree aborted at %s due to conflict; resolve manually and re-run with --tree to continue\n", label)
+			// Exit 4 (kindConflict) so CI scripts can branch on "needs
+			// hands" vs invocation error. Pre-Bughunt-1 F032 this was a
+			// generic userErr (exit 1). The cascade conflict path
+			// pre-prints its own message; the RunE wrapper silences
+			// Cobra's err-print to avoid duplication.
+			return conflictErr(fmt.Sprintf("merge --tree aborted at %s", label))
 		case mergeStatusWouldMerge:
 			_, _ = fmt.Fprintf(os.Stdout, "  ▸ %s: would merge (%s)\n", label, reason)
 		}

@@ -550,8 +550,16 @@ func TestScenario_MergeAfterManualConflictResolveSkipsAlreadyMerged(t *testing.T
 	s.Bosun("done", "session-2")
 
 	// First merge run: session-1 lands clean, session-2 conflicts and stops.
-	out := s.Bosun("merge")
+	// Exit code is 4 (exitConflict) post-Bughunt-1 F032 — the merge halted
+	// on a real conflict needing manual resolution, not an invocation error.
+	out, mergeErr := s.BosunErr("merge")
 	s.AssertContainsAll(out, "session-1: merged", "session-2: conflict")
+	if mergeErr == nil {
+		t.Fatalf("expected exit 4 on conflict (F032), got success:\n%s", out)
+	}
+	if !strings.Contains(mergeErr.Error(), "exit status 4") {
+		t.Fatalf("expected exit status 4 on conflict, got %v:\n%s", mergeErr, out)
+	}
 
 	// Operator resolves manually: pick session-2's content, stage, commit.
 	s.WriteFile("README.md", "# version two\n")

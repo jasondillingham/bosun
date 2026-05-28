@@ -88,18 +88,18 @@ func TestParseLabel(t *testing.T) {
 		{"", "", true},
 		{"   ", "", true}, // whitespace-only collapses to empty
 		{"0", "", true},
-		{"-1", "", true},                  // negative number
-		{"Auth", "", true},                // uppercase
-		{"AUTH", "", true},                // all caps
-		{"café", "", true},                // unicode
-		{"1auth", "", true},               // mixed digits/letters; must start with letter
-		{"-auth", "", true},               // leading dash
-		{"auth-", "", true},               // trailing dash
-		{"auth--storage", "", true},       // consecutive dashes
-		{"auth_storage", "", true},        // underscore not allowed
-		{"auth!", "", true},               // bang
-		{"session-", "", true},            // numeric-looking but no integer
-		{"session-x", "session-x", false}, // bare label is valid charset; not a numeric session
+		{"-1", "", true},            // negative number
+		{"Auth", "", true},          // uppercase
+		{"AUTH", "", true},          // all caps
+		{"café", "", true},          // unicode
+		{"1auth", "", true},         // mixed digits/letters; must start with letter
+		{"-auth", "", true},         // leading dash
+		{"auth-", "", true},         // trailing dash
+		{"auth--storage", "", true}, // consecutive dashes
+		{"auth_storage", "", true},  // underscore not allowed
+		{"auth!", "", true},         // bang
+		{"session-", "", true},      // numeric-looking but no integer
+		{"session-x", "", true},     // Bughunt-1 F038: session- prefix is reserved for numeric sessions
 	}
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {
@@ -140,6 +140,17 @@ func TestValidateLabel(t *testing.T) {
 		"with space",       // would need quoting in every shell call site
 		"with:colon",       // Windows drive separator
 		"emoji-\U0001F600", // grinning face — outside the label charset
+
+		// Bughunt-1 F038: the `session-<word>` shape was silently
+		// orphan-producing (init wrote it; list/status/show/remove
+		// pretended it didn't exist). Reserve the prefix for numbered
+		// sessions; reject everything else that wears it.
+		"session-clean", // named with reserved prefix
+		"session-foo",
+		"session-FOO",     // (also fails labelRe casing — sanity check)
+		"session-0",       // reserved prefix + zero is meaningless
+		"session-1a",      // prefix + non-numeric tail
+		"session-clean.x", // reserved prefix even when dotted
 	}
 	for _, s := range good {
 		if err := ValidateLabel(s); err != nil {
@@ -332,6 +343,58 @@ func samePath(a, b string) bool {
 		return true
 	}
 	return false
+}
+
+// TestValidateLabel_BughuntF038_SessionWordIsReserved pins the Bughunt-1
+// F038 fix narrowly: `session-<word>` (the non-numeric "session-" form)
+// must be refused with an error message that points the operator at the
+// drop-the-prefix fix. Pre-fix init accepted these, created a worktree
+// and branch, and Derive then silently excluded them from every read —
+// producing orphan worktrees that doctor reported as healthy.
+func TestValidateLabel_BughuntF038_SessionWordIsReserved(t *testing.T) {
+	cases := []string{
+		"session-clean",
+		"session-foo",
+		"session-1a",
+		"session-clean.frontend", // dotted, but parent segment still non-numeric
+	}
+	for _, s := range cases {
+		t.Run(s, func(t *testing.T) {
+			err := ValidateLabel(s)
+			if err == nil {
+				t.Fatalf("ValidateLabel(%q) accepted the reserved-prefix form; want error", s)
+			}
+			// The fix message names the recovery path explicitly so an
+			// operator who hit the bug knows what to do.
+			msg := err.Error()
+			for _, want := range []string{"session-", "reserved", "named sessions"} {
+				if !strings.Contains(msg, want) {
+					t.Errorf("ValidateLabel(%q) error missing %q\n  got: %s", s, want, msg)
+				}
+			}
+		})
+	}
+}
+
+// TestValidateLabel_NumberedAndNamedStillWork pins that the F038 gate
+// doesn't accidentally over-reject — numbered sessions (session-1,
+// session-1.auth) and bare named labels (auth, http) keep passing.
+func TestValidateLabel_NumberedAndNamedStillWork(t *testing.T) {
+	for _, s := range []string{
+		"session-1",
+		"session-42",
+		"session-1.auth",
+		"session-1.http-handler",
+		"auth",
+		"http",
+		"frontend.backend", // dotted bare labels still legal
+	} {
+		t.Run(s, func(t *testing.T) {
+			if err := ValidateLabel(s); err != nil {
+				t.Errorf("ValidateLabel(%q) = %v, want nil", s, err)
+			}
+		})
+	}
 }
 
 func TestIsNumericLabel(t *testing.T) {

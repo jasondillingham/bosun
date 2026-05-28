@@ -452,9 +452,28 @@ var labelRe = regexp.MustCompile(`^[a-z][a-z0-9]*(-[a-z0-9]+)*(\.[a-z][a-z0-9]*(
 // AddChild spawn yields labels like `session-1.auth`. Each dot-
 // separated segment must independently match the historical label
 // charset (see labelRe).
+//
+// Bughunt-1 F038 added a structural reject for the `session-<word>`
+// shape: the `session-` prefix is reserved for numbered sessions
+// (session-1, session-42…), but the regex above accepted
+// `session-clean` / `session-foo`, and Derive's reader-side filter
+// then silently excluded them — init succeeded, list/status/show/remove
+// all returned "not found." The audit's smoking gun was three sources
+// of truth disagreeing: spawn-tree.json had the session, git had the
+// worktree, Derive excluded it. Rejecting at the writer side keeps the
+// model consistent.
 func ValidateLabel(s string) error {
 	if !labelRe.MatchString(s) {
 		return fmt.Errorf("invalid session label %q (want lowercase letters/digits separated by single dashes, optionally joined by dots for sub-sessions; no leading/trailing dot, no `..`, no `--`)", s)
+	}
+	if rest, ok := strings.CutPrefix(s, "session-"); ok {
+		head := rest
+		if i := strings.IndexByte(rest, '.'); i >= 0 {
+			head = rest[:i]
+		}
+		if n, err := strconv.Atoi(head); err != nil || n < 1 {
+			return fmt.Errorf("invalid session label %q: the 'session-' prefix is reserved for numbered sessions (session-1, session-2, …); for named sessions, drop the prefix — e.g. use %q instead of %q", s, rest, s)
+		}
 	}
 	return nil
 }

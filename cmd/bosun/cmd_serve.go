@@ -24,6 +24,7 @@ func newServeCmd() *cobra.Command {
 		bind           string
 		interval       int
 		maxConnections int
+		allowedHosts   []string
 	)
 
 	cmd := &cobra.Command{
@@ -35,7 +36,13 @@ HTML page at / consumes both, giving a browser-based view of the fleet.
 
 Defaults to binding 127.0.0.1 — there is no authentication, so binding to
 a non-loopback address exposes the dashboard to anyone on that network at
-your own risk.`,
+your own risk.
+
+Bosun enforces a Host-header allowlist to defend against DNS rebinding —
+the configured --bind host is allowed; loopback binds additionally accept
+"127.0.0.1", "[::1]", and "localhost". To accept a DNS name in front of a
+non-loopback bind (e.g. "bosun.lan"), pass --allowed-host one or more
+times.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if port < 0 || port > 65535 {
@@ -50,7 +57,7 @@ your own risk.`,
 			if maxConnections < 0 {
 				return userErr("--max-connections must be >= 0 (0 disables the cap)")
 			}
-			return runServe(bind, port, time.Duration(interval)*time.Second, maxConnections)
+			return runServe(bind, port, time.Duration(interval)*time.Second, maxConnections, allowedHosts)
 		},
 	}
 
@@ -59,12 +66,14 @@ your own risk.`,
 	cmd.Flags().IntVar(&interval, "interval", 2, "seconds between /api/status recomputes")
 	cmd.Flags().IntVar(&maxConnections, "max-connections", web.DefaultMaxConnections,
 		"cap on concurrent inbound HTTP connections; 0 disables the cap (raise when serving multiple operators, lower when bound to non-loopback)")
+	cmd.Flags().StringSliceVar(&allowedHosts, "allowed-host", nil,
+		"additional Host: header values accepted by the dashboard (repeat for multiple). The --bind host is always allowed; this extends the list for DNS names in front of a non-loopback bind")
 
 	cmd.GroupID = "wiring"
 	return cmd
 }
 
-func runServe(bind string, port int, interval time.Duration, maxConnections int) error {
+func runServe(bind string, port int, interval time.Duration, maxConnections int, allowedHosts []string) error {
 	rc, err := loadCtx()
 	if err != nil {
 		return err
@@ -80,6 +89,7 @@ func runServe(bind string, port int, interval time.Duration, maxConnections int)
 		Port:           port,
 		Interval:       interval,
 		MaxConnections: maxConnections,
+		AllowedHosts:   allowedHosts,
 	})
 
 	_, _ = fmt.Fprintf(os.Stdout, "bosun serve: listening on http://%s:%d\n", bind, port)

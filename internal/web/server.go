@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -50,6 +51,22 @@ type Config struct {
 	// non-loopback can set this lower; localhost-only operators rarely
 	// need to touch it.
 	MaxConnections int
+
+	// AllowedHosts is the additional Host-header allowlist for the
+	// dashboard. The hostGuard middleware always accepts the configured
+	// Bind host (and the loopback aliases when Bind is loopback);
+	// AllowedHosts extends that list for operators who put a DNS name
+	// in front of a non-loopback bind (e.g. `--bind 0.0.0.0
+	// --allowed-host bosun.lan`). Values are matched case-insensitively
+	// against r.Host with any port stripped.
+	//
+	// Empty by default — the bind-derived allowlist is the floor and
+	// covers the common case. Added per Bughunt-1 F044 to close the
+	// DNS-rebinding attack against the default loopback bind: pre-fix
+	// any Host header was accepted, so a malicious tab with rebound DNS
+	// could read /api/show/<label> (BOSUN_BRIEF.md body) over a normal
+	// fetch().
+	AllowedHosts []string
 }
 
 // DefaultMaxConnections is the cmd_serve.go default for
@@ -102,6 +119,100 @@ func securityHeaders(next http.Handler) http.Handler {
 		h.Set("Content-Security-Policy", dashboardCSP)
 		h.Set("Referrer-Policy", "no-referrer")
 		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBytes)
+		next.ServeHTTP(w, r)
+	})
+}
+
+// buildAllowedHosts returns the lowercase Host-header allowlist for the
+// running server. When Bind is a loopback address, the standard
+// loopback aliases are accepted (`127.0.0.1`, `[::1]`, `localhost`);
+// any additional cfg.AllowedHosts entries are merged in. When Bind is
+// non-loopback, the configured Bind host is required by default but
+// operators can extend via --allowed-host (e.g. a DNS name in front
+// of a LAN bind).
+//
+// Returns nil when no allowlist could be derived (e.g. SplitHostPort
+// failure on a malformed Bind). hostGuard treats nil as "no gate,
+// preserve pre-Bughunt-1 behavior" — caller logs the configuration
+// problem; we don't want to wedge the server.
+func buildAllowedHosts(bind string, extra []string) map[string]struct{} {
+	host := bind
+	if h, _, err := net.SplitHostPort(bind); err == nil {
+		host = h
+	}
+	host = strings.ToLower(strings.Trim(host, "[]"))
+	if host == "" {
+		return nil
+	}
+	allowed := map[string]struct{}{host: {}}
+	if isLoopbackHost(host) {
+		allowed["127.0.0.1"] = struct{}{}
+		allowed["::1"] = struct{}{}
+		allowed["localhost"] = struct{}{}
+	}
+	for _, h := range extra {
+		h = strings.ToLower(strings.TrimSpace(h))
+		if h == "" {
+			continue
+		}
+		if idx := strings.IndexByte(h, ':'); idx >= 0 {
+			h = h[:idx]
+		}
+		allowed[strings.Trim(h, "[]")] = struct{}{}
+	}
+	return allowed
+}
+
+// isLoopbackHost reports whether host is one of the loopback aliases the
+// bind-derived allowlist treats as equivalent. Avoids per-request
+// net.ParseIP work — the allowlist is built once at Start.
+func isLoopbackHost(host string) bool {
+	switch host {
+	case "127.0.0.1", "::1", "localhost", "0.0.0.0":
+		// 0.0.0.0 binds every interface including loopback — operators
+		// using that bind usually want loopback aliases to still resolve
+		// from their own browser. They can lock down further with
+		// --allowed-host once they know which hostname they care about.
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return true
+	}
+	return false
+}
+
+// hostGuard rejects requests whose Host header isn't in the allowlist.
+// Returns 421 Misdirected Request (the standardized signal for
+// "request reached the wrong virtual host") so a curious operator
+// hitting bosun with the wrong hostname gets an actionable status
+// code instead of a generic 400 / 403.
+//
+// Defends against DNS rebinding (Bughunt-1 F044): pre-fix, any Host
+// header was accepted, so a malicious site whose DNS rebinds to
+// 127.0.0.1 could fetch /api/show/<label> cross-origin and read the
+// BOSUN_BRIEF.md body. The 4-header CSP set Bundle C added defends
+// the rendered document, not the JSON API; this gate is the load-
+// bearing close on that vector.
+func hostGuard(allowed map[string]struct{}, next http.Handler) http.Handler {
+	if len(allowed) == 0 {
+		// No allowlist computable — fall through to keep the server
+		// available rather than wedging it on a config problem. The
+		// caller logged the configuration issue at Start.
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := strings.ToLower(r.Host)
+		// net.SplitHostPort handles bracketed IPv6 ("[::1]:8765" →
+		// "::1") and plain "host:port" alike. A missing port surfaces
+		// as an error, in which case the unmodified Host is the host.
+		if host, _, err := net.SplitHostPort(h); err == nil {
+			h = host
+		}
+		h = strings.Trim(h, "[]")
+		if _, ok := allowed[h]; !ok {
+			http.Error(w, "misdirected host (set --bind / --allowed-host to accept this hostname)", http.StatusMisdirectedRequest)
+			return
+		}
 		next.ServeHTTP(w, r)
 	})
 }
@@ -205,8 +316,12 @@ func (s *Server) Start(ctx context.Context) error {
 
 	mux := http.NewServeMux()
 	s.registerHandlers(mux)
+	// hostGuard sits outside securityHeaders: a request whose Host header
+	// doesn't match the allowlist gets rejected before any work runs,
+	// matching the "fail fast on DNS rebinding" intent of the gate.
+	allowedHosts := buildAllowedHosts(bind, s.cfg.AllowedHosts)
 	s.srv = &http.Server{
-		Handler: securityHeaders(mux),
+		Handler: hostGuard(allowedHosts, securityHeaders(mux)),
 		// SSE clients hold the connection open; no read/write timeouts
 		// here on purpose. The handler exits when the request context
 		// is cancelled (client disconnect or server shutdown).

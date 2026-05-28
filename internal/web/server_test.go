@@ -524,6 +524,157 @@ func TestServer_StatusMethodNotAllowed(t *testing.T) {
 	}
 }
 
+// TestServer_HostGuard_RejectsRebindingHost is the Bughunt-1 F044
+// regression: a request whose Host header doesn't match the bind
+// (or the loopback aliases when bound to loopback) MUST be refused
+// with 421 Misdirected Request. Pre-fix any Host was accepted, so
+// a malicious site whose DNS rebound to 127.0.0.1 could fetch the
+// dashboard's JSON cross-origin.
+func TestServer_HostGuard_RejectsRebindingHost(t *testing.T) {
+	repo := newTestRepo(t)
+	srv := startTestServer(t, repo)
+
+	cases := []struct {
+		name string
+		host string
+	}{
+		{"evil-domain", "evil.com"},
+		{"evil-domain-with-port", "evil.com:18080"},
+		{"rebind-nip", "127.0.0.1.nip.io"},
+		{"bare-ip-spoof", "10.0.0.1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req, _ := http.NewRequest(http.MethodGet, "http://"+srv.Addr()+"/api/status", nil)
+			req.Host = tc.host
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("GET with Host=%q: %v", tc.host, err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusMisdirectedRequest {
+				t.Errorf("Host=%q: status = %d, want %d (Misdirected Request)", tc.host, resp.StatusCode, http.StatusMisdirectedRequest)
+			}
+		})
+	}
+}
+
+// TestServer_HostGuard_AcceptsLoopbackAliases pins that the default
+// loopback bind keeps accepting the legitimate aliases an operator's
+// browser might send: 127.0.0.1, [::1], localhost (with or without port).
+func TestServer_HostGuard_AcceptsLoopbackAliases(t *testing.T) {
+	repo := newTestRepo(t)
+	srv := startTestServer(t, repo)
+
+	cases := []string{
+		"127.0.0.1",
+		"127.0.0.1:8765",
+		"localhost",
+		"localhost:8765",
+		"[::1]",
+		"[::1]:8765",
+	}
+	for _, host := range cases {
+		t.Run(host, func(t *testing.T) {
+			req, _ := http.NewRequest(http.MethodGet, "http://"+srv.Addr()+"/api/status", nil)
+			req.Host = host
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("GET with Host=%q: %v", host, err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Errorf("Host=%q: status = %d, want 200", host, resp.StatusCode)
+			}
+		})
+	}
+}
+
+// TestServer_HostGuard_AllowedHostsExtendsAllowlist pins the
+// --allowed-host operator escape hatch: an operator who binds to a
+// non-loopback address and fronts the dashboard with a DNS name can
+// add that name to the allowlist via Config.AllowedHosts.
+func TestServer_HostGuard_AllowedHostsExtendsAllowlist(t *testing.T) {
+	repo := newTestRepo(t)
+	cfg, err := config.Load(repo)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	srv := New(Config{
+		RepoRoot:     repo,
+		Git:          git.New(),
+		Cfg:          cfg,
+		Claims:       claims.NewStore(repo),
+		State:        state.NewStore(repo),
+		Bind:         "127.0.0.1:0",
+		Interval:     0,
+		AllowedHosts: []string{"bosun.lan", "Custom.HOST"},
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- srv.Start(ctx) }()
+	deadline := time.Now().Add(3 * time.Second)
+	for srv.Addr() == "" && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if srv.Addr() == "" {
+		cancel()
+		t.Fatalf("server never bound a port within 3s")
+	}
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+
+	for _, host := range []string{"bosun.lan", "BOSUN.LAN", "bosun.lan:9000", "custom.host"} {
+		t.Run(host, func(t *testing.T) {
+			req, _ := http.NewRequest(http.MethodGet, "http://"+srv.Addr()+"/api/status", nil)
+			req.Host = host
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("GET with Host=%q: %v", host, err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Errorf("Host=%q (in allowlist): status = %d, want 200", host, resp.StatusCode)
+			}
+		})
+	}
+}
+
+// TestBuildAllowedHosts_Loopback pins the bind-derived allowlist shape
+// for loopback addresses: every loopback alias is present, and extras
+// merge in case-insensitively with ports stripped.
+func TestBuildAllowedHosts_Loopback(t *testing.T) {
+	got := buildAllowedHosts("127.0.0.1:8765", []string{"Extra.Example", "with.port:9000"})
+	for _, want := range []string{"127.0.0.1", "::1", "localhost", "extra.example", "with.port"} {
+		if _, ok := got[want]; !ok {
+			t.Errorf("missing %q in allowlist: %v", want, keysOf(got))
+		}
+	}
+}
+
+// TestBuildAllowedHosts_NonLoopback_NoLoopbackAliases pins that a bind
+// to a non-loopback host does NOT silently allow the loopback aliases —
+// the operator must opt those in via --allowed-host if they want them.
+func TestBuildAllowedHosts_NonLoopback_NoLoopbackAliases(t *testing.T) {
+	got := buildAllowedHosts("192.168.1.5:8765", nil)
+	if _, ok := got["192.168.1.5"]; !ok {
+		t.Errorf("missing configured bind host in allowlist: %v", keysOf(got))
+	}
+	if _, ok := got["localhost"]; ok {
+		t.Errorf("non-loopback bind unexpectedly allows localhost: %v", keysOf(got))
+	}
+}
+
+func keysOf(m map[string]struct{}) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
 // startTestServer boots a Server on 127.0.0.1:0 and registers cleanup that
 // cancels the context and waits for the goroutine. Returns once Addr()
 // reports a real port — that's the contract Start makes via the bind step.

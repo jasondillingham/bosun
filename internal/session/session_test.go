@@ -1,12 +1,16 @@
 package session
 
 import (
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/jasondillingham/bosun/internal/config"
+	"github.com/jasondillingham/bosun/internal/git"
 )
 
 func TestParseName(t *testing.T) {
@@ -242,6 +246,92 @@ func TestResolveWorktreePath(t *testing.T) {
 	if got != canonical {
 		t.Fatalf("canonical on disk: got %q, want canonical %q", got, canonical)
 	}
+}
+
+// TestResolveWorktreePathByBranch_SchemeC is the Bughunt-1 F009 regression
+// test: every session created by the canonical `bosun init` (scheme-C
+// UID-per-worktree, the default since v0.11) sits at a timestamped
+// directory like `<repo>-bosun-<timestamp>-<sub>`. The pre-fix gate
+// computed `WorktreePathForLabel(.., "")` (legacy `<repo>-bosun-<sub>`
+// shape) and never found the live worktree — `bosun_spawn` refused every
+// default-init session with "no live agent detected." This test pins
+// the by-branch resolver as the durable path that doesn't need the round
+// timestamp threaded in.
+func TestResolveWorktreePathByBranch_SchemeC(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary not available")
+	}
+	dir := t.TempDir()
+	repo := filepath.Join(dir, "myproj")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, repo, "init", "-q", "-b", "main")
+	mustGit(t, repo, "config", "user.email", "test@example.com")
+	mustGit(t, repo, "config", "user.name", "Test User")
+	mustGit(t, repo, "config", "commit.gpgsign", "false")
+	if err := os.WriteFile(filepath.Join(repo, "a.txt"), []byte("alpha\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, repo, "add", "a.txt")
+	mustGit(t, repo, "commit", "-q", "-m", "initial")
+
+	// Create a scheme-C-shaped worktree: <repo>-bosun-<timestamp>-1
+	// at a path that is NOT what WorktreePathForLabel(.., "") would
+	// produce. The branch is the canonical bosun branch shape so
+	// session.Derive / ResolveWorktreePathByBranch can both find it.
+	cfg := config.Defaults()
+	branch := cfg.BranchForLabel("session-1")
+	schemeC := WorktreePathForLabel(repo, cfg, "session-1", "20260528-190606-12345")
+	if schemeC == WorktreePathForLabel(repo, cfg, "session-1", "") {
+		t.Fatalf("test bug: scheme-C path %q is identical to empty-timestamp path; the test depends on these differing", schemeC)
+	}
+	mustGit(t, repo, "worktree", "add", "-q", "-b", branch, schemeC)
+
+	c := git.New()
+	got, found, err := ResolveWorktreePathByBranch(context.Background(), c, repo, cfg, "session-1")
+	if err != nil {
+		t.Fatalf("ResolveWorktreePathByBranch: %v", err)
+	}
+	if !found {
+		t.Fatalf("expected to find worktree for branch %q; got found=false", branch)
+	}
+	// On macOS t.TempDir() can sit under /var (a /private/var symlink),
+	// so the path git reports may have the /private prefix git resolved
+	// while schemeC retains the symlinked form. Compare via filepath.EvalSymlinks.
+	if !samePath(got, schemeC) {
+		t.Errorf("ResolveWorktreePathByBranch returned %q, want %q", got, schemeC)
+	}
+
+	// Negative case: a branch that doesn't exist returns ok=false, no error.
+	_, found, err = ResolveWorktreePathByBranch(context.Background(), c, repo, cfg, "session-does-not-exist")
+	if err != nil {
+		t.Fatalf("unexpected error for missing branch: %v", err)
+	}
+	if found {
+		t.Errorf("expected found=false for missing branch")
+	}
+}
+
+func mustGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %s in %s: %v\n%s", strings.Join(args, " "), dir, err, out)
+	}
+}
+
+func samePath(a, b string) bool {
+	if a == b {
+		return true
+	}
+	ea, errA := filepath.EvalSymlinks(a)
+	eb, errB := filepath.EvalSymlinks(b)
+	if errA == nil && errB == nil && ea == eb {
+		return true
+	}
+	return false
 }
 
 func TestIsNumericLabel(t *testing.T) {

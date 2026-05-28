@@ -28,6 +28,7 @@ import (
 	"github.com/jasondillingham/bosun/internal/config"
 	"github.com/jasondillingham/bosun/internal/git"
 	"github.com/jasondillingham/bosun/internal/proc"
+	"github.com/jasondillingham/bosun/internal/session"
 	"github.com/jasondillingham/bosun/internal/spawntree"
 	"github.com/jasondillingham/bosun/internal/state"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -111,6 +112,19 @@ type Server struct {
 	// inspect it.
 	pidCwdFn func(pid int) (string, error)
 
+	// worktreePathFn resolves a session label to its on-disk worktree
+	// path. Production wires a git-based lookup (see defaultWorktreePathFn)
+	// that queries `git worktree list` so scheme-C UID-per-worktree
+	// sessions resolve correctly. Tests override with a fake that
+	// echoes the canonical cfg-template path, avoiding the need for a
+	// real git repo. Returns ok=false when no worktree matches the
+	// label; an error only when the underlying lookup itself fails.
+	//
+	// Added Bughunt-1 F009: the previous WorktreePathForLabel(.., "")
+	// call site couldn't reconstruct the scheme-C path without the
+	// round timestamp and missed every default-init session.
+	worktreePathFn func(label string) (string, bool, error)
+
 	mu       sync.Mutex
 	connWG   sync.WaitGroup
 	stopping bool
@@ -158,6 +172,7 @@ func NewServer(claimsStore *claims.Store, stateStore *state.Store, gitClient *gi
 		runningFn: defaultRunningFn,
 		pidCwdFn:  proc.Cwd,
 	}
+	s.worktreePathFn = s.defaultWorktreePathFn
 	s.mcp = mcp.NewServer(&mcp.Implementation{
 		Name:    ServerName,
 		Version: ServerVersion,
@@ -176,6 +191,22 @@ func NewServer(claimsStore *claims.Store, stateStore *state.Store, gitClient *gi
 func defaultRunningFn(worktreePath string) (int, bool) {
 	pid, ok, _ := proc.Running(worktreePath)
 	return pid, ok
+}
+
+// defaultWorktreePathFn is the production binding for Server.worktreePathFn.
+// Delegates to session.ResolveWorktreePathByBranch which queries git's
+// worktree list — the only path-resolver that works regardless of
+// naming scheme (legacy `<repo>-bosun-<sub>`, scheme-C
+// `<repo>-bosun-<timestamp>-<sub>`, or any future shape) because the
+// answer comes from git itself rather than cfg-template reconstruction.
+//
+// Requires s.gitClient and s.cfg to be wired; returns ok=false on a nil
+// dependency so callers fall back to their refusal path.
+func (s *Server) defaultWorktreePathFn(label string) (string, bool, error) {
+	if s.gitClient == nil || s.cfg == nil {
+		return "", false, nil
+	}
+	return session.ResolveWorktreePathByBranch(context.Background(), s.gitClient, s.state.RepoRoot(), *s.cfg, label)
 }
 
 // Listen binds the server to a Unix socket at socketPath. Any pre-existing

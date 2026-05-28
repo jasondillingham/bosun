@@ -133,7 +133,22 @@ func (s *Server) toolSpawn(_ context.Context, _ *mcp.CallToolRequest, args Spawn
 	// per-instance indirection over proc.Running so tests can mock the
 	// liveness check without touching real processes; the production
 	// wiring (NewServer) defaults to proc.Running.
-	worktreePath := session.WorktreePathForLabel(repoRoot, *s.cfg, parent, "")
+	//
+	// The worktree path is resolved by branch via `git worktree list`
+	// rather than reconstructed from cfg-template, so scheme-C UID-per-
+	// worktree sessions (the default since v0.11) resolve correctly
+	// without needing the round timestamp threaded in. Pre-bughunt-1
+	// this was WorktreePathForLabel(..., "") which produced the legacy
+	// shape `<repo>-bosun-<sub>` and missed every scheme-C session
+	// (Bughunt-1 F009). s.worktreePathFn is per-instance indirection
+	// for the same reason as runningFn.
+	worktreePath, found, lerr := s.worktreePathFn(parent)
+	if lerr != nil {
+		return refuse(spawnGateParentLiveness, fmt.Errorf("resolve worktree for %s: %w", parent, lerr))
+	}
+	if !found {
+		return refuse(spawnGateParentLiveness, fmt.Errorf("no worktree found for %s; bosun_spawn requires the caller to be running inside the named parent", parent))
+	}
 	if _, running := s.runningFn(worktreePath); !running {
 		return refuse(spawnGateParentLiveness, fmt.Errorf("no live agent detected in %s's worktree; bosun_spawn requires the caller to be running inside the named parent", parent))
 	}

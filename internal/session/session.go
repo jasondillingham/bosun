@@ -567,6 +567,41 @@ func ResolveWorktreePath(repoRoot string, cfg config.Config, label, roundTimesta
 	return canonical
 }
 
+// ResolveWorktreePathByBranch returns the on-disk worktree path for the
+// session identified by label by querying `git worktree list` and matching
+// the branch ref. Unlike ResolveWorktreePath, this works regardless of
+// naming scheme — legacy `<repo>-bosun-<sub>`, scheme-C UID-per-worktree
+// `<repo>-bosun-<timestamp>-<sub>`, or any future scheme — because the
+// answer comes from git itself, not from cfg-template reconstruction with
+// a possibly-unknown round timestamp.
+//
+// This is the resolver to use any time a caller has a label but does NOT
+// have the round timestamp (e.g., the bosun_spawn parent-liveness gate,
+// bosun_check_tree's per-child probe, any MCP tool reachable from an agent
+// that knows only its own label).
+//
+// Returns ok=false with no error when no worktree matches the branch.
+// Returns an error only if `git worktree list` itself fails.
+func ResolveWorktreePathByBranch(ctx context.Context, c *git.Client, repoRoot string, cfg config.Config, label string) (string, bool, error) {
+	if c == nil {
+		return "", false, fmt.Errorf("git client is nil")
+	}
+	branchRef := "refs/heads/" + cfg.BranchForLabel(label)
+	wts, err := c.ListWorktrees(ctx, repoRoot)
+	if err != nil {
+		return "", false, fmt.Errorf("list worktrees: %w", err)
+	}
+	for _, wt := range wts {
+		if wt.Prunable {
+			continue
+		}
+		if wt.Branch == branchRef {
+			return wt.Path, true, nil
+		}
+	}
+	return "", false, nil
+}
+
 // IsLegacyWorktreePath reports whether path matches the pre-v0.11
 // `<repo>-bosun-<sub>` shape for any plausible label, anchored to the
 // repo's parent directory.

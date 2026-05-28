@@ -73,7 +73,21 @@ func (s *Server) toolCheckTree(_ context.Context, _ *mcp.CallToolRequest, args C
 	}
 
 	repoRoot := s.state.RepoRoot()
-	parentWorktree := session.WorktreePathForLabel(repoRoot, *s.cfg, parent, "")
+
+	// Resolve the parent's worktree path via the indirection that
+	// queries `git worktree list` in production. Scheme-C UID-per-
+	// worktree sessions (the default since v0.11) resolve correctly
+	// without needing the round timestamp threaded in. Pre-bughunt-1
+	// this used WorktreePathForLabel(..., "") which produced the legacy
+	// shape `<repo>-bosun-<sub>` and missed every scheme-C session —
+	// the same F009 bug fixed in tool_spawn.go.
+	parentWorktree, pfound, perr := s.worktreePathFn(parent)
+	if perr != nil {
+		return errResult(fmt.Errorf("resolve worktree for %s: %w", parent, perr)), CheckTreeResult{}, nil
+	}
+	if !pfound {
+		return errResult(fmt.Errorf("no worktree found for %s; bosun_check_tree requires the caller to be running inside the named parent", parent)), CheckTreeResult{}, nil
+	}
 	if _, running := s.runningFn(parentWorktree); !running {
 		return errResult(fmt.Errorf("no live agent detected in %s's worktree; bosun_check_tree requires the caller to be running inside the named parent", parent)), CheckTreeResult{}, nil
 	}
@@ -94,12 +108,23 @@ func (s *Server) toolCheckTree(_ context.Context, _ *mcp.CallToolRequest, args C
 		brokenAdmins[filepath.Base(d)] = struct{}{}
 	}
 
+	// Per-child worktree paths come from the same indirection — same
+	// scheme-C correctness reason as the parent gate above. A label
+	// with no matching worktree falls back to evaluateChild's
+	// cfg-template path (and will register as no-launch via os.Stat).
+	childPaths := make(map[string]string, len(kids))
+	for _, label := range kids {
+		if path, ok, perr := s.worktreePathFn(label); perr == nil && ok {
+			childPaths[label] = path
+		}
+	}
+
 	out := CheckTreeResult{
 		Parent:   parent,
 		Children: make([]CheckTreeChildResult, 0, len(kids)),
 	}
 	for _, label := range kids {
-		out.Children = append(out.Children, s.evaluateChild(repoRoot, label, brokenAdmins))
+		out.Children = append(out.Children, s.evaluateChild(repoRoot, label, brokenAdmins, childPaths))
 	}
 
 	return &mcp.CallToolResult{
@@ -121,13 +146,20 @@ func (s *Server) toolCheckTree(_ context.Context, _ *mcp.CallToolRequest, args C
 //
 // The repoRoot + cfg are pulled from the receiver so this stays callable
 // from the test harness without re-wiring the world.
-func (s *Server) evaluateChild(repoRoot, label string, brokenAdmins map[string]struct{}) CheckTreeChildResult {
+func (s *Server) evaluateChild(repoRoot, label string, brokenAdmins map[string]struct{}, childPaths map[string]string) CheckTreeChildResult {
 	donePath := filepath.Join(repoRoot, ".bosun", "state", label+".done")
 	if _, err := os.Stat(donePath); err == nil {
 		return CheckTreeChildResult{Label: label, State: CheckTreeStateDone}
 	}
 
-	worktreePath := session.WorktreePathForLabel(repoRoot, *s.cfg, label, "")
+	// Prefer git's view of the worktree path (handles scheme-C UID
+	// layouts); fall back to the cfg-template legacy shape only when
+	// the worktree isn't in git's list — that fallback then naturally
+	// fails the os.Stat below and registers as no-launch.
+	worktreePath, ok := childPaths[label]
+	if !ok {
+		worktreePath = session.WorktreePathForLabel(repoRoot, *s.cfg, label, "")
+	}
 	if _, err := os.Stat(worktreePath); err != nil {
 		if os.IsNotExist(err) {
 			return CheckTreeChildResult{

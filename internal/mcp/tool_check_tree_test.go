@@ -301,5 +301,14 @@ func newSpawnSupportedServer(t *testing.T, repoRoot string) *Server {
 	cfg := config.Defaults()
 	cfg.AgentSpawn.Enabled = true
 	srv.WithSpawnSupport(cfg, spawntree.NewStore(repoRoot))
+	// Tests inject a deterministic worktree-path resolver so they don't
+	// need a real git repo just to exercise the gate logic. Production
+	// defaultWorktreePathFn would query `git worktree list`; the test
+	// stand-in echoes the canonical cfg-template path with an empty
+	// round timestamp, matching the legacy shape these fixtures seed.
+	srv.worktreePathFn = func(label string) (string, bool, error) {
+		path := session.WorktreePathForLabel(repoRoot, cfg, label, "")
+		return path, true, nil
+	}
 	return srv
 }
